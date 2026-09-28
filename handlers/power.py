@@ -359,6 +359,52 @@ class MeteringHandler(ClusterHandler):
         super().__init__(device, cluster)
         self._multiplier = 1
         self._divisor = 1
+        self._resolve_scaling()
+
+    def _resolve_scaling(self, answered: Optional[Dict[Any, Any]] = None) -> None:
+        """Scaling: ZMM entry, then the device's own multiplier/divisor (a fresh
+        read, else zigpy's persisted cache), then 1/1. Multiplier and divisor
+        are static, so a device rarely reports them: waiting for a report left
+        the divisor at 1 and read watt-hours as kilowatt-hours."""
+        from modules import device_decisions
+        from modules.device_profiles import profile_for_device
+        entry = profile_for_device(self.device) or {}
+        z = ((entry.get("zmm") or {}).get("measurements") or {}).get("energy")
+        if isinstance(z, dict) and (z.get("multiplier") or z.get("divisor")):
+            self._multiplier = z.get("multiplier") or 1
+            self._divisor = z.get("divisor") or 1
+            source, reason = "zmm", f"ZMM entry {entry.get('id')}"
+        else:
+            m, d = self._device_value("multiplier", answered), self._device_value("divisor", answered)
+            if m or d:
+                self._multiplier, self._divisor = m or 1, d or 1
+                source, reason = "answered", "the device's multiplier and divisor"
+            else:
+                source, reason = "default", "device gives no scaling; handler default"
+        device_decisions.record(str(self.device.ieee), self.endpoint.endpoint_id, "scaling:energy",
+                                f"x{self._multiplier}/{self._divisor}", source, reason)
+
+    def _device_value(self, attr: str, answered: Optional[Dict[Any, Any]]) -> Optional[int]:
+        v = (answered or {}).get(attr)
+        if v is None:
+            try:
+                v = self.cluster.get(attr)
+            except Exception:
+                v = None
+        return int(v) if isinstance(v, int) and v else None
+
+    async def configure(self):
+        ok = await super().configure()
+        try:
+            result = await self.cluster.read_attributes(["multiplier", "divisor"])
+            if result and result[0]:
+                self._resolve_scaling(answered=result[0])
+        except Exception as e:
+            logger.debug(f"[{self.device.ieee}] Metering scaling read failed: {e}")
+        return ok
+
+    def _energy(self, value: Any) -> float:
+        return round(float(value) * self._multiplier / self._divisor, 3)
 
     def attribute_updated(self, attrid: int, value: Any, timestamp=None):
         if value is None: return
@@ -366,7 +412,7 @@ class MeteringHandler(ClusterHandler):
         updates = {}
 
         if attrid == self.ATTR_CURRENT_SUMMATION_DELIVERED:
-            val = round(float(value) * self._multiplier / self._divisor, 3)
+            val = self._energy(value)
             updates[f"energy_{ep_id}"] = val
             if ep_id == 1: updates["energy"] = val
 
@@ -381,11 +427,24 @@ class MeteringHandler(ClusterHandler):
 
         if updates: self.device.update_state(updates)
 
+    def parse_value(self, attr_id: int, value: Any) -> Any:
+        if attr_id == self.ATTR_CURRENT_SUMMATION_DELIVERED:
+            return self._energy(value)
+        return value
+
     def get_pollable_attributes(self) -> Dict[int, str]:
         return {
-            self.ATTR_CURRENT_SUMMATION_DELIVERED: "energy",
+            self.ATTR_CURRENT_SUMMATION_DELIVERED: f"energy_{self.endpoint.endpoint_id}",
             self.ATTR_INSTANTANEOUS_DEMAND: "instantaneous_demand",
         }
+
+    async def poll(self) -> Dict[str, Any]:
+        # Polled values bypass attribute_updated, so alias here too.
+        results = await super().poll()
+        ep = self.endpoint.endpoint_id
+        if ep == 1 and f"energy_{ep}" in results:
+            results["energy"] = results[f"energy_{ep}"]
+        return results
 
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id

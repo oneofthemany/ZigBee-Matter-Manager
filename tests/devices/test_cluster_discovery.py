@@ -72,7 +72,10 @@ def _service(cluster, mfr_code=None):
 def run() -> Checker:
     c = Checker("cluster_discovery")
     cached = []
+    real = (zigbee_cache.record_attribute_metadata, zigbee_cache.keep_only_attributes)
     zigbee_cache.record_attribute_metadata = lambda *a, **k: cached.append((a, k))
+    kept = []
+    zigbee_cache.keep_only_attributes = lambda ieee, ep, cid, ids: kept.append((cid, sorted(ids)))
 
     c.section("electrical measurement on the Aqara outlet")
     em = _Cluster(0x0B04,
@@ -91,6 +94,8 @@ def run() -> Checker:
     c.check("values are read", by_id[0x050B]["value"] == 2 and by_id[0x0605]["value"] == 10)
     reads = [s for s in em.sent if s[0] == "read"]
     c.check("reads are chunked, not one per attribute", len(reads) == 2, reads)
+    c.check("attributes it no longer lists are dropped from the cache",
+            kept == [(0x0B04, sorted(em.listed))], kept)
 
     c.section("a manufacturer cluster is also discovered under the maker's code")
     fcc0 = _Cluster(0xFCC0, listed={}, values={0x0201: 1, 0x0009: 0},
@@ -119,6 +124,7 @@ def run() -> Checker:
     r = asyncio.run(_service(silent).discover_cluster_attributes("aa", 1, 0x0000))
     c.check("zigpy's schema is offered, keeping only what answered",
             [a["name"] for a in r["attributes"]] == ["manufacturer"], r["attributes"])
+    zigbee_cache.record_attribute_metadata, zigbee_cache.keep_only_attributes = real
     return c
 
 

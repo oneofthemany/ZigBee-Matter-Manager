@@ -116,6 +116,8 @@ Additions to the schema:
   "settings":     [ { "id": "button_leds", "label": "Button LEDs", "type": "bool",
                       "ep": 1 /* or "each" */, "cluster": "0xFCC0", "attr": "0x0203",
                       "mfr": "0x115F", "values": {"0": "Off", "1": "On"} } ],
+  "struct_tags":  { "0x97": {"name": "voltage", "scale": 1},   // Aqara 0xF7/0xDF blob tags
+                    "0x9A": null },                            // null: not what the map says
   "evidence":     { "probes": ["<probe file>"], "verified_fw": ["<sw_version>"] }
 }
 ```

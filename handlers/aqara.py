@@ -143,8 +143,10 @@ class MultistateInputHandler(ClusterHandler):
     Used by Aqara buttons to report clicks (single, double, hold, etc).
     """
     CLUSTER_ID = 0x0012
+    # Max interval 0: no periodic reports. A button's value is a press, so a
+    # periodic re-report of the last value would read as a press every period.
     REPORT_CONFIG = [
-        ("present_value", 0, 3600, 1),  # Report immediately on change
+        ("present_value", 0, 0, 1),
     ]
 
     ATTR_PRESENT_VALUE = 0x0055
@@ -503,12 +505,19 @@ class AqaraManufacturerCluster(ClusterHandler):
                 try:
                     parsed = parse_xiaomi_struct(value)
 
+                    tags, from_entry = self._struct_tags()
                     for sub_id, sub_value in parsed.items():
-                        if sub_id in XIAOMI_ENUM_TAGS and not isinstance(sub_value, int):
+                        if sub_id in XIAOMI_ENUM_TAGS and sub_id not in from_entry \
+                                and not isinstance(sub_value, int):
                             logger.debug(f"[{self.device.ieee}] Xiaomi tag 0x{sub_id:02X} = "
                                          f"{sub_value!r}: not a {XIAOMI_ATTR_MAP[sub_id][0]} here")
-                        elif sub_id in XIAOMI_ATTR_MAP:
-                            attr_name, converter = XIAOMI_ATTR_MAP[sub_id]
+                        elif sub_id in tags and tags[sub_id][0] is None:
+                            continue        # the model's entry says this tag is not what the map says
+                        elif sub_id in tags and self._cluster_measures(tags[sub_id][0]):
+                            logger.debug(f"[{self.device.ieee}] Xiaomi tag 0x{sub_id:02X} "
+                                         f"({tags[sub_id][0]}) skipped: a standard cluster measures it")
+                        elif sub_id in tags:
+                            attr_name, converter = tags[sub_id]
                             try:
                                 converted_value = converter(sub_value)
                                 updates[attr_name] = converted_value
@@ -539,6 +548,44 @@ class AqaraManufacturerCluster(ClusterHandler):
         # Update device state
         if updates:
             self.device.update_state(updates)
+
+    # Blob names a standard cluster also measures: (cluster, attribute or None).
+    # Its answered, scaled reading outranks an undocumented tag (zmm-quirks.md §4).
+    _CLUSTER_MEASURES = {"energy": (0x0702, None), "power": (0x0B04, 0x050B),
+                         "voltage": (0x0B04, 0x0505), "current": (0x0B04, 0x0508)}
+
+    def _struct_tags(self):
+        """(tag -> (name or None, converter), tags the model's entry set). The
+        tag layout differs per model; an entry's `zmm.struct_tags` overrides
+        the global map, and a null there drops the tag."""
+        from modules.device_profiles import profile_for_device
+        tags = dict(XIAOMI_ATTR_MAP)
+        entry = ((profile_for_device(self.device) or {}).get("zmm") or {}).get("struct_tags") or {}
+        own = set()
+        for key, spec in entry.items():
+            tag = int(key, 16)
+            own.add(tag)
+            if spec is None:
+                tags[tag] = (None, None)
+            else:
+                scale = spec.get("scale", 1)
+                tags[tag] = (spec["name"], lambda v, k=scale: v * k)
+        return tags, own
+
+    def _cluster_measures(self, name: str) -> bool:
+        spec = self._CLUSTER_MEASURES.get(name)
+        if not spec:
+            return False
+        cid, attr = spec
+        for key, h in (getattr(self.device, "handlers", None) or {}).items():
+            if not (isinstance(key, tuple) and key[1] == cid):
+                continue
+            if attr is None:
+                return True
+            measured = getattr(h, "_measured", None)
+            if measured is None or attr in measured():
+                return True
+        return False
 
     async def configure(self):
         """

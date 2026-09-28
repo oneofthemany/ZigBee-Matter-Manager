@@ -59,7 +59,17 @@ def identity(device) -> Dict[str, Any]:
     ieee = str(device.ieee)
     zdev = device.zigpy_dev
     profile = profile_for_device(device)
+    # Re-run the evidence-driven rules first: their conclusions can move
+    # without an announce (the first power report after start).
+    for h in set(device.handlers.values()):
+        if hasattr(h, "_record_scope"):
+            h._record_scope()
+    # The in-memory record is current; the table lags the write queue.
+    from modules.device_decisions import records
     stored = {(d["endpoint_id"], d["subject"]): d for d in get_decisions(ieee)}
+    for (ep, subject), (value, source, reason, previous) in records(ieee).items():
+        row = stored.setdefault((ep, subject), {"changed_at": None})
+        row.update(value=value, source=source, reason=reason, previous_value=previous)
     user = user_facts(ieee)
     facts = get_facts(ieee)
 

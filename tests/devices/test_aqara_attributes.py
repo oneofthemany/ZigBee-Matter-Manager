@@ -16,7 +16,17 @@ from types import SimpleNamespace as NS
 
 from harness import Checker
 
-from handlers.aqara import AqaraManufacturerCluster
+from pathlib import Path
+
+import modules.device_profiles as device_profiles
+from handlers.aqara import AqaraManufacturerCluster, MultistateInputHandler
+from modules.device_profiles import ProfileStore
+
+REPO = Path(__file__).resolve().parents[2]
+# The 0xF7 blob lumi.plug.aeu002 reported (observed in the live zigbee cache)
+AEU002_F7 = bytes.fromhex(
+    "032800052101000921000b0a2100000d23060000006410006510016610006820006920006a20006b20"
+    "0095394c37093d9839000000009739f56a6a43")
 
 # EP1 of lumi.plug.aeu002, from data/probes/54ef4410015a14eb_20260927_131518.json
 AEU002_EP1 = {0x0001, 0x0002, 0x0003, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000B,
@@ -139,6 +149,40 @@ def run() -> Checker:
     h.attribute_updated(0x00F7, _f7((0x9B, "i", 1)))
     c.check("an integer indicator mode still decodes", dev.state.get("indicator_mode") == 1,
             dev.state)
+    c.section("a button's value is never re-reported on a timer")
+    c.check("no periodic reports (max interval 0): a re-report would read as a press",
+            MultistateInputHandler.REPORT_CONFIG == [("present_value", 0, 0, 1)])
+
+    c.section("the blob, as lumi.plug.aeu002 sends it")
+    import tempfile
+    d = tempfile.mkdtemp()
+    device_profiles._store = ProfileStore(user_dir=d + "/u", bundled_dir=d + "/b",
+                                          ieee_overrides_file=d + "/i.json",
+                                          zmm_dir=str(REPO / "zmm_quirks"))
+    try:
+        h, _, dev = _handler()
+        dev.zigpy_dev.manufacturer = "Aqara"
+        em = NS(_measured=lambda: [0x050B])             # power only, like its 0x0B04
+        dev.handlers = {(1, 0x0B04): em, (1, 0x0702): object(), (1, 0xFCC0): h}
+        h.attribute_updated(0x00F7, AEU002_F7)
+        c.check("tag 0x97 is the mains voltage the entry says it is",
+                round(dev.state.get("voltage", 0), 1) == 234.4, dev.state)
+        c.check("tags the entry drops write nothing (no 281.6 Hz, no 0.1 V)",
+                "frequency" not in dev.state and "device_temperature" not in dev.state, dev.state)
+        c.check("energy is left to the metering cluster", "energy" not in dev.state
+                and "power_consumption" not in dev.state, dev.state)
+        c.check("tags the map has right still decode",
+                dev.state.get("switch_state") is False and dev.state.get("switch_state_ep2") is True)
+
+        device_profiles._store = ProfileStore(user_dir=d + "/u2", bundled_dir=d + "/b2",
+                                              ieee_overrides_file=d + "/i2.json", zmm_dir=d + "/z2")
+        h, _, dev = _handler()
+        dev.handlers = {}
+        h.attribute_updated(0x00F7, AEU002_F7)
+        c.check("with no entry and no standard clusters, the global map still applies",
+                "power_consumption" in dev.state and "current_97" in dev.state, dev.state)
+    finally:
+        device_profiles._store = None
     return c
 
 

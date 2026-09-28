@@ -611,6 +611,19 @@ def get_facts(ieee) -> List[Dict[str, Any]]:
     return [dict(zip(cols, r)) for r in (cur.fetchall() if cur else [])]
 
 
+def keep_only_attributes(ieee, endpoint_id: int, cluster_id: int, attr_ids) -> None:
+    """After a live discovery: drop cached attributes it no longer lists."""
+    _init_schema()
+    submit(_keep_only_attributes, str(ieee), int(endpoint_id), int(cluster_id),
+           sorted(int(a) for a in attr_ids))
+
+
+def _keep_only_attributes(cur, ieee: str, endpoint_id: int, cluster_id: int, keep) -> None:
+    sql = ("DELETE FROM device_attributes WHERE ieee = ? AND endpoint_id = ? AND cluster_id = ?"
+           + (f" AND attribute_id NOT IN ({', '.join('?' * len(keep))})" if keep else ""))
+    cur.execute(sql, [ieee, endpoint_id, cluster_id, *keep])
+
+
 def delete_fact(ieee, endpoint_id: int, subject: str, source: str) -> None:
     _init_schema()
     submit(_delete_fact, str(ieee), int(endpoint_id), subject, source)

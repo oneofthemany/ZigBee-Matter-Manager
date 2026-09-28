@@ -371,6 +371,21 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
     if settings:
         out["settings"] = settings
 
+    tags: Dict[str, Any] = {}
+    for key, spec in (z.get("struct_tags") or {}).items():      # Aqara 0xF7/0xDF blob tags
+        tag = _to_int(key)
+        if tag is None or not 0 <= tag <= 0xFFFF:
+            continue
+        if spec is None:
+            tags[f"0x{tag:02X}"] = None
+        elif isinstance(spec, dict) and re.fullmatch(r"[a-z][a-z0-9_]{0,39}", str(spec.get("name") or "")):
+            scale = spec.get("scale", 1)
+            tags[f"0x{tag:02X}"] = {"name": spec["name"],
+                                    "scale": scale if isinstance(scale, (int, float))
+                                    and not isinstance(scale, bool) else 1}
+    if tags:
+        out["struct_tags"] = tags
+
     ev = z.get("evidence") or {}
     evidence = {k: [str(x) for x in ev.get(k) or [] if x] for k in ("probes", "verified_fw")
                 if isinstance(ev.get(k), list)}

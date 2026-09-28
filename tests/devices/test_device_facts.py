@@ -135,6 +135,15 @@ def run() -> Checker:
         c.check("removing the device removes its facts",
                 zigbee_cache.get_facts("54:ef:44:10:01:5a:14:eb") == [])
 
+        c.section("the attribute cache follows discovery")
+        zigbee_cache.record_attribute_metadata("bb:bb", 3, 0x0B04, [
+            {"id_int": 0x0000, "name": "measurement_type", "readable": True},
+            {"id_int": 0x0001, "name": "0x0001", "readable": False}])
+        zigbee_cache.keep_only_attributes("bb:bb", 3, 0x0B04, [0x0000])
+        left = [r[0] for r in zigbee_cache._get_db().execute(
+            "SELECT attribute_id FROM device_attributes WHERE ieee = 'bb:bb'").fetchall()]
+        c.check("an attribute a fresh discovery no longer lists is dropped", left == [0], left)
+
         c.section("writes never run on the event loop")
         import asyncio
         import time

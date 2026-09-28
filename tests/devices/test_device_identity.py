@@ -117,6 +117,17 @@ def run() -> Checker:
         c.check("an overlong label", apply_user_fact(dev, 3, "label", "x" * 41) is not None)
         c.check("a missing endpoint", "not found" in (apply_user_fact(dev, 9, "kind", "switch") or ""))
 
+        c.section("metering follows the evidence without an announce")
+        def metering(ident, ep_id):
+            ep = next(e for e in ident["endpoints"] if e["id"] == ep_id)
+            return next(d for d in ep["decisions"] if d["subject"] == "metering")
+        c.check("before any power report", "no power seen" in metering(identity(dev), 1)["reason"])
+        from modules.device_facts import Fact, _j, record
+        record(IEEE, [Fact(1, "reports:0x0B04/0x050B", "observed", _j({"nonzero": True, "last": 23}))])
+        c.check("the first report shows as soon as the tab is opened",
+                "power seen on EP1" in metering(identity(dev), 1)["reason"],
+                metering(identity(dev), 1))
+
         c.section("reset")
         apply_user_fact(dev, 3, "kind", None)
         apply_user_fact(dev, 3, "label", None)

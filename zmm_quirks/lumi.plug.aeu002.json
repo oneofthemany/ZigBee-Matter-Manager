@@ -1,23 +1,74 @@
 {
   "id": "lumi.plug.aeu002",
   "protocol": "zigbee",
-  "match": { "model": "lumi.plug.aeu002", "manufacturer": "Aqara" },
+  "match": {
+    "model": "lumi.plug.aeu002",
+    "manufacturer": "Aqara"
+  },
   "device_type": "plug",
-  "capabilities": ["on_off", "power_monitoring", "switch"],
+  "capabilities": [
+    "on_off",
+    "power_monitoring",
+    "switch"
+  ],
   "endpoints": {
-    "1": { "kind": "switch", "label": "Socket 1", "actions": "multistate" },
-    "2": { "kind": "switch", "label": "Socket 2", "actions": "multistate" },
-    "3": { "kind": "switch", "label": "USB" }
+    "1": {
+      "kind": "switch",
+      "label": "Socket 1",
+      "actions": "multistate"
+    },
+    "2": {
+      "kind": "switch",
+      "label": "Socket 2",
+      "actions": "multistate"
+    },
+    "3": {
+      "kind": "switch",
+      "label": "USB"
+    }
   },
   "zmm": {
-    "corrections": { "device_type": "ignore" },
+    "corrections": {
+      "device_type": "ignore"
+    },
     "measurements": {
-      "active_power": { "cluster": "0x0B04", "attr": "0x050B", "multiplier": 1, "divisor": 10 },
+      "active_power": {
+        "cluster": "0x0B04",
+        "attr": "0x050B",
+        "multiplier": 1,
+        "divisor": 10
+      },
       "rms_voltage": null,
       "rms_current": null,
-      "energy": { "ep": 1, "cluster": "0x0702", "attr": "0x0000", "divisor": 1000 }
+      "energy": {
+        "ep": 1,
+        "cluster": "0x0702",
+        "attr": "0x0000",
+        "divisor": 1000
+      }
     },
-    "evidence": { "probes": ["54ef4410015a14eb_20260927_131518.json"] }
+    "evidence": {
+      "probes": [
+        "54ef4410015a14eb_20260927_131518.json"
+      ]
+    },
+    "struct_tags": {
+      "0x03": null,
+      "0x05": null,
+      "0x09": null,
+      "0x9A": null,
+      "0x95": {
+        "name": "energy",
+        "scale": 1
+      },
+      "0x97": {
+        "name": "voltage",
+        "scale": 1
+      }
+    }
   },
-  "meta": { "author": "zmm", "source": "zmm" }
+  "meta": {
+    "author": "zmm",
+    "source": "zmm"
+  }
 }

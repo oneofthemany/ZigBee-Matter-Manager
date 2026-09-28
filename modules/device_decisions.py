@@ -62,6 +62,12 @@ def record(ieee: str, endpoint_id: int, subject: str, value: str,
     return value_changed
 
 
+def records(ieee: str) -> Dict[Tuple[int, str], Tuple[str, str, str, Optional[str]]]:
+    """{(endpoint_id, subject): (value, source, reason, previous_value)}, current
+    even while the write queue has not landed."""
+    return dict(_loaded(ieee))
+
+
 def stored(ieee: str) -> Dict[Tuple[int, str], Tuple[str, str, str]]:
     """{(endpoint_id, subject): (value, source, reason)} as last recorded."""
     return {k: v[:3] for k, v in _loaded(ieee).items()}

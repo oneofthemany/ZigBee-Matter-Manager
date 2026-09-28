@@ -1757,6 +1757,9 @@ class ZigbeeService(
                 from modules.zigbee_cache import record_attribute_metadata
                 std = [a for a in attributes if a["id_int"] not in mfr_ids]
                 own = [a for a in attributes if a["id_int"] in mfr_ids]
+                from modules.zigbee_cache import keep_only_attributes
+                keep_only_attributes(ieee, endpoint_id, cluster_id,
+                                     [a["id_int"] for a in attributes])
                 record_attribute_metadata(ieee, endpoint_id, cluster_id, std)
                 if own:
                     record_attribute_metadata(ieee, endpoint_id, cluster_id, own,
