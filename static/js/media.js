@@ -1180,8 +1180,9 @@ function setSource(src) {
         : 'Search stations (e.g. jazz, BBC, classical)';
     document.getElementById('mediaSearchResults').innerHTML = '';
     refreshTidalNotice();
-    if (src === 'tidal') { renderTidalTabs(); renderRadioFavStrip(); }
-    else { showSearchBar(true); renderRadioFavStrip(); }
+    if (src === 'tidal') renderTidalTabs();
+    else showSearchBar(true);
+    renderRadioFavStrip();
 }
 
 // Tidal sub-tabs: Search | Mixes | Playlists | Albums | Tracks | Artists
@@ -1271,22 +1272,24 @@ async function loadRadioFavourites() {
 function renderRadioFavStrip() {
     const strip = document.getElementById('mediaRadioFav');
     if (!strip) return;
-    if (!_radioFavs.length) { strip.innerHTML = ''; return; }
+    // Shared container — anything but the Radio source must leave it empty.
+    if (_searchSource !== 'radio' || !_radioFavs.length) { strip.innerHTML = ''; return; }
     strip.innerHTML = `
       <div class="small text-muted mb-1"><i class="fas fa-star text-warning me-1"></i>Favourite stations</div>
-      <div class="d-flex flex-wrap gap-1">
-        ${_radioFavs.map(f => `
-          <div class="btn-group btn-group-sm">
-            <button class="btn btn-outline-primary" title="Play ${esc(f.name)}"
-                    onclick="window.mediaPlayFav('${esc(f.uuid)}', ${JSON.stringify(f.name).replace(/"/g, '&quot;')})">
-              <i class="fas fa-play me-1"></i>${esc(f.name)}
-            </button>
+      ${_radioFavs.map(f => `
+        <div class="d-flex justify-content-between align-items-center border-bottom py-1">
+          <div class="small fw-semibold text-truncate me-2">${esc(f.name)}</div>
+          <div class="btn-group btn-group-sm flex-shrink-0">
             <button class="btn btn-outline-secondary" title="Remove favourite"
                     onclick="window.mediaRadioFavRemove('${esc(f.uuid)}')">
               <i class="fas fa-times"></i>
             </button>
-          </div>`).join('')}
-      </div>`;
+            <button class="btn btn-outline-success" title="Play ${esc(f.name)}"
+                    onclick="window.mediaPlayFav('${esc(f.uuid)}', ${JSON.stringify(f.name).replace(/"/g, '&quot;')})">
+              <i class="fas fa-play"></i>
+            </button>
+          </div>
+        </div>`).join('')}`;
 }
 
 async function radioFavAdd(index) {
