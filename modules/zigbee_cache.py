@@ -506,10 +506,10 @@ def get_attribute_history(ieee, endpoint_id, cluster_id, attribute_id,
 # FACTS
 
 # Facts and decisions are written from hot paths (every received frame, every
-# announce, every start). An upsert on this file can take seconds, which on the
-# event loop starved the radio into the watchdog's exit 70, so these writes are
-# queued and run in order on one worker thread with its own cursor. Outside a
-# running loop (tests, scripts) they run at once.
+# announce, every start), and an upsert here can take seconds: on the event loop
+# that stalls radio I/O and trips loop_monitor. So they are queued and run in
+# order on one worker thread with its own cursor. Outside a running loop
+# (tests, scripts) they run at once.
 _writes: deque = deque()
 _writer: Optional[asyncio.Task] = None
 _writer_cursor = None

@@ -135,6 +135,47 @@ def run() -> Checker:
         c.check("removing the device removes its facts",
                 zigbee_cache.get_facts("54:ef:44:10:01:5a:14:eb") == [])
 
+        c.section("writes never run on the event loop")
+        import asyncio
+        import time
+
+        async def loop_stays_live():
+            ticks = []
+
+            async def ticker():
+                for _ in range(10):
+                    ticks.append(time.monotonic())
+                    await asyncio.sleep(0.02)
+
+            def slow_write(cur):
+                time.sleep(0.5)           # an upsert on a busy file
+            t = asyncio.create_task(ticker())
+            started = time.monotonic()
+            zigbee_cache.submit(slow_write)
+            queued_in = time.monotonic() - started
+            await t
+            await zigbee_cache.drain()
+            return queued_in, max(b - a for a, b in zip(ticks, ticks[1:]))
+
+        queued_in, worst_gap = asyncio.run(loop_stays_live())
+        c.check("a slow write is queued, not run, on the loop", queued_in < 0.05, queued_in)
+        c.check("and the loop keeps ticking while it runs", worst_gap < 0.2, worst_gap)
+
+        async def declared_in_loop():
+            record_declared("aa:aa:aa:aa:aa:aa:aa:aa", _aeu002())
+            before = len(zigbee_cache.get_facts("aa:aa:aa:aa:aa:aa:aa:aa"))
+            await zigbee_cache.drain()
+            return before, len(zigbee_cache.get_facts("aa:aa:aa:aa:aa:aa:aa:aa"))
+        before, after = asyncio.run(declared_in_loop())
+        c.check("start-up facts land after the loop moves on", before == 0 and after > 10,
+                (before, after))
+
+        rows = [(f.endpoint_id, f.subject, f.source, f.value) for f in facts_from_device(_aeu002())]
+        cur = zigbee_cache._get_db().cursor()
+        c.check("unchanged facts are not rewritten",
+                zigbee_cache._upsert_facts(cur, "aa:aa:aa:aa:aa:aa:aa:aa", rows,
+                                           datetime(2026, 1, 1)) == 0)
+
         c.section("ranking")
         c.check("a user's word outranks everything, the device's own claim ranks last",
                 RANK["user"] == 0 and RANK["declared_device"] == max(RANK.values()))

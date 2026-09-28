@@ -67,6 +67,9 @@ async def probe_lite(device, force: bool = False) -> int:
                                           _j({"type": type_name(meta["type"]),
                                               "acl": acl_letters(meta["acl"])})))
         n = record(ieee, facts) if facts else 0
+        # Land before the lock drops, so the next device's check sees this one.
+        from modules.zigbee_cache import drain
+        await drain()
         logger.info(f"[{ieee}] Probe-lite recorded {n} attributes")
         return n
 

@@ -2,9 +2,8 @@
 Evidence for device recognition: what we know about each endpoint, and how we
 learned it (docs/plans/zmm-quirks.md §4).
 
-Rows live in the zigbee cache DB (`device_facts`). Like the rest of that
-module they are written from the event loop on its one connection, batched
-into one statement per device. Nothing reads them to make decisions yet.
+Rows live in the zigbee cache DB (`device_facts`), written through its write
+queue (zigbee_cache.submit): off the event loop, only when a value changed.
 """
 from __future__ import annotations
 
