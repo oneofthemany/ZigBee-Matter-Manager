@@ -502,11 +502,16 @@ rollback_to_previous() {
 # if it has not printed one yet. Only the log tail is scanned: a build reaches
 # tens of MB and this runs every 2s. Stages are weighted equally though their
 # costs are not, so the percentage tracks direction, not duration; the
-# description carries the detail.
+# description carries the detail. An optional byte offset ignores log written
+# before it, so a follow-on build never reports its predecessor's last step.
 build_progress() {
-    local lo="${1:-20}" hi="${2:-85}"
+    local lo="${1:-20}" hi="${2:-85}" from="${3:-0}"
     local txt line s S x X per pct instr
-    txt=$(tail -c 65536 "$BUILD_LOG" 2>/dev/null) || return 1
+    if (( from > 0 )); then
+        txt=$(tail -c +"$(( from + 1 ))" "$BUILD_LOG" 2>/dev/null | tail -c 65536) || return 1
+    else
+        txt=$(tail -c 65536 "$BUILD_LOG" 2>/dev/null) || return 1
+    fi
     line=$(grep -aE '(\[[0-9]+/[0-9]+\] )?STEP [0-9]+/[0-9]+:|^Step [0-9]+/[0-9]+ :' \
         <<<"$txt" | tail -1)
     [[ -n "$line" ]] || return 1
@@ -756,16 +761,39 @@ do_build() {
         return 1
     fi
 
+    write_status "building" "$target_version" 85 "Tagging image" "" "$started_at"
     "$RUNTIME" tag "$new_tag" "${IMAGE_NAME}:latest-${arch}" >>"$BUILD_LOG" 2>&1 || true
 
     # Keep the build-stage images (see build.sh tag_stage_caches):
     # untagged, do_gc's dangling sweep would delete them and the next upgrade
     # would recompile OTBR. A cache hit, so this adds seconds, not a build.
-    local stage
-    for stage in $(sed -nE 's/^FROM .* AS ([A-Za-z0-9_.-]+)$/\1/p' "$work_dir/Containerfile"); do
+    local stages=() stage i=0 n lo hi from stage_pid
+    mapfile -t stages < <(sed -nE 's/^FROM .* AS ([A-Za-z0-9_.-]+)$/\1/p' "$work_dir/Containerfile")
+    n=${#stages[@]}
+    for stage in "${stages[@]}"; do
+        # 85..99 split across stages; 100 is reserved for ready_to_swap.
+        lo=$(( 85 + i * 14 / n )); hi=$(( 85 + (i + 1) * 14 / n ))
+        i=$(( i + 1 ))
+        (( lo > last_pct )) && last_pct=$lo
+        last_desc="Caching stage ${i}/${n}: ${stage}"
+        write_status "building" "$target_version" "$last_pct" "$last_desc" "" "$started_at"
+        from=$(stat -c %s "$BUILD_LOG" 2>/dev/null || echo 0)
         "$RUNTIME" build --format docker --target "$stage" \
             --tag "${IMAGE_NAME}-stage-${stage}:cache" \
-            --file "$work_dir/Containerfile" "$work_dir" >>"$BUILD_LOG" 2>&1 \
+            --file "$work_dir/Containerfile" "$work_dir" >>"$BUILD_LOG" 2>&1 &
+        stage_pid=$!
+        while kill -0 "$stage_pid" 2>/dev/null; do
+            sleep 1
+            if prog=$(build_progress "$lo" "$hi" "$from"); then
+                p=${prog%%|*}; d="Caching stage ${i}/${n} (${stage}) · ${prog#*|}"
+                (( p < last_pct )) && p=$last_pct
+                if [[ "$p" != "$last_pct" || "$d" != "$last_desc" ]]; then
+                    last_pct=$p; last_desc=$d
+                    write_status "building" "$target_version" "$p" "$d" "" "$started_at"
+                fi
+            fi
+        done
+        wait "$stage_pid" 2>/dev/null \
             || log_to_build "WARN: could not tag the ${stage} stage cache"
     done
 
