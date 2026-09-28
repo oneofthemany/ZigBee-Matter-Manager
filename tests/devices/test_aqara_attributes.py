@@ -174,6 +174,20 @@ def run() -> Checker:
         c.check("tags the map has right still decode",
                 dev.state.get("switch_state") is False and dev.state.get("switch_state_ep2") is True)
 
+        stale = {"frequency": 281.6, "voltage": 0.1, "current_97": 234.4,
+                 "power_consumption": 0.0335, "device_temperature": 0, "energy": 0.034}
+        dev.state = dict(stale)
+        dev.service = NS(state_cache={dev.ieee: dict(stale)}, _cache_dirty=False)
+        h.attribute_updated(0x00F7, AEU002_F7)
+        gone = {"frequency", "current_97", "power_consumption", "device_temperature"}
+        c.check("values the old map filed under wrong names are cleared",
+                not gone & set(dev.state) and not gone & set(dev.service.state_cache[dev.ieee]),
+                dev.state)
+        c.check("a key the blob still supplies under its right tag stays (voltage)",
+                round(dev.state.get("voltage", 0), 1) == 234.4, dev.state)
+        c.check("a key a standard cluster supplies stays (energy from 0x0702)",
+                dev.state.get("energy") == 0.034, dev.state)
+
         device_profiles._store = ProfileStore(user_dir=d + "/u2", bundled_dir=d + "/b2",
                                               ieee_overrides_file=d + "/i2.json", zmm_dir=d + "/z2")
         h, _, dev = _handler()

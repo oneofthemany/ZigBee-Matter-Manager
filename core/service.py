@@ -482,6 +482,8 @@ class ZigbeeService(
 
                 from modules.probe_lite import backfill
                 self._probe_lite_task = asyncio.create_task(backfill(self.devices.values()))
+                from modules.reporting_heal import heal
+                self._reporting_heal_task = asyncio.create_task(heal(self.devices.values()))
 
                 # Recover group-registry entries that exist in the coordinator
                 # DB but were lost from groups.json (old in-image storage)

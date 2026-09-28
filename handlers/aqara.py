@@ -527,6 +527,17 @@ class AqaraManufacturerCluster(ClusterHandler):
                         else:
                             logger.debug(f"[{self.device.ieee}] Unknown Xiaomi sub-attr 0x{sub_id:02X} = {sub_value}")
 
+                    # Keys the global map wrote before an entry or a standard
+                    # cluster overrode their tag would otherwise linger in state.
+                    stale = set()
+                    for sub_id in parsed:
+                        global_name = XIAOMI_ATTR_MAP.get(sub_id, (None,))[0]
+                        if global_name and (tags.get(sub_id, (None,))[0] != global_name
+                                            or self._cluster_measures(global_name)):
+                            stale.add(global_name)
+                    self._forget_state({k for k in stale - set(updates)
+                                        if not self._cluster_measures(k)})
+
                     # Clean up raw key if it exists in state from previous runs
                     raw_key = f"opple_0x{attrid:04x}"
                     if raw_key in self.device.state:
@@ -571,6 +582,18 @@ class AqaraManufacturerCluster(ClusterHandler):
                 scale = spec.get("scale", 1)
                 tags[tag] = (spec["name"], lambda v, k=scale: v * k)
         return tags, own
+
+    def _forget_state(self, keys) -> None:
+        """Drop keys from the device's state and its persisted cache."""
+        service = getattr(self.device, "service", None)
+        cached = (getattr(service, "state_cache", None) or {}).get(str(self.device.ieee)) or {}
+        for key in keys:
+            if key in self.device.state:
+                del self.device.state[key]
+                cached.pop(key, None)
+                if service is not None:
+                    service._cache_dirty = True
+                logger.info(f"[{self.device.ieee}] Cleared stale {key} (tag remapped)")
 
     def _cluster_measures(self, name: str) -> bool:
         spec = self._CLUSTER_MEASURES.get(name)
