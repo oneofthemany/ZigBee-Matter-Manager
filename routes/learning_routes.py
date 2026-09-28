@@ -105,6 +105,11 @@ def register_learning_routes(app: FastAPI, get_zigbee_service):
             await svc.announce_device(ieee)
         return out
 
+    @app.post("/api/device/{ieee}/profile/preview")
+    async def profile_preview(ieee: str, request: EntrySave):
+        _, dev = _device(ieee)
+        return learning.preview_entry(dev, request.entry) if dev else missing
+
     @app.get("/api/device/{ieee}/profile/history")
     async def profile_history(ieee: str):
         from modules.device_profiles import get_profile_store, profile_for_device

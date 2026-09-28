@@ -90,10 +90,12 @@ def run() -> Checker:
         dev, values = _outlet()
         st = device_learning.start(dev)
         keys = [s["key"] for s in st["steps"]]
-        c.check("the outlet gets a load test per socket and USB, a press per button, and a setting",
+        c.check("the outlet gets a switch test per socket and USB, a press per button, a setting "
+                "and the metering map",
                 keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.change_setting",
                          "manufacturer_setting.try_setting", "metered_outlet.switch_test.1",
-                         "metered_outlet.switch_test.2", "metered_outlet.switch_test.3"], keys)
+                         "metered_outlet.switch_test.2", "metered_outlet.switch_test.3",
+                         "metering_map"], keys)
         relay = NS(ieee="aa:01", zigpy_dev=NS(endpoints={0: None, 1: NS(
             endpoint_id=1, profile_id=0x0104, device_type=0x0100, out_clusters={},
             in_clusters={0x0006: _Cluster(0x0006, None, {0x0000: 0})})}, model="relay",
@@ -119,7 +121,7 @@ def run() -> Checker:
                                                         _report(0x050B, 0x21, raw.to_bytes(2, "little")))
         onoff(1, 1)
         watts(1, 20000)
-        watts(2, 20010)                                # EP2 shows socket 1's load too
+        watts(2, 20010)                                # EP2 is socket 1's reading (+ USB)
         live = {r["ep"]: r for r in device_learning.state(dev)["live"]}
         c.check("while it runs, the load shows live on the socket under test",
                 live[1]["on"] is True and live[1]["power_w"] == 2000.0 and live[1]["moved"], live)
@@ -127,30 +129,51 @@ def run() -> Checker:
         onoff(1, 0)
         watts(1, 0)
         watts(2, 0)
-        values[(3, 0x0B04)][0x050B] = 19990            # EP3 does not report: the read at the end sees it
         device_learning.capture("00:00:00:00:00:00:00:99", 0x0104, 0x0B04, 1,
                                 _report(0x050B, 0x21, (5).to_bytes(2, "little")))
         st = asyncio.run(device_learning.finish(dev, key))
         found = _step(st, key)["proposals"]
         props = {p["path"]: p for p in found if p["path"]}
         notes = " | ".join(p["evidence"] for p in found if not p["path"])
-        c.check("every EP showed the load alike: whole device on EP1, the rest repeat it",
-                props["endpoints.1.metering"]["value"] == "device_total"
-                and props["endpoints.3.metering"]["value"] == "none", props)
-        c.check("the cross-talk is spelled out", "EP2, EP3 also showed the load on Socket 1" in notes, notes)
+        c.check("one test proposes no metering by itself", "endpoints.1.metering" not in props, props)
+        c.check("the cross-talk is spelled out", "EP2 also showed the load on Socket 1" in notes, notes)
         c.check("and so is whether the reading stopped", "fell to 0 W" in notes, notes)
         c.check("and the kettle gives the scaling",
                 props["zmm.measurements.active_power"]["value"]["divisor"] == 10, props)
         order = [p["path"] for p in _step(st, key)["proposals"]]
-        st = device_learning.decide(dev, key, [i for i, p in enumerate(order) if p])
-        c.check("accepting records learned facts",
-                sum(1 for f in zigbee_cache.get_facts(IEEE) if f["source"] == "learned") == 4)
-        asyncio.run(device_learning.begin(dev, "metered_outlet.switch_test.2", {"rating_w": 1500}))
-        asyncio.run(device_learning.finish(dev, "metered_outlet.switch_test.2"))
+        device_learning.decide(dev, key, [i for i, p in enumerate(order) if p])
+        prov = _step(st, "metering_map")["proposals"]
+        c.check("after one test the map is provisional",
+                any("not tested yet" in p["evidence"] for p in prov), prov)
+
+        def test(ep, on_eps_values, rating):
+            k = f"metered_outlet.switch_test.{ep}"
+            asyncio.run(device_learning.begin(dev, k, {"rating_w": rating}))
+            onoff(ep, 1)
+            for e, raw in on_eps_values:
+                watts(e, raw)
+            onoff(ep, 0)
+            for e, _ in on_eps_values:
+                watts(e, 0)
+            return asyncio.run(device_learning.finish(dev, k))
+        test(2, [(1, 15000), (3, 15000)], 1500)        # socket 2 shows on EP1 (total) and EP3
+        st = test(3, [(1, 100), (2, 100)], 10)         # USB shows on EP1 and EP2, with socket 1
+        m = {p["path"]: p["value"] for p in _step(st, "metering_map")["proposals"] if p["path"]}
+        c.check("with every socket tested, the map is the outlet's real wiring",
+                m == {"endpoints.1.metering": "device_total", "endpoints.2.metering": "measures:1,3",
+                      "endpoints.3.metering": "measures:2"}, m)
+        mp = _step(st, "metering_map")["proposals"]
+        device_learning.decide(dev, "metering_map", [i for i, p in enumerate(mp) if p["path"]])
+        learned = {f["subject"] for f in zigbee_cache.get_facts(IEEE) if f["source"] == "learned"}
+        c.check("accepting the map records it", {"learned:endpoints.1.metering",
+                                                  "learned:endpoints.2.metering",
+                                                  "learned:endpoints.3.metering"} <= learned, learned)
         redo = asyncio.run(device_learning.begin(dev, "metered_outlet.switch_test.2", {}))
         c.check("Redo reuses the step's inputs instead of failing",
                 redo["success"] and redo["running"] == "metered_outlet.switch_test.2", redo)
         asyncio.run(device_learning.finish(dev, "metered_outlet.switch_test.2"))
+        c.check("the map step cannot be run itself",
+                not asyncio.run(device_learning.begin(dev, "metering_map", {}))["success"])
         c.check("nothing applies to the device until saved",
                 device_profiles._store.get_profile_for_device(model="lumi.plug.aeu002",
                                                               manufacturer="Aqara")["meta"]["source"] == "zmm")
@@ -158,16 +181,36 @@ def run() -> Checker:
         c.section("review")
         rv = device_learning.review(dev)
         e = rv["entry"]
-        c.check("the learned scope is in the entry", e["endpoints"]["1"].get("metering") == "device_total"
-                and e["endpoints"]["2"].get("metering") == "none", e["endpoints"])
+        c.check("the learned map is in the entry", e["endpoints"]["1"].get("metering") == "device_total"
+                and e["endpoints"]["2"].get("metering") == "measures:1,3"
+                and e["endpoints"]["3"].get("metering") == "measures:2", e["endpoints"])
         c.check("the ZMM entry's own knowledge is carried (labels, blob tags)",
                 e["endpoints"]["3"].get("label") == "USB"
-                and e["zmm"].get("struct_tags", {}).get("0x97", {}).get("name") == "voltage", e)
+                and e["zmm"].get("struct_tags", {}).get("0x95", {}).get("name") == "energy", e)
         c.check("what the ZMM entry already says is not shown as a change",
                 not any(ch["what"].startswith("blob tag") for ch in rv["preview"]), rv["preview"])
         c.check("the preview says what changes",
                 any(ch["what"] == "EP1 metering" and ch["to"] == "device_total" for ch in rv["preview"]),
                 rv["preview"])
+
+        c.section("the entry editor")
+        ctx = rv["device"]
+        c.check("the editor is told every EP and what each could measure",
+                [x["ep"] for x in ctx["endpoints"]] == [1, 2, 3]
+                and ctx["measurements"]["active_power"] == {"cluster": "0x0B04", "attr": "0x050B", "ep": 1}
+                and ctx["model"] == "lumi.plug.aeu002", ctx)
+        hand = json.loads(json.dumps(e))
+        hand["endpoints"]["2"]["metering"] = "measures:1"
+        hand["endpoints"]["3"]["metering"] = "measures:2,x"
+        pv = device_learning.preview_entry(dev, hand)
+        c.check("a hand edit previews as saving would store it: a malformed scope is dropped",
+                pv["entry"]["endpoints"]["2"]["metering"] == "measures:1"
+                and "metering" not in pv["entry"]["endpoints"]["3"], pv["entry"]["endpoints"])
+        c.check("and the preview says what it changes",
+                any(ch["what"] == "EP2 metering" and ch["to"] == "measures:1" for ch in pv["preview"]),
+                pv["preview"])
+        c.check("something that is not an entry is refused",
+                not device_learning.preview_entry(dev, ["x"])["success"])
 
         c.section("save, history, rollback")
         out = device_learning.save(dev, e)

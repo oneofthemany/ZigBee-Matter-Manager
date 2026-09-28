@@ -165,8 +165,8 @@ def run() -> Checker:
         em = NS(_measured=lambda: [0x050B])             # power only, like its 0x0B04
         dev.handlers = {(1, 0x0B04): em, (1, 0x0702): object(), (1, 0xFCC0): h}
         h.attribute_updated(0x00F7, AEU002_F7)
-        c.check("tag 0x97 is the mains voltage the entry says it is",
-                round(dev.state.get("voltage", 0), 1) == 234.4, dev.state)
+        c.check("tag 0x97 is unpublished: 234.4 reads as volts or as mA until a load test",
+                "voltage" not in dev.state and "current" not in dev.state, dev.state)
         c.check("tags the entry drops write nothing (no 281.6 Hz, no 0.1 V)",
                 "frequency" not in dev.state and "device_temperature" not in dev.state, dev.state)
         c.check("energy is left to the metering cluster", "energy" not in dev.state
@@ -183,8 +183,6 @@ def run() -> Checker:
         c.check("values the old map filed under wrong names are cleared",
                 not gone & set(dev.state) and not gone & set(dev.service.state_cache[dev.ieee]),
                 dev.state)
-        c.check("a key the blob still supplies under its right tag stays (voltage)",
-                round(dev.state.get("voltage", 0), 1) == 234.4, dev.state)
         c.check("a key a standard cluster supplies stays (energy from 0x0702)",
                 dev.state.get("energy") == 0.034, dev.state)
 

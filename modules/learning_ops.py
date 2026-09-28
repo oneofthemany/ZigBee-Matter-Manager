@@ -178,7 +178,47 @@ def power_follows_switch(records, baseline, step, ctx) -> List[Dict[str, Any]]:
                               f"{shown} also showed the load on {label}: left as is, history "
                               f"records it on {len(crosstalk) + 1} EPs and an automation waiting "
                               f"for {shown}'s power to stop waits on {label}'s load"))
-    return which_endpoints_moved(records, baseline, step, ctx) + notes
+    return notes
+
+
+def moved_endpoints(records, baseline) -> List[int]:
+    """EPs whose power moved during a step (for the metering map)."""
+    moves = _power_moves(records, baseline)
+    top = max(moves.values(), default=0.0)
+    return sorted(ep for ep, m in moves.items() if top > 0 and m >= MOVED_SHARE * top)
+
+
+def metering_map(tests: Dict[int, List[int]], power_eps: List[int],
+                 switch_eps: List[int]) -> List[Dict[str, Any]]:
+    """What each EP's power reading measures, from every switch test
+    ({socket EP loaded: EPs whose power moved}). One test cannot tell a
+    whole-device reading from a socket's, so the map needs them all: an EP
+    that moves for every socket is the whole device; for its own socket
+    only, itself; for other sockets, those; for none, nothing."""
+    if not tests:
+        return []
+    tested = sorted(tests)
+    complete = set(tested) >= set(switch_eps) and len(tested) > 1
+    conf = "high" if complete else "medium"
+    named = lambda eps: ", ".join(f"EP{e}" for e in eps)
+    out = []
+    for ep in power_eps:
+        moved_for = sorted(t for t, moved in tests.items() if ep in moved)
+        if len(tested) > 1 and moved_for == tested:
+            value, why = "device_total", f"moved for every socket tested ({named(tested)})"
+        elif not moved_for:
+            value, why = "none", "moved for no socket tested"
+        elif moved_for == [ep]:
+            value, why = "self", "moved only when its own socket was loaded"
+        else:
+            value, why = "measures:" + ",".join(map(str, moved_for)), \
+                f"moved only when {named(moved_for)} was loaded"
+        out.append(proposal(f"endpoints.{ep}.metering", value, conf, f"EP{ep}'s reading {why}"))
+    untested = sorted(set(switch_eps) - set(tested))
+    if untested:
+        out.append(proposal("", None, "low", f"not tested yet: {named(untested)}; the map is "
+                                             "provisional until every socket is"))
+    return out
 
 
 def scale_from_known(records, baseline, step, ctx) -> List[Dict[str, Any]]:

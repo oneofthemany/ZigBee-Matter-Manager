@@ -100,17 +100,39 @@ class ElectricalMeasurementHandler(ClusterHandler):
     def _scope(self) -> Optional[tuple]:
         """(metering scope, source, reason) set by the user or an entry, else None."""
         from modules.device_facts import user_facts
-        from modules.device_profiles import METERING_SCOPES
+        from modules.device_profiles import valid_metering
         ep = self.endpoint.endpoint_id
         user = user_facts(str(self.device.ieee)).get((ep, "metering"))
-        if user in METERING_SCOPES:
+        if valid_metering(user):
             return user, "user", "set by user"
         entry = self._entry()
         scope = ((entry.get("endpoints") or {}).get(str(ep)) or {}).get("metering")
-        if scope in METERING_SCOPES:
+        if valid_metering(scope):
             zmm = (entry.get("meta") or {}).get("source") == "zmm"
             return scope, "zmm" if zmm else "profile", f"{'ZMM entry' if zmm else 'profile'} {entry.get('id')}"
         return None
+
+    def _power_key(self) -> str:
+        """Where this EP's power reading is published: the device total for a
+        whole-device EP, the measured EP's key for "measures:..." (so a socket's
+        power shows under that socket), else this EP's own."""
+        from modules.device_profiles import measured_endpoints
+        scope = (self._scope() or (None,))[0]
+        if scope == "device_total":
+            return "power"
+        targets = measured_endpoints(scope)
+        return f"power_{targets[0]}" if targets else f"power_{self.endpoint.endpoint_id}"
+
+    def _power_name(self) -> str:
+        from modules.device_identity import endpoint_label
+        from modules.device_profiles import measured_endpoints
+        scope = (self._scope() or (None,))[0]
+        if scope == "device_total":
+            return "Power (whole device)"
+        targets = measured_endpoints(scope)
+        if targets:
+            return "Power " + " + ".join(endpoint_label(self.device, t) or f"EP{t}" for t in targets)
+        return self.entity_name("Power")
 
     def _peers(self) -> Dict[int, "ElectricalMeasurementHandler"]:
         return {k[0]: h for k, h in (getattr(self.device, "handlers", None) or {}).items()
@@ -126,10 +148,11 @@ class ElectricalMeasurementHandler(ClusterHandler):
         whole = [ep for ep, sc in scopes.items() if sc == "device_total"]
         if whole:
             src = whole[0]
-            return round(val if src == ep_id else float(state.get(f"power_{src}", 0) or 0), 1)
+            return round(val if src == ep_id else float(state.get("power", 0) or 0), 1)
         total = 0.0 if scopes.get(ep_id) == "none" else val
+        own = self._power_key()
         for key, other in state.items():
-            if not key.startswith("power_") or key == f"power_{ep_id}":
+            if not key.startswith("power_") or key == own:
                 continue
             try:
                 other_ep = int(key[6:])
@@ -160,13 +183,16 @@ class ElectricalMeasurementHandler(ClusterHandler):
 
         if attrid == self.ATTR_ACTIVE_POWER:
             val = round(float(value) * self._power_multiplier / self._power_divisor, 1)
-            held = self._held_back("active_power", val, f"power_{ep_id}")
+            key = self._power_key()
+            held = self._held_back("active_power", val, key)
             if held is not None:
                 updates.update(held)
-                if held:
+                if held and key != "power":
                     updates["power"] = self._total_power(ep_id, 0.0)
+            elif key == "power":
+                updates["power"] = val
             else:
-                updates[f"power_{ep_id}"] = val
+                updates[key] = val
                 # Unsuffixed alias: Frames and the device list read "power", not
                 # "power_1" (modules/frames.py:83). Summed, so a double socket
                 # reads as the whole device; a single meter is unchanged.
@@ -259,7 +285,7 @@ class ElectricalMeasurementHandler(ClusterHandler):
 
     def get_pollable_attributes(self) -> Dict[int, str]:
         ep = self.endpoint.endpoint_id
-        names = {self.ATTR_ACTIVE_POWER: f"power_{ep}",
+        names = {self.ATTR_ACTIVE_POWER: self._power_key(),
                  self.ATTR_RMS_VOLTAGE:  f"voltage_{ep}",
                  self.ATTR_RMS_CURRENT:  f"current_{ep}"}
         return {a: names[a] for a in self._measured()}
@@ -279,7 +305,8 @@ class ElectricalMeasurementHandler(ClusterHandler):
         # Polled values bypass attribute_updated, so alias here too.
         results = await super().poll()
         ep = self.endpoint.endpoint_id
-        for measurement, key in (("active_power", f"power_{ep}"), ("rms_voltage", f"voltage_{ep}"),
+        power_key = self._power_key()
+        for measurement, key in (("active_power", power_key), ("rms_voltage", f"voltage_{ep}"),
                                  ("rms_current", f"current_{ep}")):
             if key in results:
                 held = self._held_back(measurement, results[key], key)
@@ -287,8 +314,8 @@ class ElectricalMeasurementHandler(ClusterHandler):
                     results.pop(key)
                     results.pop(f"{key}_raw", None)
                     results.update(held)
-        if results.get(f"power_{ep}") is not None:
-            results["power"] = self._total_power(ep, results[f"power_{ep}"])
+        if power_key != "power" and results.get(power_key) is not None:
+            results["power"] = self._total_power(ep, results[power_key])
         if ep == 1:
             for name in ("voltage", "current"):
                 if f"{name}_{ep}" in results:
@@ -298,7 +325,7 @@ class ElectricalMeasurementHandler(ClusterHandler):
     def _sensor_configs(self) -> Dict[int, Dict]:
         ep = self.endpoint.endpoint_id
         return {
-            self.ATTR_ACTIVE_POWER: {"component": "sensor", "object_id": f"power_{ep}",   "config": {"name": self.entity_name("Power"),   "device_class": "power",   "unit_of_measurement": "W",  "value_template": f"{{{{ value_json.power_{ep} }}}}"}},
+            self.ATTR_ACTIVE_POWER: {"component": "sensor", "object_id": f"power_{ep}",   "config": {"name": self._power_name(),          "device_class": "power",   "unit_of_measurement": "W",  "value_template": f"{{{{ value_json.{self._power_key()} }}}}"}},
             self.ATTR_RMS_VOLTAGE:  {"component": "sensor", "object_id": f"voltage_{ep}", "config": {"name": self.entity_name("Voltage"), "device_class": "voltage", "unit_of_measurement": "V",  "value_template": f"{{{{ value_json.voltage_{ep} }}}}"}},
             self.ATTR_RMS_CURRENT:  {"component": "sensor", "object_id": f"current_{ep}", "config": {"name": self.entity_name("Current"), "device_class": "current", "unit_of_measurement": "A",  "value_template": f"{{{{ value_json.current_{ep} }}}}"}},
         }
@@ -331,12 +358,7 @@ class ElectricalMeasurementHandler(ClusterHandler):
     def get_discovery_configs(self) -> List[Dict]:
         scope = self._record_scope()
         configs = self._sensor_configs()
-        out = [configs[a] for a in self._measured()]
-        if scope == "device_total":
-            for c in out:
-                if c["object_id"].startswith("power_"):
-                    c["config"]["name"] = "Power (whole device)"
-        return out
+        return [configs[a] for a in self._measured()]
 
     def get_retired_discovery_configs(self) -> List[Dict]:
         # Sensors published before the device was known to lack them.

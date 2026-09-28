@@ -144,10 +144,36 @@ def start(device) -> Dict[str, Any]:
     steps = [s for r in recipes for s in expand(r, device)]
     for s in steps:
         s["title"] = next(r["title"] for r in recipes if r["id"] == s["recipe"])
+    if any(_is_power_test(st) for st in steps):
+        steps.append(dict(MAP_STEP))
     _sessions[str(device.ieee)] = Session(str(device.ieee), steps)
     logger.info(f"[{device.ieee}] Learning started: {len(steps)} steps from "
                 f"{', '.join(r['id'] for r in recipes) or 'no recipes'}")
     return state(device)
+
+
+POWER_TEST_OPS = {"power_follows_switch", "which_endpoints_moved"}
+# Built from every power test's movements; accepted like any step's proposals.
+MAP_STEP = {"key": "metering_map", "recipe": "metering_map", "title": "Metering map",
+            "label": "every socket", "ep": None, "inputs": [], "infer": [], "window_s": 5,
+            "mode": "summary", "watch": {},
+            "instruction": "Built from every switch test: whose power moved for which socket. "
+                           "Accept it once every socket has been tested."}
+
+
+def _is_power_test(st: Dict[str, Any]) -> bool:
+    return st.get("ep") is not None and any(i["op"] in POWER_TEST_OPS for i in st["infer"])
+
+
+def _update_map(device, s: "Session") -> None:
+    from modules.learning_ops import metering_map
+    tests = {r["target"]: r["moved"] for r in s.results.values() if r.get("moved")}
+    power_eps = sorted(e for e, ep in (device.zigpy_dev.endpoints or {}).items()
+                       if e and ep is not None and 0x0B04 in (ep.in_clusters or {}))
+    switch_eps = sorted({st["ep"] for st in s.steps if _is_power_test(st)})
+    proposals = [{**p, "op": "metering_map"} for p in metering_map(tests, power_eps, switch_eps)]
+    if proposals:
+        s.results[MAP_STEP["key"]] = {"status": "done", "proposals": proposals}
 
 
 def state(device) -> Dict[str, Any]:
@@ -243,6 +269,8 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": err}
     if st.get("mode") == "try_write":
         return {"success": False, "error": "this step flips settings one at a time: use Try"}
+    if st.get("mode") == "summary":
+        return {"success": False, "error": "this step is built from the others: run those"}
     if not inputs and (s.results.get(key) or {}).get("inputs"):
         inputs = s.results[key]["inputs"]        # Redo: the same inputs as last time
     clean, err = _clean_inputs(st, inputs)
@@ -284,6 +312,10 @@ async def finish(device, key: str) -> Dict[str, Any]:
                 continue            # outside what the recipe may settle
             proposals.append({**p, "op": op["op"]})
     s.results[key] = {"status": "done", "proposals": proposals, "inputs": a["inputs"]}
+    if _is_power_test(st):
+        from modules.learning_ops import moved_endpoints
+        s.results[key].update(target=st["ep"], moved=moved_endpoints(window, baseline))
+        _update_map(device, s)
     return state(device)
 
 
@@ -541,10 +573,43 @@ def review(device) -> Dict[str, Any]:
         entry.pop(k, None)
     entry["meta"] = {"source": "user", "author": "zmm learning"}
     learned = apply_learned(device, entry)
-    return {"success": True, "entry": entry, "learned": learned,
+    return {"success": True, "entry": entry, "learned": learned, "device": editor_context(device),
             "preview": preview(device, entry), "candidates": draft["candidates"],
             "based_on": {"id": base["id"], "source": (base.get("meta") or {}).get("source")}
             if base else None}
+
+
+# What the entry editor may offer a scaling for: name -> (cluster, attr).
+EDITABLE_MEASUREMENTS = {"active_power": (0x0B04, 0x050B), "rms_voltage": (0x0B04, 0x0505),
+                         "rms_current": (0x0B04, 0x0508), "energy": (0x0702, 0x0000)}
+
+
+def editor_context(device) -> Dict[str, Any]:
+    """The device as the entry editor needs it: its EPs with their clusters, and
+    the measurements its clusters could carry (with the first EP that has each)."""
+    from modules.device_identity import endpoint_label
+    eps, measurements = [], {}
+    for ep_id in sorted(e for e in (device.zigpy_dev.endpoints or {}) if e):
+        ep = device.zigpy_dev.endpoints[ep_id]
+        clusters = sorted(getattr(ep, "in_clusters", {}) or {})
+        h = (device.handlers or {}).get((ep_id, 0x0006))
+        live = h.endpoint_kind() if h is not None and hasattr(h, "endpoint_kind") else None
+        eps.append({"ep": ep_id, "clusters": [f"0x{c:04X}" for c in clusters],
+                    "kind": live.kind if live else None, "label": endpoint_label(device, ep_id)})
+        for name, (cl, at) in EDITABLE_MEASUREMENTS.items():
+            if cl in clusters and name not in measurements:
+                measurements[name] = {"cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}", "ep": ep_id}
+    return {"endpoints": eps, "measurements": measurements,
+            "model": str(device.zigpy_dev.model or "")}
+
+
+def preview_entry(device, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """An edited entry as saving would store it (malformed parts dropped), and what it changes."""
+    from modules.device_profiles import normalise_profile
+    if not isinstance(entry, dict):
+        return {"success": False, "error": "not an entry"}
+    clean = normalise_profile(entry)
+    return {"success": True, "entry": clean, "preview": preview(device, clean)}
 
 
 def preview(device, entry: Dict[str, Any]) -> List[Dict[str, Any]]:

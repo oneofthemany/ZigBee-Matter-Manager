@@ -42,6 +42,10 @@ def validate(subject: str, value: Any) -> Optional[str]:
         if not isinstance(value, str) or not value.strip() or len(value) > LABEL_MAX:
             return f"a {subject} is 1-{LABEL_MAX} characters"
         return None
+    if subject == "metering":
+        from modules.device_profiles import valid_metering
+        return None if valid_metering(value) else \
+            "metering must be self, device_total, none or measures:<ep>[,<ep>...]"
     return None if value in allowed else f"{subject} must be one of {sorted(allowed)}"
 
 

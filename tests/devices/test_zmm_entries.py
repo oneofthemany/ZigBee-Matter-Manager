@@ -118,8 +118,9 @@ def run() -> Checker:
                 (k.kind, k.source, k.reason) == ("switch", "zmm", "ZMM entry lumi.plug.aeu002"), k)
         c.check("its labels name the HA entities",
                 dev.handlers[(3, 0x0006)].get_discovery_configs()[0]["config"]["name"] == "USB"
-                and dev.handlers[(1, 0x0B04)].get_discovery_configs()[0]["config"]["name"]
-                == "Power Socket 1")
+                and [dev.handlers[(e, 0x0B04)].get_discovery_configs()[0]["config"]["name"]
+                     for e in (1, 2, 3)]
+                == ["Power (whole device)", "Power Socket 1 + USB", "Power Socket 2"])
 
         c.section("an entry can mark a model's declared type as wrong")
         _write(tmp / "z3", "lumi.plug.aeu002",

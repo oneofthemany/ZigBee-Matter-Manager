@@ -202,7 +202,7 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
         }
         if ep_val.get("kind") in ("light", "switch"):   # endpoint-classification.md
             eps_out[str(ep_id)]["kind"] = ep_val["kind"]
-        if ep_val.get("metering") in METERING_SCOPES:   # plans/zmm-quirks.md §6
+        if valid_metering(ep_val.get("metering")):     # plans/zmm-quirks.md §6
             eps_out[str(ep_id)]["metering"] = ep_val["metering"]
         if ep_val.get("actions") == "multistate":
             eps_out[str(ep_id)]["actions"] = "multistate"
@@ -310,6 +310,20 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
 
 
 METERING_SCOPES = ("self", "device_total", "none")
+# "measures:1,3": this EP's power reading is the load of EP1 and EP3 (the
+# Aqara aeu002 reports socket 1 + USB on EP2, socket 2 on EP3).
+MEASURES_RE = re.compile(r"measures:\d{1,3}(,\d{1,3}){0,7}")
+
+
+def valid_metering(v: Any) -> bool:
+    return v in METERING_SCOPES or (isinstance(v, str) and bool(MEASURES_RE.fullmatch(v)))
+
+
+def measured_endpoints(v: Any) -> Optional[List[int]]:
+    """The EPs a "measures:..." scope names, else None."""
+    if isinstance(v, str) and MEASURES_RE.fullmatch(v):
+        return sorted({int(x) for x in v.split(":", 1)[1].split(",")})
+    return None
 SETTING_TYPES = {"bool": 0x10, "uint8": 0x20, "uint16": 0x21, "uint32": 0x23, "int8": 0x28,
                  "int16": 0x29, "enum8": 0x30}
 

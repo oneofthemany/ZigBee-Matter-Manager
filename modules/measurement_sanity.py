@@ -186,7 +186,9 @@ def history_bounds(device) -> Tuple[Dict[str, Tuple[Optional[float], Optional[fl
         for measurement, attr in keys.items():
             lo, hi, _ = bounds(h, measurement)
             if lo is not None or hi is not None:
-                out[attr.format(key[0])] = (lo, hi)
+                stored = h._power_key() if measurement == "active_power" and hasattr(h, "_power_key") \
+                    else attr.format(key[0])
+                out[stored] = (lo, hi)
     aliases = {"power": [a for a in out if a.startswith("power_")],
                "voltage": [a for a in out if a == "voltage_1"],
                "current": [a for a in out if a == "current_1"]}

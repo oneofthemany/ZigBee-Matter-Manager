@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from harness import Checker
 
-from modules.learning_ops import (attribute_that_toggled, correlate_blob_tags, power_follows_switch,
-                                  press_signature, scale_from_known, which_endpoint_changed,
-                                  which_endpoints_moved)
+from modules.learning_ops import (attribute_that_toggled, correlate_blob_tags, metering_map,
+                                  moved_endpoints, power_follows_switch, press_signature,
+                                  scale_from_known, which_endpoint_changed, which_endpoints_moved)
 
 AEU002_F7 = ("032800052101000921000b0a2100000d23060000006410006510016610006820006920006a20006b20"
              "0095394c37093d9839000000009739f56a6a43")
@@ -64,8 +64,8 @@ def run() -> Checker:
     clean = onoff + [at(12, 1, 0x0B04, 0x050B, 19850), at(48, 1, 0x0B04, 0x050B, 0)]
     p = power_follows_switch(clean, base, step(1), ctx)
     ev = " | ".join(x["evidence"] for x in p)
-    c.check("the socket's own reading rose and fell: it meters itself",
-            paths(p) == {"endpoints.1.metering": "self"}, p)
+    c.check("one test proposes no metering: that needs every socket (the metering map)",
+            not paths(p), p)
     c.check("in watts, with how long it took to stop",
             "rose to 1985 W" in ev and "fell to 0 W 8 s after switch-off" in ev, ev)
     c.check("and no other EP is flagged", "also showed" not in ev, ev)
@@ -76,8 +76,8 @@ def run() -> Checker:
     c.check("another EP showing the same load is flagged, with what it would do",
             "EP2 also showed the load on Socket 1" in ev and "history records it on 2 EPs" in ev
             and "automation waiting" in ev, ev)
-    c.check("and the fix is proposed", paths(p) == {"endpoints.1.metering": "device_total",
-                                                    "endpoints.2.metering": "none"}, p)
+    c.check("and it records which EPs moved, for the map",
+            moved_endpoints(talk, base) == [1, 2], moved_endpoints(talk, base))
 
     p = power_follows_switch([at(12, 1, 0x0B04, 0x050B, 19850)], base, step(1), ctx)
     c.check("a socket not switched during the step: judged from the readings, and said so",
@@ -86,6 +86,23 @@ def run() -> Checker:
     p = power_follows_switch(stuck, base, step(1), ctx)
     c.check("a reading that never falls after switch-off is flagged for automations",
             any("still showed power" in x["evidence"] for x in p))
+
+    c.section("the metering map, across every switch test")
+    m = paths(metering_map({1: [1, 2], 2: [1, 3], 3: [1, 2]}, [1, 2, 3], [1, 2, 3]))
+    c.check("the Aqara outlet: EP1 the whole device, EP2 socket 1 + USB, EP3 socket 2",
+            m == {"endpoints.1.metering": "device_total", "endpoints.2.metering": "measures:1,3",
+                  "endpoints.3.metering": "measures:2"}, m)
+    c.check("with every socket tested, it is confident",
+            all(p["confidence"] == "high" for p in metering_map({1: [1, 2], 2: [1, 3], 3: [1, 2]},
+                                                                [1, 2, 3], [1, 2, 3]) if p["path"]))
+    m = paths(metering_map({1: [1], 2: [2]}, [1, 2], [1, 2]))
+    c.check("a plug that meters each socket: each meters itself",
+            m == {"endpoints.1.metering": "self", "endpoints.2.metering": "self"}, m)
+    p = metering_map({1: [1, 2]}, [1, 2, 3], [1, 2, 3])
+    c.check("one socket tested: provisional, and says what is left",
+            all(x["confidence"] == "medium" for x in p if x["path"])
+            and any("not tested yet: EP2, EP3" in x["evidence"] for x in p), p)
+    c.check("no tests: no map", metering_map({}, [1, 2, 3], [1, 2, 3]) == [])
 
     c.section("scaling from a known load")
     p = scale_from_known(power((1, 20000)), base, step(1, rating_w=2000), {"max_power_w": 4000})

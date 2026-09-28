@@ -3,6 +3,8 @@
  * then review, save (with history and rollback), export and import.
  * Mounted inside the Identity tab. Event delegation only (strict CSP target).
  */
+import { editorHtml, applyField, applyButton } from './quirk_editor.js';
+
 const log = zmmLog('modal-learning');
 
 function esc(s) {
@@ -69,7 +71,13 @@ function stepHtml(step, running, trial) {
     const status = `<span class="badge ${STATUS[step.status] || 'bg-light text-dark'}">${esc(step.status)}</span>`;
     let body = `<div class="small mb-2">${esc(step.instruction)}</div>`;
     const disabled = running && running !== step.key ? 'disabled' : '';
-    if (step.mode === 'try_write' && step.status !== 'done') {
+    if (step.mode === 'summary') {
+        body += step.proposals.length
+            ? proposalsHtml(step) + `<div class="mt-2 d-flex gap-2">
+                <button class="btn btn-success btn-sm" data-learn-decide="${esc(step.key)}">Accept selected</button>
+                <button class="btn btn-outline-secondary btn-sm" data-learn-skip="${esc(step.key)}">Skip</button></div>`
+            : '<div class="small text-muted">Run the switch tests first.</div>';
+    } else if (step.mode === 'try_write' && step.status !== 'done') {
         body += tryHtml(step, trial);
         if (step.proposals.length) body += proposalsHtml(step);
     } else if (step.status === 'running') {
@@ -122,7 +130,10 @@ function renderState(root, ieee, st) {
     }
     if (!st.active) {
         box.innerHTML = `<button class="btn btn-outline-primary btn-sm" data-learn-start>Learn this device</button>
-            <span class="small text-muted ms-2">Guided experiments that settle what the evidence alone cannot.</span>`;
+            <button class="btn btn-outline-secondary btn-sm ms-1" data-learn-review>Edit its entry</button>
+            <div class="small text-muted mt-1">Learn: guided experiments that settle what the evidence alone cannot.
+            Edit: correct types, names, metering and scaling yourself.</div>
+            <div data-learn-review-box></div>`;
         return;
     }
     box.innerHTML = (st.steps.length
@@ -179,18 +190,29 @@ async function run(root, ieee, path, body) {
     }
 }
 
-function reviewHtml(rv) {
-    if (!rv.success) return `<div class="alert alert-danger small py-1 mt-2">${esc(rv.error)}</div>`;
-    const changes = rv.preview.length
+function changesHtml(preview) {
+    return preview.length
         ? `<table class="table table-sm small mb-2"><thead><tr><th>What</th><th>Now</th><th>After saving</th></tr></thead>
-           <tbody>${rv.preview.map(c => `<tr><td>${esc(c.what)}</td><td>${esc(JSON.stringify(c.from))}</td>
+           <tbody>${preview.map(c => `<tr><td>${esc(c.what)}</td><td>${esc(JSON.stringify(c.from))}</td>
                <td>${esc(JSON.stringify(c.to))}</td></tr>`).join('')}</tbody></table>`
         : '<div class="small text-muted mb-2">Saving changes nothing the device does now.</div>';
+}
+
+function reviewHtml(rv) {
+    if (!rv.success) return `<div class="alert alert-danger small py-1 mt-2">${esc(rv.error)}</div>`;
     const learned = rv.learned.map(l => `<li><code>${esc(l.path)}</code>: ${esc(l.evidence)}</li>`).join('');
+    const based = rv.based_on ? `Starts from the ${esc(rv.based_on.source)} entry <code>${esc(rv.based_on.id)}</code>.`
+        : 'Starts from what the evidence says; no entry covers this model yet.';
     return `<div class="card mt-2"><div class="card-body py-2">
-        <div class="fw-bold small mb-1">If you save</div>${changes}
+        <div class="small text-muted mb-1">${based} Saving stores it as your profile for
+            <code>${esc(rv.device.model)}</code> (every device of that model here); you can roll it back.</div>
+        <div data-qe-form>${editorHtml(rv.entry, rv.device)}</div>
+        <div data-qe-error></div>
+        <div class="fw-bold small mb-1 mt-2">If you save</div><div data-qe-changes>${changesHtml(rv.preview)}</div>
         ${learned ? `<div class="small mb-2">Learned here:<ul class="mb-0">${learned}</ul></div>` : ''}
-        <textarea class="form-control font-monospace small" rows="12" data-learn-entry>${esc(JSON.stringify(rv.entry, null, 2))}</textarea>
+        <details class="small"><summary>The entry as JSON (settings and anything the form does not cover)</summary>
+        <textarea class="form-control font-monospace small mt-1" rows="12" data-learn-entry>${esc(JSON.stringify(rv.entry, null, 2))}</textarea>
+        </details>
         <div class="d-flex gap-2 mt-2 flex-wrap">
             <button class="btn btn-primary btn-sm" data-learn-save>Save as my profile</button>
             <button class="btn btn-outline-secondary btn-sm" data-learn-rollback>Roll back my profile</button>
@@ -205,8 +227,34 @@ function note(root, html) {
     if (el) el.innerHTML = html;
 }
 
+let previewSeq = 0;
+
+/** Push an edit made in the form (or the JSON box) to the other, and re-preview. */
+async function syncEntry(root, ieee, err, fromJson) {
+    const errBox = root.querySelector('[data-qe-error]');
+    errBox.innerHTML = err ? `<div class="alert alert-warning small py-1 mb-1">${esc(err)}</div>` : '';
+    if (!fromJson) root.querySelector('[data-learn-entry]').value = JSON.stringify(root._entry, null, 2);
+    root.querySelector('[data-qe-form]').innerHTML = editorHtml(root._entry, root._device);
+    const seq = ++previewSeq;
+    const out = await api(ieee, '/profile/preview', { entry: root._entry });
+    if (seq !== previewSeq) return;          // a later edit's preview is on its way
+    if (out.success) root.querySelector('[data-qe-changes]').innerHTML = changesHtml(out.preview);
+}
+
+async function onEditorChange(root, ieee, el) {
+    if (el.matches('[data-learn-entry]')) {
+        try { root._entry = JSON.parse(el.value); }
+        catch (e) { return syncEntry(root, ieee, `Not valid JSON: ${e.message}`, true); }
+        return syncEntry(root, ieee, null, true);
+    }
+    if (el.dataset.qe && root._entry) syncEntry(root, ieee, applyField(root._entry, el, root._device));
+}
+
 async function onClick(root, ieee, t) {
     const d = t.dataset;
+    if ((d.qeAdd || d.qeDel) && root._entry) {
+        return syncEntry(root, ieee, applyButton(root._entry, root, t));
+    }
     const card = t.closest('[data-learn-step]');
     if (d.learnStart !== undefined) return run(root, ieee, '/learn/start', {});
     if (d.learnEnd !== undefined) { clearInterval(timers.get(ieee)); return run(root, ieee, '/learn/end', {}); }
@@ -251,7 +299,10 @@ async function onClick(root, ieee, t) {
         return run(root, ieee, `/learn/step/${encodeURIComponent(key)}/decide`, { accept });
     }
     if (d.learnReview !== undefined) {
-        root.querySelector('[data-learn-review-box]').innerHTML = reviewHtml(await api(ieee, '/learn/review'));
+        const rv = await api(ieee, '/learn/review');
+        root._entry = rv.entry;
+        root._device = rv.device;
+        root.querySelector('[data-learn-review-box]').innerHTML = reviewHtml(rv);
         return;
     }
     if (d.learnSave !== undefined) {
@@ -319,6 +370,7 @@ export async function initLearningPanel(root, ieee) {
         });
         panel.addEventListener('change', ev => {
             if (ev.target.matches('[data-learn-import]')) onImport(panel, ieee, ev.target);
+            else onEditorChange(panel, ieee, ev.target);
         });
     }
     try {
