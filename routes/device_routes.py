@@ -324,6 +324,27 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         await svc.announce_device(ieee)
         return {**identity(dev), "saved_profile": saved["id"]}
 
+    async def _implausible_history(ieee: str, delete: bool):
+        import asyncio
+        from modules.measurement_sanity import history_bounds
+        from modules.telemetry_db import implausible_states
+        svc = get_zigbee_service()
+        if ieee not in svc.devices:
+            return {"success": False, "error": "Device not found"}
+        bounds, aliases = history_bounds(svc.devices[ieee])
+        counts = await asyncio.to_thread(implausible_states, ieee, bounds, aliases, delete)
+        return {"success": True, "deleted": delete, **counts}
+
+    @app.get("/api/device/{ieee}/implausible_history")
+    async def count_implausible_history(ieee: str):
+        """History readings this device could not physically have produced."""
+        return await _implausible_history(ieee, delete=False)
+
+    @app.post("/api/device/{ieee}/implausible_history")
+    async def delete_implausible_history(ieee: str):
+        """Delete them, with the device totals computed from them."""
+        return await _implausible_history(ieee, delete=True)
+
     @app.get("/api/device/{ieee}/cached_attributes")
     async def cached_attributes(ieee: str, ep: int, cluster: int):
         """Return cached attribute metadata + latest value for a cluster."""

@@ -174,6 +174,25 @@ def sane(handler, measurement: str) -> bool:
     return True
 
 
+def history_bounds(device) -> Tuple[Dict[str, Tuple[Optional[float], Optional[float]]],
+                                   Dict[str, list]]:
+    """The same bounds, keyed by the state attributes history stores them under,
+    and the aliases derived from them (telemetry_db.implausible_states)."""
+    keys = {"active_power": "power_{}", "rms_voltage": "voltage_{}", "rms_current": "current_{}"}
+    out: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    for key, h in (getattr(device, "handlers", None) or {}).items():
+        if not (isinstance(key, tuple) and key[1] == 0x0B04):
+            continue
+        for measurement, attr in keys.items():
+            lo, hi, _ = bounds(h, measurement)
+            if lo is not None or hi is not None:
+                out[attr.format(key[0])] = (lo, hi)
+    aliases = {"power": [a for a in out if a.startswith("power_")],
+               "voltage": [a for a in out if a == "voltage_1"],
+               "current": [a for a in out if a == "current_1"]}
+    return out, {k: v for k, v in aliases.items() if v}
+
+
 def faults_for(ieee: str) -> Dict[Tuple[int, str], Tuple[float, str]]:
     return dict(_faults.get(ieee) or {})
 

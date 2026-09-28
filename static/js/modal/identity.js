@@ -91,6 +91,7 @@ function render(root, data) {
                  · ${profile}</div>
             <div class="text-muted">Evidence — ${facts}</div>
             <div data-identity-error></div>
+            <div data-identity-history></div>
         </div>
         ${data.endpoints.map(endpointCard).join('')}
         <div class="mt-2">
@@ -135,9 +136,33 @@ async function sendTo(root, url, body) {
             return;
         }
         render(root, data);
+        loadImplausible(root, root.dataset.identityIeee);
     } catch (e) {
         log.error('identity update failed', e);
         if (err) err.innerHTML = `<div class="alert alert-danger small py-1 mt-2">Request failed: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+async function loadImplausible(root, ieee, del = false) {
+    const box = root.querySelector('[data-identity-history]');
+    if (!box) return;
+    try {
+        const res = await fetch(`/api/device/${encodeURIComponent(ieee)}/implausible_history`,
+                                { method: del ? 'POST' : 'GET' });
+        const d = await res.json();
+        if (!d.success) return;
+        if (d.deleted) {
+            box.innerHTML = `<div class="alert alert-success small py-1 mt-2">Deleted ${d.readings} impossible readings
+                and ${d.derived} totals computed from them.</div>`;
+            return;
+        }
+        if (!d.readings) { box.innerHTML = ''; return; }
+        box.innerHTML = `<div class="alert alert-warning small py-1 mt-2 d-flex align-items-center gap-2">
+            <span>History holds ${d.readings} readings this device cannot physically produce
+            ${d.derived ? `(and ${d.derived} totals computed from them)` : ''}.</span>
+            <button class="btn btn-outline-danger btn-sm ms-auto" data-identity-purge>Delete them</button></div>`;
+    } catch (e) {
+        log.error('implausible history check failed', e);
     }
 }
 
@@ -150,6 +175,17 @@ export async function initIdentityTab(ieee) {
             const t = ev.target.closest('button');
             if (!t) return;
             const ep = Number(t.dataset.ep ?? t.dataset.identityLabel);
+            if (t.dataset.identityPurge !== undefined) {
+                if (t.dataset.armed) {
+                    t.disabled = true;
+                    t.textContent = 'Deleting…';
+                    loadImplausible(root, ieee, true);
+                } else {
+                    t.dataset.armed = '1';
+                    t.textContent = 'Confirm delete';
+                }
+                return;
+            }
             if (t.dataset.identityDraft !== undefined) {
                 fetch(`/api/device/${encodeURIComponent(ieee)}/identity/draft`)
                     .then(r => r.json()).then(d => renderDraft(root, d))
@@ -180,6 +216,7 @@ export async function initIdentityTab(ieee) {
     try {
         const res = await fetch(`/api/device/${encodeURIComponent(ieee)}/identity`);
         render(root, await res.json());
+        loadImplausible(root, ieee);
     } catch (e) {
         log.error('identity load failed', e);
         root.innerHTML = `<div class="alert alert-danger small">Request failed: ${escapeHtml(e.message)}</div>`;

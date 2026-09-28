@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.telemetry_db")
 
@@ -1821,6 +1821,63 @@ def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
 
 
 # MAINTENANCE
+
+def implausible_states(ieee: str, bounds: Dict[str, Tuple[Optional[float], Optional[float]]],
+                       aliases: Dict[str, List[str]], delete: bool = False) -> Dict[str, int]:
+    """Count, or delete, a device's device_states rows outside physical bounds.
+
+    bounds:  {attribute: (min, max)}, e.g. {"power_1": (0, 4000)}; None is open.
+    aliases: {alias: [attributes]}: an alias row (the summed "power", the EP1
+             "voltage" copy) written within 2 s of an out-of-bounds row of one of
+             its attributes was derived from it, and goes with it.
+    Worker-thread only, like prune(): the DELETEs take seconds on a grown DB.
+    """
+    def out_of_bounds(attrs, col=""):
+        """SQL + params: a row of one of attrs outside its bounds."""
+        sql, params = [], []
+        for attr in attrs:
+            lo, hi = bounds[attr]
+            sides = [(f"{col}numeric_val < ?", lo), (f"{col}numeric_val > ?", hi)]
+            sides = [(cond, v) for cond, v in sides if v is not None]
+            if sides:
+                sql.append(f"({col}attribute = ? AND ({' OR '.join(c for c, _ in sides)}))")
+                params += [attr] + [float(v) for _, v in sides]
+        return " OR ".join(sql), params
+
+    bad, params = out_of_bounds(list(bounds))
+    if not bad:
+        return {"readings": 0, "derived": 0}
+    derived_sql, derived_params = [], []
+    for alias, sources in aliases.items():
+        own, own_params = out_of_bounds([a for a in sources if a in bounds], col="b.")
+        if own:
+            derived_sql.append(
+                f"(d.attribute = ? AND EXISTS (SELECT 1 FROM device_states b WHERE b.ieee = d.ieee "
+                f"AND ({own}) AND b.ts BETWEEN d.ts - INTERVAL 2 SECOND AND d.ts + INTERVAL 2 SECOND))")
+            derived_params += [alias] + own_params
+    derived = " OR ".join(derived_sql) or "FALSE"
+
+    with _db_lock:
+        db = _get_db().cursor()
+    try:
+        n_derived = db.execute(f"SELECT count(*) FROM device_states d WHERE d.ieee = ? AND ({derived})",
+                               [ieee, *derived_params]).fetchone()[0]
+        n_bad = db.execute(f"SELECT count(*) FROM device_states WHERE ieee = ? AND ({bad})",
+                           [ieee, *params]).fetchone()[0]
+        if delete and (n_bad or n_derived):
+            # Derived rows first: finding them needs the bad rows still there.
+            db.execute(f"DELETE FROM device_states d WHERE d.ieee = ? AND ({derived})",
+                       [ieee, *derived_params])
+            db.execute(f"DELETE FROM device_states WHERE ieee = ? AND ({bad})", [ieee, *params])
+            logger.info(f"[{ieee}] Deleted {n_bad} implausible readings and {n_derived} "
+                        f"totals derived from them")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+    return {"readings": int(n_bad), "derived": int(n_derived)}
+
 
 def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
     """Remove records older than retention period.
