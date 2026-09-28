@@ -488,7 +488,7 @@ function resetPairingUI() {
     // Restore button state
     btn.classList.remove('btn-danger');
     btn.classList.add('btn-success');
-    btn.innerHTML = `<i class="fas fa-plus-circle"></i><span class="d-none d-sm-inline"> Enable Pairing (All)</span><span class="d-sm-none"> Pair</span>`;
+    btn.innerHTML = `<i class="fas fa-plus-circle"></i><span class="d-none d-xxl-inline"> Enable Pairing (All)</span><span class="d-xxl-none"> Pair</span>`;
 }
 
 /**
@@ -508,14 +508,14 @@ export function updatePairingUI(time) {
     let timeLeft = time;
 
     // Initial render
-    btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-sm-inline"> Stop Pairing</span> (${timeLeft}s)`;
+    btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-xxl-inline"> Stop Pairing</span> (${timeLeft}s)`;
 
     state.pairingInterval = setInterval(() => {
         timeLeft--;
         if (timeLeft <= 0) {
             resetPairingUI();
         } else {
-            btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-sm-inline"> Stop Pairing</span> (${timeLeft}s)`;
+            btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-xxl-inline"> Stop Pairing</span> (${timeLeft}s)`;
         }
     }, 1000);
 }

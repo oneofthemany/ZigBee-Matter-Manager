@@ -252,9 +252,10 @@ window.renderOTATab = renderOTATab;
 
 window.otaCheckAll = async function() {
     const btn = document.getElementById('otaCheckAllBtn');
+    const saved = btn?.innerHTML;
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span class="d-none d-sm-inline"> Checking...</span>';
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin fa-fw me-2"></i>Checking...';
     }
     try {
         const resp = await fetch('/api/ota/check-all');
@@ -277,7 +278,7 @@ window.otaCheckAll = async function() {
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-microchip"></i><span class="d-none d-sm-inline"> Check OTA</span>';
+            btn.innerHTML = saved;
         }
     }
 };

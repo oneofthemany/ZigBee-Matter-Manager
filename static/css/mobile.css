@@ -10,38 +10,40 @@ html, body {
     overflow-x: clip;
 }
 
-/* 1. NAVBAR — Status badges + pairing dropdown overflow */
+/* 1. NAVBAR — one-row layout is in hive-components.css; this tightens it */
 
 @media (max-width: 991.98px) {
-    /* Let the navbar content wrap */
     .navbar .container-fluid {
-        flex-wrap: wrap;
         gap: 0.5rem;
     }
 
-    /* Status badges group — wrap and shrink */
-    .navbar .d-flex.align-items-center.gap-3 {
-        flex-wrap: wrap;
-        gap: 0.25rem !important;
-        width: 100%;
-        justify-content: flex-start;
+    /* hive-components.css loads later and sets display: block */
+    .navbar-brand .brand-sub {
+        display: none !important;
     }
 
-    /* Shrink status badges */
+    .navbar .d-flex.align-items-center.gap-3 {
+        gap: 0.75rem !important;
+    }
+
+    .navbar .d-flex.align-items-center.gap-3 > .btn-group {
+        margin-left: 0.5rem;
+    }
+
+    /* These live in the overflow menu at this size */
+    #zbm-notif-bell,
+    #themeToggleBtn {
+        display: none !important;
+    }
+
     .navbar .badge.rounded-pill {
         font-size: 0.65rem;
         padding: 0.25em 0.5em;
     }
 
-    /* Connection status text */
     .navbar .navbar-text {
         font-size: 0.75rem;
-    }
-
-    /* Pairing dropdown — don't let it stretch */
-    .navbar .btn-group {
-        flex-shrink: 1;
-        min-width: 0;
+        margin-left: 0 !important;
     }
 
     .navbar .btn-group .btn {
@@ -50,58 +52,75 @@ html, body {
         white-space: nowrap;
     }
 
-    /* Clean DB button */
-    .navbar .col-auto.ms-auto {
-        margin-left: 0 !important;
+    .hive-more > .btn {
+        padding: 0.25rem 0.5rem;
     }
 
-    .navbar .col-auto.ms-auto .btn {
-        font-size: 0.7rem;
-        padding: 0.2rem 0.5rem;
+    /* Hide the menu's divider/items for controls that were never injected */
+    body:not(:has(#zbm-notif-bell)) .hive-more-notif,
+    body:not(:has(#themeToggleBtn)) .hive-more-theme,
+    body:not(:has(#zbm-notif-bell)):not(:has(#themeToggleBtn)) .hive-more-injected {
+        display: none;
     }
 }
 
 @media (max-width: 575.98px) {
-    /* Stack the brand and controls vertically on phones */
-    .navbar-brand {
-        font-size: 0.9rem;
-        width: 100%;
-        margin-bottom: 0.25rem;
+    .navbar .container-fluid {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
     }
 
-    /* Logo + title only — drop the subtitle
-       (hive-components.css loads later and sets display: block) */
-    .navbar-brand .brand-sub {
+    /* Logo alone identifies the app; the status row needs the width */
+    .navbar-brand .brand-text {
         display: none;
     }
 
-    /* Badges and buttons are icon-only here (labels carry
-       d-none d-sm-inline), so everything fits one row:
-       status pills left, action buttons pushed right */
+    .brand-logo {
+        width: 30px;
+        height: 30px;
+        margin-right: 0;
+    }
+
     .navbar .d-flex.align-items-center.gap-3 {
-        flex-wrap: wrap;
-        row-gap: 0.4rem !important;
+        gap: 0.5rem !important;
     }
 
-    .navbar .col-auto.ms-auto {
-        margin-left: auto !important;
+    /* Status pills are icon-only here (labels carry d-none d-sm-inline) */
+    .navbar .badge.rounded-pill {
+        padding: 0.3em 0.45em;
     }
 
-    .navbar .col-auto.ms-auto .btn {
-        font-size: 0.75rem;
-        padding: 0.25rem 0.5rem;
+    #zbm-alerts-bell {
+        padding: 0.25rem 0.35rem !important;
     }
 
     /* Right-aligned, or it would extend past the left screen edge. With
        data-bs-display="static" there is no Popper positioning, so pin it to the
        viewport width; top: auto keeps it just under the row. */
-    .navbar .btn-group .dropdown-menu {
+    .navbar .btn-group .dropdown-menu,
+    .hive-more .dropdown-menu {
         position: fixed;
         top: auto;
         left: 0.5rem;
         right: 0.5rem;
         max-height: 65vh;
         overflow-y: auto;
+    }
+}
+
+/* Status labels are d-sm-inline (JS rewrites them), too wide for one row until md */
+@media (max-width: 767.98px) {
+    .navbar .badge.rounded-pill > span,
+    #connection-status > span,
+    #presence-badge-host .badge > span {
+        display: none !important;
+    }
+}
+
+/* Narrowest phones: Pair goes icon-only too */
+@media (max-width: 374.98px) {
+    #pairBtn .d-xxl-none {
+        display: none;
     }
 }
 

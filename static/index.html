@@ -71,7 +71,7 @@
         </span>
 
         <!-- Connection Status Group -->
-        <div class="d-flex align-items-center gap-3">
+        <div class="d-flex align-items-center gap-3 hive-controls">
             <!-- Home Assistant Status Badge -->
             <!-- Hidden until the first status check; stays hidden when HA is disabled -->
             <span class="badge rounded-pill bg-secondary" id="ha-status-badge" title="Home Assistant Connection" style="display: none">
@@ -98,18 +98,10 @@
             <!-- Messages between users. Populated by messages-ui.js. -->
            <span class="navbar-text ms-2" id="messages-badge-host"></span>
 
-            <!-- Switch to the Frames UI. Plain /frames (no ?view=) so the server
-                 clears any "I want the manager" override for this session.
-                 Mobile-only (d-lg-none): on a desktop, Frames is already a tab
-                 in this dashboard, so a second route to it is just clutter. -->
-           <a href="/frames" class="btn btn-outline-light btn-sm d-lg-none" title="Open Frames">
-               <i class="fas fa-border-all"></i><span class="d-none d-sm-inline"> Frames</span>
-           </a>
-
             <!-- Pairing Dropdown Group -->
            <div class="btn-group">
                <button id="pairBtn" class="btn btn-success btn-sm" onclick="withBusy(this, () => togglePairing())">
-                   <i class="fas fa-plus-circle"></i><span class="d-none d-sm-inline"> Enable Pairing (All)</span><span class="d-sm-none"> Pair</span>
+                   <i class="fas fa-plus-circle"></i><span class="d-none d-xxl-inline"> Enable Pairing (All)</span><span class="d-xxl-none"> Pair</span>
                </button>
                <button type="button" class="btn btn-success btn-sm dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-display="static" aria-expanded="false">
                    <span class="visually-hidden">Toggle Dropdown</span>
@@ -141,18 +133,27 @@
                </ul>
            </div>
 
-            <div class="col-auto ms-auto">
-                <button class="btn btn-sm btn-warning me-2" id="otaCheckAllBtn" onclick="window.otaCheckAll()">
-                    <i class="fas fa-microchip"></i><span class="d-none d-sm-inline"> Check OTA</span>
+            <!-- Overflow menu. Below lg, Notifications/Theme proxy-click the
+                 JS-injected bell and toggle, which mobile.css hides from the bar. -->
+            <div class="dropdown hive-more">
+                <button class="btn btn-sm btn-outline-light border-0" type="button" data-bs-toggle="dropdown"
+                        data-bs-display="static" aria-expanded="false" title="More" aria-label="More actions">
+                    <i class="fas fa-ellipsis-vertical"></i>
                 </button>
-                <button class="btn btn-sm btn-warning me-2" onclick="withBusy(this, () => cleanupOrphans())">
-                    <i class="fas fa-broom"></i><span class="d-none d-sm-inline"> Clean DB</span>
-                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <!-- Plain /frames (no ?view=) so the server clears any
+                         "I want the manager" override for this session.
+                         Desktop has Frames as a tab already. -->
+                    <li class="d-lg-none"><a class="dropdown-item" href="/frames"><i class="fas fa-border-all fa-fw me-2"></i>Open Frames</a></li>
+                    <li class="d-lg-none"><hr class="dropdown-divider"></li>
+                    <li><button class="dropdown-item" type="button" id="otaCheckAllBtn" onclick="window.otaCheckAll()"><i class="fas fa-microchip fa-fw me-2"></i>Check OTA</button></li>
+                    <li><button class="dropdown-item" type="button" onclick="withBusy(this, () => cleanupOrphans())"><i class="fas fa-broom fa-fw me-2"></i>Clean DB</button></li>
+                    <li><a class="dropdown-item" href="/api-docs" target="_blank"><i class="fas fa-book fa-fw me-2"></i>API Docs</a></li>
+                    <li class="hive-more-injected d-lg-none"><hr class="dropdown-divider"></li>
+                    <li class="hive-more-notif d-lg-none"><button class="dropdown-item" type="button" onclick="document.getElementById('zbm-notif-bell')?.click()"><i class="fas fa-bell fa-fw me-2"></i>Notifications</button></li>
+                    <li class="hive-more-theme d-lg-none"><button class="dropdown-item" type="button" onclick="document.getElementById('themeToggleBtn')?.click()"><i class="fas fa-circle-half-stroke fa-fw me-2"></i>Toggle theme</button></li>
+                </ul>
             </div>
-            <!-- API -->
-            <a href="/api-docs" target="_blank" class="btn btn-sm btn-warning">
-                <i class="fas fa-book"></i><span class="d-none d-sm-inline"> API Docs</span>
-            </a>
 
        </div>
    </div>
@@ -183,6 +184,13 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cog"></i> <span class="tab-label">Settings</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#editor-tab"><i class="fas fa-code"></i> <span class="tab-label">Editor</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#wiki"><i class="fas fa-book"></i> <span class="tab-label">Docs</span></button></li>
+       <!-- Tabs that don't fit on one row are listed here by tab-overflow.js -->
+       <li class="nav-item dropdown d-none" id="mainTabsMore">
+           <button class="nav-link dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+               <i class="fas fa-ellipsis"></i> <span class="tab-more-label">More</span>
+           </button>
+           <ul class="dropdown-menu dropdown-menu-end"></ul>
+       </li>
    </ul>
 
 <div class="tab-content">
@@ -1934,6 +1942,7 @@
 <script src="/static/js/device-status.js"></script>
 <script src="/static/js/device-search.js"></script>
 <script src="/static/js/mobile-helpers.js"></script>
+<script src="/static/js/tab-overflow.js"></script>
 <script src="/static/js/deploy-animation.js"></script>
 <script src="/static/js/adblock.js"></script>
 <script type="module" src="/static/js/floor-plan.js"></script>

@@ -228,6 +228,42 @@ body > .container-fluid {
     background-color: rgba(11, 22, 32, 0.92) !important;
 }
 
+/* One row at every width: the brand is the only part that gives way.
+   Pair + overflow menu are ordered last because the bells are injected
+   at runtime relative to whichever siblings exist by then. */
+.hive-header .container-fluid {
+    flex-wrap: nowrap;
+    gap: 1rem;
+}
+
+.hive-header .navbar-brand {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin-right: 0;
+}
+
+.hive-header .brand-text,
+.hive-header .brand-sub {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hive-controls {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+}
+
+.hive-controls > .btn-group {
+    order: 1;
+}
+
+.hive-more {
+    order: 2;
+    margin-left: 0.25rem;
+}
+
 .brand-logo {
     width: 36px;
     height: 36px;
@@ -325,6 +361,25 @@ body {
 #mainTabs {
     flex-shrink: 0;
     padding-top: 0.4rem;
+}
+
+/* tab-overflow.js keeps the rail to one row; overflow: visible so the
+   More dropdown isn't clipped by mobile.css's scroll container */
+#mainTabs.tabs-priority {
+    flex-wrap: nowrap;
+    overflow: visible;
+}
+
+#mainTabs.tabs-priority > .nav-item {
+    flex-shrink: 0;
+}
+
+#mainTabs.tabs-priority .nav-link {
+    white-space: nowrap;
+}
+
+#mainTabs .tab-overflowed {
+    display: none;
 }
 
 .app-main > .tab-content {
