@@ -4,6 +4,13 @@
  */
 const log = zmmLog('utils');
 
+/** Escape for HTML text and quoted attributes; names and models come from devices. */
+export function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
 
 /**
  * Get icon for device type

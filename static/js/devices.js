@@ -4,7 +4,8 @@
  */
 
 import { state } from './state.js';
-import { getTypeIcon, getLqiBadge, timeAgo } from './utils.js';
+import { getTypeIcon, getLqiBadge, timeAgo, escapeHtml } from './utils.js';
+import { renamePrompt } from './actions.js';
 import { refreshModalState } from './device-modal.js';
 import { openDeviceModal } from './device-modal.js';
 import { reapplySort } from './table-utils.js';
@@ -91,7 +92,7 @@ export async function fetchAllDevices(force = false) {
             log.error("Failed to fetch devices:", e);
             _lastDevicesKey = null;         // force a real render once it recovers
             const tbody = document.getElementById('deviceTableBody');
-            if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger">Error loading devices: ${e.message}</td></tr>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger">Error loading devices: ${escapeHtml(e.message)}</td></tr>`;
         } finally {
             _devicesInFlight = null;
         }
@@ -140,16 +141,16 @@ export function renderDeviceTable() {
             </div>
             <div class="col-md-3">
                 <h6 class="mb-0">Coordinator</h6>
-                <small class="text-muted font-monospace">${coordinator.ieee}</small>
+                <small class="text-muted font-monospace">${escapeHtml(coordinator.ieee)}</small>
             </div>
             <div class="col-md-3">
                 <span class="badge bg-light text-dark border">
-                    <i class="fas fa-microchip"></i> ${coordinator.model || 'Unknown'}
+                    <i class="fas fa-microchip"></i> ${escapeHtml(coordinator.model || 'Unknown')}
                 </span>
             </div>
             <div class="col-md-3">
                 <span class="badge bg-light text-dark border">
-                    <i class="fas fa-industry"></i> ${coordinator.manufacturer || 'Unknown'}
+                    <i class="fas fa-industry"></i> ${escapeHtml(coordinator.manufacturer || 'Unknown')}
                 </span>
             </div>
             <div class="col-md-2 text-end">
@@ -182,7 +183,7 @@ export function renderDeviceTable() {
         let quirkHtml = '';
         if (d.quirk && d.quirk !== 'None' && d.quirk !== 'NoneType') {
             const quirkName = d.quirk.split('.').pop();
-            quirkHtml = `<span class="badge bg-info text-dark" style="font-size:0.65rem" title="${d.quirk}">${quirkName}</span>`;
+            quirkHtml = `<span class="badge bg-info text-dark" style="font-size:0.65rem" title="${escapeHtml(d.quirk)}">${escapeHtml(quirkName)}</span>`;
         }
 
         // OTA Badge
@@ -209,28 +210,30 @@ export function renderDeviceTable() {
             : '<small class="text-muted">—</small>';
 
         tr.innerHTML = `
-            <td class="text-center align-middle" style="font-size: 1.2rem;" data-sort-value="${d.type || ''}">${getTypeIcon(d.type)}</td>
+            <td class="text-center align-middle" style="font-size: 1.2rem;" data-sort-value="${escapeHtml(d.type || '')}">${getTypeIcon(d.type)}</td>
             <td class="align-middle">
-                <div class="fw-bold text-primary" style="cursor:pointer" role="button" tabindex="0"
-                     aria-label="Rename ${d.friendly_name}"
-                     onclick="window.renamePrompt('${d.ieee}', '${d.friendly_name}')"
-                     onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
-                    ${d.friendly_name} <i class="fas fa-pen fa-xs text-muted ms-1" aria-hidden="true"></i>
+                <div class="fw-bold d-flex align-items-center">
+                    <button type="button" class="btn btn-link p-0 fw-bold text-start text-decoration-none device-open"
+                            title="Details & Control">${escapeHtml(d.friendly_name)}</button>
+                    <button type="button" class="btn btn-link btn-sm p-0 ms-2 text-muted rename-btn"
+                            title="Rename" aria-label="Rename ${escapeHtml(d.friendly_name)}">
+                        <i class="fas fa-pen fa-xs" aria-hidden="true"></i>
+                    </button>
                 </div>
             </td>
             <td class="align-middle">
-                <div class="font-monospace small text-muted">${
+                <div class="font-monospace small text-muted">${escapeHtml(
                     d.protocol === 'matter' || isWifi
                         ? (d.ip_addresses?.length ? d.ip_addresses[0] : (isWifi ? d.ieee : `Node ${d.state?.node_id || '?'}`))
                         : d.ieee
-                }</div>
+                )}</div>
             </td>
-            <td class="align-middle small" data-sort-value="${d.manufacturer || ''}">
-                <div>${d.manufacturer || '?'}</div>
+            <td class="align-middle small" data-sort-value="${escapeHtml(d.manufacturer || '')}">
+                <div>${escapeHtml(d.manufacturer || '?')}</div>
                 ${quirkHtml} ${otaHtml}
             </td>
             <td class="align-middle small">
-                <div>${d.model || '?'}</div>
+                <div>${escapeHtml(d.model || '?')}</div>
             </td>
             <td class="device-lqi align-middle" data-sort-value="${d.lqi !== undefined ? d.lqi : ''}">${isWifi ? wifiStateHtml : getLqiBadge(d.lqi) + (d.rssi != null ? `<small class="text-muted d-block">${d.rssi} dBm</small>` : '')}</td>
             <td class="last-seen align-middle" data-ts="${d.last_seen_ts}" data-sort-value="${d.last_seen_ts}">${timeAgo(d.last_seen_ts)}</td>
@@ -249,11 +252,9 @@ export function renderDeviceTable() {
             </td>
         `;
 
-        // Attach event listener for Manage button correctly
-        const manageBtn = tr.querySelector('.manage-btn');
-        if (manageBtn) {
-            manageBtn.addEventListener('click', () => openDeviceModal(d)); // <--- Pass the object 'd'
-        }
+        tr.querySelector('.manage-btn').addEventListener('click', () => openDeviceModal(d));
+        tr.querySelector('.device-open').addEventListener('click', () => openDeviceModal(d));
+        tr.querySelector('.rename-btn').addEventListener('click', () => renamePrompt(d.ieee, d.friendly_name));
         tbody.appendChild(tr);
     });
 
