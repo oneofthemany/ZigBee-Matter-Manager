@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS price_history (
 """
 
 STATION = {"site_id": "4711", "brand": "Aral", "postcode": "10115",
-           "last_updated": "2026-08-30", "prices": {"E10": 1.719}}
+           "last_updated": dt.date.today().isoformat(),  # inside every window
+           "prices": {"E10": 1.719}}
 
 
 def _legacy_db(days: int = 3):
