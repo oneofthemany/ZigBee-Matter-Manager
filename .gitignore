@@ -42,3 +42,4 @@ zmm_eq/target/
 /tests/devices/logs/zigbee_debug.log
 /docs/plans/device-learning.md
 /docs/plans/zmm-quirks.md
+/tests/power/logs/zigbee_debug.log

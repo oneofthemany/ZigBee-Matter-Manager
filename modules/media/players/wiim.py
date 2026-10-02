@@ -48,6 +48,18 @@ def _refused(reply: Optional[str]) -> bool:
     return text in ("failed", "fail", "unknown command") or '"failed"' in text
 
 
+def _foreign(status: dict) -> bool:
+    """Whether a Cast sender, another protocol or a physical input is playing.
+    ZMM plays here only by setPlayerCmd:play, so any of those started elsewhere
+    — a zone member is driven over Cast, not by this provider."""
+    if str(status.get("vendor", "")).strip().upper() == "CAST":
+        return True
+    try:
+        return lp.mode_owner(int(status.get("mode"))) is not None
+    except (TypeError, ValueError):
+        return False
+
+
 def _pid(ip: str) -> str:
     return f"wiim:{ip}"
 
@@ -215,6 +227,7 @@ class WiiMPlayerProvider(PlayerProvider):
             artist=_decode_hex(status.get("Artist", "")),
             media_type="radio",
             ended=ended,
+            foreign=_foreign(status),
             position_ms=position,
             duration_ms=duration,
         )

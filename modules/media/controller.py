@@ -263,6 +263,8 @@ class MediaController:
             s.queue = q.to_dict()
             return
         s.queue = q.to_dict()
+        if s.foreign:
+            return     # the art test below cannot see this on a box with no art
         cur = q.current()
         if cur and s.state in _ACTIVE + (PlaybackState.PAUSED,):
             it = cur.item

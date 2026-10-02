@@ -116,6 +116,10 @@ STREAM_INTERRUPT_MIN_S = 1.0
 # Floor between interruption-driven reloads of one device: a receiver held down
 # longer than one attempt is retried steadily rather than hammered.
 STREAM_INTERRUPT_RELOAD_MIN_S = 10.0
+# A reload's own fill reads as BUFFERING for about the device's latency; read
+# as an interruption, a device slower than STREAM_INTERRUPT_MIN_S re-arms the
+# rung on every reload and never stops being reloaded. Grace on top of latency.
+STREAM_RELOAD_BUFFER_GRACE_S = STREAM_ACQUIRE_MAX_S
 # How often a parked device is probed for its return. Frequent enough to catch
 # a multi-minute outage ending, and cheap: resolution is one mDNS lookup (§7.1).
 STREAM_PARK_RETRY_S = 30.0
@@ -2575,6 +2579,10 @@ class OpenZone:
                 self._yield_stream(st, "cast", owner)
                 return None
             if state != "PLAYING":
+                if (state == "BUFFERING" and st.last_reload is not None
+                        and time.monotonic() - st.last_reload
+                        < st.latency_s + STREAM_RELOAD_BUFFER_GRACE_S):
+                    return None   # our own LOAD filling, not an interruption
                 if st.interrupted_since is None:
                     st.interrupted_since = time.monotonic()
                 return None

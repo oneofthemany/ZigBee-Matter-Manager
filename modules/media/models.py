@@ -116,6 +116,9 @@ class PlayerState:
     # Provider hint that the current track finished naturally (vs user-stopped).
     # Cast sets this from idle_reason==FINISHED; WiiM from curpos≈totlen.
     ended: bool = False
+    # Provider knows another app or input started this playback, so ZMM's
+    # queue for the player does not describe it (controller._attach_queue).
+    foreign: bool = False
     # Queue summary, attached by the controller (providers don't know queues).
     queue: Optional[Dict[str, Any]] = None
     updated_at: float = field(default_factory=time.time)

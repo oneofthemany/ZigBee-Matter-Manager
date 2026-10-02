@@ -72,6 +72,25 @@ def run() -> Checker:
     c.check("a drifting tag title without device art still gets queue art",
             s.artwork_url == TIDAL_ART, s.artwork_url)
 
+    c.section("a WiiM driven by something else is not given the queue's art")
+    from modules.media.players.wiim import _foreign
+    # A zone member, read off a WiiM Ultra while the zone played Radio X.
+    cast_reading = {"mode": "5", "vendor": "CAST", "status": "play",
+                    "Title": "526164696F2058"}
+    c.check("a Cast sender is foreign", _foreign(cast_reading))
+    c.check("so is HDMI-ARC", _foreign({"mode": "49", "vendor": ""}))
+    c.check("ZMM's own setPlayerCmd:play is not",
+            not _foreign({"mode": "10", "vendor": ""}))
+    pid = "wiim:10.0.0.5"
+    mc = _controller_with_tidal(pid)
+    s = _state(pid, title="Radio X")
+    s.foreign = True
+    mc._attach_queue(s)
+    c.check("no device art, but no stale Tidal art either",
+            s.artwork_url == "" and s.title == "Radio X",
+            (s.title, s.artwork_url))
+    c.check("the queue is still attached", bool(s.queue))
+
     c.section("an idle speaker is left alone")
     pid = "cast:elena"
     mc = _controller_with_tidal(pid)
