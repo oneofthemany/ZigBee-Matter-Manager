@@ -177,13 +177,22 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#beekeeper"><i class="fab fa-hive"></i> <span class="tab-label">Beekeeper</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#drive"><i class="fas fa-car"></i> <span class="tab-label">Drive</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#zones"><i class="fas fa-bullseye"></i> <span class="tab-label">Zones</span></button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#topology"><i class="fas fa-network-wired"></i> <span class="tab-label">Topology</span></button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#mqtt-explorer"><i class="fas fa-broadcast-tower"></i> <span class="tab-label">MQTT Explorer</span></button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#debug"><i class="fas fa-terminal"></i> <span class="tab-label">Debug</span></button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server me-1"></i> <span class="tab-label">System Overview</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cog"></i> <span class="tab-label">Settings</span></button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#editor-tab"><i class="fas fa-code"></i> <span class="tab-label">Editor</span></button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#wiki"><i class="fas fa-book"></i> <span class="tab-label">Docs</span></button></li>
+       <!-- Admin and developer pages. Fixed strategy so the phone rail's overflow-x doesn't clip the menu. -->
+       <li class="nav-item dropdown" id="mainTabsTools">
+           <button class="nav-link dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"
+                   data-bs-popper-config='{"strategy":"fixed"}' title="Tools" aria-label="Tools">
+               <i class="fas fa-toolbox"></i> <span class="tab-label">Tools</span>
+           </button>
+           <ul class="dropdown-menu dropdown-menu-end">
+               <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#topology"><i class="fas fa-network-wired fa-fw me-2"></i>Topology</button></li>
+               <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#mqtt-explorer"><i class="fas fa-broadcast-tower fa-fw me-2"></i>MQTT Explorer</button></li>
+               <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#debug"><i class="fas fa-terminal fa-fw me-2"></i>Debug</button></li>
+               <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server fa-fw me-2"></i>System Overview</button></li>
+               <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#editor-tab"><i class="fas fa-code fa-fw me-2"></i>Editor</button></li>
+               <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#wiki"><i class="fas fa-book fa-fw me-2"></i>Docs</button></li>
+           </ul>
+       </li>
        <!-- Tabs that don't fit on one row are listed here by tab-overflow.js -->
        <li class="nav-item dropdown d-none" id="mainTabsMore">
            <button class="nav-link dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">

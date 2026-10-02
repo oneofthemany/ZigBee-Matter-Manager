@@ -140,6 +140,12 @@ html, body {
         display: none;
     }
 
+    /* Overrides mobile-helpers.js' inline scroll-fade mask so the Tools menu shows */
+    #mainTabs.tools-open {
+        -webkit-mask-image: none !important;
+        mask-image: none !important;
+    }
+
     #mainTabs .nav-item {
         flex-shrink: 0;
     }
@@ -164,7 +170,7 @@ html, body {
 
 @media (max-width: 767.98px) {
     /* Code editor is unusable at phone size — remove the tab and its pane */
-    #mainTabs .nav-link[data-bs-target="#editor-tab"],
+    #mainTabs [data-bs-target="#editor-tab"],
     #editor-tab {
         display: none !important;
     }
