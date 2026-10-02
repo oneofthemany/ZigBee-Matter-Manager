@@ -4,6 +4,8 @@
  */
 
 import { state } from './state.js';
+import { escapeHtml } from './utils.js';
+import { renamePrompt } from './actions.js';
 import { hasCluster } from './modal/config.js';
 import { renderChamberPicker, ensureChambers } from './chambers.js';
 import { renderOverviewTab, saveConfig } from './modal/overview.js';
@@ -61,7 +63,13 @@ export async function openDeviceModal(d) {
     let html = `
         <div class="mb-3 d-flex justify-content-between align-items-center">
             <div>
-                <h5>${cachedDev.friendly_name}</h5>
+                <h5 class="d-flex align-items-center">
+                    <span class="device-title">${escapeHtml(cachedDev.friendly_name)}</span>
+                    <button type="button" class="btn btn-link btn-sm p-0 ms-2 text-muted device-rename-btn"
+                            title="Rename" aria-label="Rename device">
+                        <i class="fas fa-pen fa-xs" aria-hidden="true"></i>
+                    </button>
+                </h5>
                 <div class="text-muted small font-monospace">${
                     cachedDev.protocol === 'matter'
                     ? (cachedDev.ip_addresses?.length
@@ -73,8 +81,8 @@ export async function openDeviceModal(d) {
             </div>
             <div>
                 ${!isZigbee ? `<span class="badge bg-info me-1">${cachedDev.network_type === 'thread' ? 'Thread' : cachedDev.network_type === 'wifi' ? 'WiFi' : 'Matter'}</span>` : ''}
-                <span class="badge bg-secondary">${cachedDev.manufacturer}</span>
-                <span class="badge bg-secondary">${cachedDev.model}</span>
+                <span class="badge bg-secondary">${escapeHtml(cachedDev.manufacturer)}</span>
+                <span class="badge bg-secondary">${escapeHtml(cachedDev.model)}</span>
             </div>
         </div>
 
@@ -141,6 +149,11 @@ export async function openDeviceModal(d) {
     `;
 
     modalBody.innerHTML = html;
+
+    modalBody.querySelector('.device-rename-btn').addEventListener('click', () => {
+        const ieee = cachedDev.ieee;
+        renamePrompt(ieee, state.deviceCache[ieee]?.friendly_name ?? cachedDev.friendly_name);
+    });
 
     if (!isZigbee) {
         const capsTab = modalBody.querySelector('[data-bs-target="#tab-caps"]');
@@ -223,7 +236,7 @@ export function refreshModalState(device) {
             badges[badges.length - 2].textContent = device.manufacturer || 'Unknown';
             badges[badges.length - 1].textContent = device.model || 'Unknown';
         }
-        const title = modalBody.querySelector(':scope > div:first-child h5');
+        const title = modalBody.querySelector(':scope > div:first-child .device-title');
         if (title && device.friendly_name) title.textContent = device.friendly_name;
     }
 
