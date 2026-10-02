@@ -125,6 +125,13 @@ html, body {
 }
 
 
+/* Overrides mobile-helpers.js' inline scroll-fade mask while a rail dropdown
+   is open (tab-dropdowns.js); the mask would clip the menu. */
+.rail-menu-open {
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+}
+
 /* 2. MAIN TABS (#mainTabs) — 8 tabs won't fit on mobile */
 
 @media (max-width: 991.98px) {
@@ -138,12 +145,6 @@ html, body {
 
     #mainTabs::-webkit-scrollbar {
         display: none;
-    }
-
-    /* Overrides mobile-helpers.js' inline scroll-fade mask so the Tools menu shows */
-    #mainTabs.tools-open {
-        -webkit-mask-image: none !important;
-        mask-image: none !important;
     }
 
     #mainTabs .nav-item {

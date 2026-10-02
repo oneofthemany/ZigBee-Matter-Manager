@@ -80,19 +80,6 @@
     }
 
     rail.addEventListener('shown.bs.tab', schedule);
-    // Bootstrap 5.3.0's Tab adds .show to the menu of a dropdown holding the
-    // tab it activates, after this event, so close Tools on the next tick.
-    if (tools) {
-        // The phone rail's scroll-fade mask clips descendants, fixed menus included.
-        tools.addEventListener('show.bs.dropdown', function () { rail.classList.add('tools-open'); });
-        tools.addEventListener('hidden.bs.dropdown', function () { rail.classList.remove('tools-open'); });
-        rail.addEventListener('show.bs.tab', function (e) {
-            if (!tools.contains(e.target)) return;
-            setTimeout(function () {
-                bootstrap.Dropdown.getOrCreateInstance(tools.querySelector('.dropdown-toggle')).hide();
-            });
-        });
-    }
     if (window.ResizeObserver) new ResizeObserver(schedule).observe(rail);
     else window.addEventListener('resize', schedule);
     if (mq.addEventListener) mq.addEventListener('change', schedule);

@@ -31,6 +31,14 @@ import {
 
 // Re-export these functions so main.js (and others) can still import them from here
 export { renderOverviewTab, renderControlTab, renderBindingTab, renderCapsTab, renderAutomationTab, renderProfileTab, saveConfig, handleOTAProgress, renderSettingsTab, applyInterviewStatusUpdate };
+
+const LAST_TAB_KEY = 'zbm-device-modal-tab';
+
+const devTab = (id, label, active = false) =>
+    `<li class="nav-item"><button class="nav-link${active ? ' active' : ''}" data-bs-toggle="tab" data-bs-target="#${id}">${label}</button></li>`;
+const devMenuTab = (id, label) =>
+    `<li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#${id}">${label}</button></li>`;
+
 export async function openDeviceModal(d) {
     // WiFi AC units get their own capability-aware modal
     if (d?.protocol === 'wifi' && d?.ac_unit_id) {
@@ -87,17 +95,23 @@ export async function openDeviceModal(d) {
         </div>
 
         <ul class="nav nav-tabs mb-3" id="devTabs">
-            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview">Overview</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-control">Control</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-history">History</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ota"></i>OTA</button></li>
-            ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-binding">Binding</button></li>' : ''}
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-caps">Clusters</button></li>
-            ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-identity">Identity</button></li>' : ''}
-            ${!isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-endpoints">Endpoints</button></li>' : ''}
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-automation">Automation</button></li>
-            ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-profile">Profile</button></li>' : ''}
-            ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-dev-settings">Settings</button></li>' : ''}
+            ${devTab('tab-overview', 'Overview', true)}
+            ${devTab('tab-control', 'Control')}
+            ${devTab('tab-history', 'History')}
+            ${devTab('tab-automation', 'Automation')}
+            ${devTab('tab-ota', 'OTA')}
+            ${isZigbee ? devTab('tab-dev-settings', 'Settings') : ''}
+            <!-- Fixed popper strategy so the phone rail's overflow-x doesn't clip the menu -->
+            <li class="nav-item dropdown">
+                <button class="nav-link dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"
+                        data-bs-popper-config='{"strategy":"fixed"}'>Advanced</button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    ${isZigbee
+                        ? devMenuTab('tab-binding', 'Binding') + devMenuTab('tab-caps', 'Clusters')
+                          + devMenuTab('tab-identity', 'Identity') + devMenuTab('tab-profile', 'Profile')
+                        : devMenuTab('tab-caps', 'Clusters') + devMenuTab('tab-endpoints', 'Endpoints')}
+                </ul>
+            </li>
         </ul>
 
         <div class="tab-content">
@@ -222,6 +236,16 @@ export async function openDeviceModal(d) {
         // stream when the user leaves the tab.
         profTab.addEventListener('hidden.bs.tab', () => cleanupProfileInspector());
     }
+
+    // Reopen on the tab last used, when this device has it (Matter lacks Profile etc.).
+    const devTabs = modalBody.querySelector('#devTabs');
+    let lastTab = null;
+    try { lastTab = localStorage.getItem(LAST_TAB_KEY); } catch (e) { /* storage unavailable */ }
+    const lastBtn = lastTab && devTabs.querySelector(`[data-bs-target="#${CSS.escape(lastTab)}"]`);
+    if (lastBtn) bootstrap.Tab.getOrCreateInstance(lastBtn).show();
+    devTabs.addEventListener('shown.bs.tab', e => {
+        try { localStorage.setItem(LAST_TAB_KEY, e.target.dataset.bsTarget.slice(1)); } catch (err) { /* ignore */ }
+    });
 }
 
 export function refreshModalState(device) {
