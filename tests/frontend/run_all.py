@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-JS_TESTS = ["test_utils.mjs"]
+JS_TESTS = ["test_utils.mjs", "test_manager_link.mjs"]
 
 
 def main() -> int:

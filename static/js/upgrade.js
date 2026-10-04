@@ -6,7 +6,7 @@
 
 import { confirmDialog } from './dialogs.js';
 import { whileVisible } from './utils.js';
-import { managerUrlHere } from './manager-link.js';
+import { managerUrl } from './manager-link.js';
 
 const log = zmmLog('upgrade');
 
@@ -656,12 +656,12 @@ function renderBody(data) {
 
     // Rollback moved to the ZMM Manager (:8001) so it works even when this
     // app is down. Keep a pointer instead of a duplicate button.
-    const managerUrl = managerUrlHere();
+    const managerHref = managerUrl() || '#';
     const rollbackHtml = `
       <div class="border-top pt-3 mt-3 small text-muted">
         <i class="fas fa-rotate-left me-1"></i>
         Rollback (to any retained version) and image retention are managed from the
-        <a href="${managerUrl}" target="_blank" rel="noopener" data-zmm-manager>ZMM Manager</a>${
+        <a href="${managerHref}" target="_blank" rel="noopener" data-zmm-manager>ZMM Manager</a>${
           previous_version ? ` — previous version: <code>${escapeHtml(previous_version)}</code>` : ''}.
       </div>
     `;
@@ -767,7 +767,7 @@ function renderSettings(data) {
         <i class="fas fa-broom me-1"></i>
         Image retention (currently keep last <code>${retention}</code>) and pruning are
         managed from the
-        <a href="${managerUrlHere()}" target="_blank" rel="noopener" data-zmm-manager>ZMM Manager</a>.
+        <a href="${managerUrl() || '#'}" target="_blank" rel="noopener" data-zmm-manager>ZMM Manager</a>.
         Manager action token: <code id="upgMgrToken">&hellip;</code>
       </div>
       <div id="upgradeSettingsAlert" class="alert mt-3 small" style="display:none;"></div>
