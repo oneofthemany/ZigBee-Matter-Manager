@@ -22,7 +22,19 @@ logger = logging.getLogger("notification_rules")
 
 RULES_PATH = Path("./data/notification_rules.json")
 SWEEP_INTERVAL_S = 30          # online/offline has no state-change event to ride on
-COOLDOWN_MINUTES = (0, 1, 5, 15, 60)
+COOLDOWN_MINUTES = (0, 1, 5, 15, 30, 60)
+
+# The navbar bell's switches, kept per user and run as rules marked source="bell".
+BELL_DEFAULTS = {"enabled": False, "deviceOffline": True, "deviceOnline": False,
+                 "lowBattery": True, "thermostatReached": True, "suppressMinutes": 5}
+# switch -> (trigger, title, message); titles and wording are the bell's own.
+BELL_SWITCHES = {
+    "deviceOffline": ("offline", "Device Offline", "{device} has gone offline"),
+    "deviceOnline": ("online", "Device Online", "{device} is back online"),
+    "lowBattery": ("low_battery", "Low Battery", None),
+    "thermostatReached": ("temp_target_reached", "Target Temperature Reached", None),
+}
+BELL_SUPPRESS_MINUTES = (1, 5, 15, 30, 60)
 SCOPES = ("all", "devices", "tab")
 MAX_RULES_PER_USER = 200
 MAX_TEXT = 200
@@ -210,11 +222,15 @@ def normalise_rule(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class NotificationRuleStore:
-    """Rules for every user in one JSON file; each rule carries its owner."""
+    """Rules for every user in one JSON file; each rule carries its owner.
+
+    Bell rules (source="bell") are derived from the user's bell settings by
+    set_bell(); the rule API neither lists nor changes them."""
 
     def __init__(self, path: Path = RULES_PATH) -> None:
         self.path = Path(path)
         self.rules: Dict[str, Dict[str, Any]] = {}
+        self.bell: Dict[str, Dict[str, Any]] = {}       # owner -> bell settings
 
     def load(self) -> None:
         try:
@@ -225,15 +241,18 @@ class NotificationRuleStore:
             logger.error("[notification_rules] unreadable %s: %s", self.path, e)
             return
         self.rules = {r["id"]: r for r in raw.get("rules", []) if r.get("id") and r.get("owner")}
+        self.bell = raw.get("bell") or {}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"rules": list(self.rules.values())}, indent=1, ensure_ascii=False))
+        tmp.write_text(json.dumps({"rules": list(self.rules.values()), "bell": self.bell},
+                                  indent=1, ensure_ascii=False))
         tmp.replace(self.path)
 
     def for_owner(self, owner: str) -> List[Dict[str, Any]]:
-        return [r for r in self.rules.values() if r["owner"] == owner]
+        """The owner's own rules, as listed in Settings; bell rules excluded."""
+        return [r for r in self.rules.values() if r["owner"] == owner and not r.get("source")]
 
     def enabled(self) -> List[Dict[str, Any]]:
         return [r for r in self.rules.values() if r.get("enabled", True)]
@@ -249,7 +268,7 @@ class NotificationRuleStore:
     def update(self, owner: str, rule_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """None when the rule doesn't exist or belongs to someone else."""
         current = self.rules.get(rule_id)
-        if not current or current["owner"] != owner:
+        if not current or current["owner"] != owner or current.get("source"):
             return None
         rule = {"id": rule_id, "owner": owner, **normalise_rule(data)}
         self.rules[rule_id] = rule
@@ -258,7 +277,7 @@ class NotificationRuleStore:
 
     def delete(self, owner: str, rule_id: str) -> bool:
         current = self.rules.get(rule_id)
-        if not current or current["owner"] != owner:
+        if not current or current["owner"] != owner or current.get("source"):
             return False
         del self.rules[rule_id]
         self.save()
@@ -283,6 +302,34 @@ class NotificationRuleStore:
             except ValueError as e:
                 errors.append(f"{item.get('title') or item.get('trigger')}: {e}")
         return imported, errors
+
+    def bell_settings(self, owner: str) -> Dict[str, Any]:
+        """The owner's bell settings; configured=False until they've saved any."""
+        return {**BELL_DEFAULTS, **self.bell.get(owner, {}), "configured": owner in self.bell}
+
+    def set_bell(self, owner: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Save bell settings and rebuild the owner's bell rules to match."""
+        settings = {k: bool(data.get(k, BELL_DEFAULTS[k])) for k in BELL_DEFAULTS if k != "suppressMinutes"}
+        try:
+            suppress = int(data.get("suppressMinutes", BELL_DEFAULTS["suppressMinutes"]))
+        except (TypeError, ValueError):
+            suppress = -1
+        if suppress not in BELL_SUPPRESS_MINUTES:
+            raise ValueError(f"suppressMinutes must be one of {BELL_SUPPRESS_MINUTES}")
+        settings["suppressMinutes"] = suppress
+        self.bell[owner] = settings
+
+        for rid in [rid for rid, r in self.rules.items() if r["owner"] == owner and r.get("source") == "bell"]:
+            del self.rules[rid]
+        if settings["enabled"]:
+            for switch, (trigger, title, message) in BELL_SWITCHES.items():
+                if settings[switch]:
+                    rule = normalise_rule({"trigger": trigger, "title": title, "message": message,
+                                           "cooldownMinutes": suppress})
+                    rid = f"bell-{trigger}-{owner}"
+                    self.rules[rid] = {"id": rid, "owner": owner, "source": "bell", **rule}
+        self.save()
+        return self.bell_settings(owner)
 
 
 Deliver = Callable[[str, Dict[str, Any]], Awaitable[None]]

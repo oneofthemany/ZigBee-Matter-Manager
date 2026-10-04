@@ -115,6 +115,21 @@ def run() -> Checker:
                 [p["body"] for _, p in sent] == ["Garage Sensor is online"], sent)
 
     with tempfile.TemporaryDirectory() as tmp:
+        c.section("bell switches run as rules")
+        rig = _rig(tmp)
+        rig.store.set_bell("alice", {"enabled": True, "deviceOffline": True, "deviceOnline": False,
+                                     "lowBattery": False, "thermostatReached": False, "suppressMinutes": 5})
+        rig.sweep()
+        rig.devices["bb"].available = False
+        sent = rig.sweep()
+        c.check("a device going offline notifies with the bell's own wording",
+                [(o, p["title"], p["body"]) for o, p in sent] == [("alice", "Device Offline", "Garage Sensor has gone offline")], sent)
+        rig.devices["bb"].available = True
+        rig.change("bb", occupancy=True)
+        rig.devices["bb"].available = False
+        c.check("the bell's suppression time holds back a repeat", rig.sweep() == [])
+
+    with tempfile.TemporaryDirectory() as tmp:
         c.section("robustness")
         rig = _rig(tmp)
         rig.rule(trigger="low_battery")

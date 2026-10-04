@@ -47,6 +47,20 @@ def register_notification_rule_routes(app: FastAPI) -> None:
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    # Before /{rule_id}, which would otherwise take "bell" as a rule id.
+    @app.get("/api/notification-rules/bell")
+    async def get_bell(request: HttpRequest, _=Depends(require_authenticated)):
+        """The navbar bell's switches for the caller."""
+        return _store().bell_settings(_owner(request))
+
+    @app.put("/api/notification-rules/bell")
+    async def put_bell(body: Dict[str, Any], request: HttpRequest,
+                       _=Depends(require_authenticated)):
+        try:
+            return _store().set_bell(_owner(request), body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     @app.put("/api/notification-rules/{rule_id}")
     async def update_rule(rule_id: str, body: Dict[str, Any], request: HttpRequest,
                           _=Depends(require_authenticated)):

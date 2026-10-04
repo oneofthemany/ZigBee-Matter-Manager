@@ -77,6 +77,21 @@ def run() -> Checker:
         c.check("imported rules belong to the importer",
                 [x["trigger"] for x in api.get("/api/notification-rules", headers=bob).json()["rules"]] == ["smoke"])
 
+        c.section("bell settings")
+        r = api.put("/api/notification-rules/bell", headers=alice,
+                    json={"enabled": True, "deviceOffline": True, "lowBattery": False,
+                          "thermostatReached": False, "deviceOnline": False, "suppressMinutes": 15})
+        c.check("PUT /bell saves settings rather than being taken as a rule id",
+                r.status_code == 200 and r.json().get("suppressMinutes") == 15, r.text)
+        c.check("GET /bell returns the caller's settings",
+                api.get("/api/notification-rules/bell", headers=alice).json()["deviceOffline"] is True)
+        c.check("another user's bell is separate",
+                api.get("/api/notification-rules/bell", headers=bob).json()["configured"] is False)
+        c.check("bell rules don't appear in the caller's rule list",
+                all(not x.get("source") for x in api.get("/api/notification-rules", headers=alice).json()["rules"]))
+        c.check("a bad suppression time is a 400",
+                api.put("/api/notification-rules/bell", headers=alice, json={"suppressMinutes": 2}).status_code == 400)
+
         c.check("delete by the owner works",
                 api.delete(f"/api/notification-rules/{rule['id']}", headers=alice).status_code == 200
                 and api.get("/api/notification-rules", headers=alice).json()["rules"] == [])

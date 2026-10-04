@@ -16,7 +16,6 @@
     };
 
     var notifHistory = {}; // Track sent notifications to avoid spam
-    var previousStates = {}; // Track previous device states for diff
 
     // 1. SERVICE WORKER REGISTRATION (PWA)
 
@@ -57,6 +56,41 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
     function savePrefs(prefs) {
         localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+        putHubPrefs(prefs).catch(function (e) {
+            if (window.toast) window.toast.error("Couldn't save notification settings to the hub: " + e.message);
+        });
+    }
+
+    // The switches live on the hub per user; localStorage is this page's copy,
+    // read synchronously by sendNotification.
+    function putHubPrefs(prefs) {
+        return fetch('/api/notification-rules/bell', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(prefs)
+        }).then(function (r) {
+            if (!r.ok) return r.json().catch(function () { return {}; }).then(function (d) {
+                throw new Error(d.detail || ('HTTP ' + r.status));
+            });
+            return r.json();
+        });
+    }
+
+    /** Adopt the hub's settings, or upload this browser's once if the hub has none yet. */
+    function syncHubPrefs() {
+        return fetch('/api/notification-rules/bell').then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function (hub) {
+            var local = null;
+            try { local = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null'); } catch (e) {}
+            if (!hub.configured && local) return putHubPrefs(local);
+            delete hub.configured;
+            localStorage.setItem(PREFS_KEY, JSON.stringify(hub));
+            updateBellIcon();
+        }).catch(function (e) {
+            zmmLog('pwa').warn('[notif] bell settings sync failed', e);
+        });
     }
 
     function isIOS() {
@@ -407,118 +441,11 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         }
     }
 
-    // 4. DEVICE STATE MONITORING
+    // 4. DELIVERY HOOK
 
-    function checkDeviceState(ieee, newState, deviceName) {
-        var prefs = getPrefs();
-        if (!prefs.enabled) return;
-
-        var prev = previousStates[ieee] || {};
-        var name = deviceName || ieee.slice(-8);
-
-        // Device offline detection
-        if (prefs.deviceOffline && prev.available === true && newState.available === false) {
-            sendNotification(
-                'Device Offline',
-                name + ' has gone offline',
-                'offline-' + ieee,
-                { persistent: false }
-            );
-        }
-
-        // Device online detection
-        if (prefs.deviceOnline && prev.available === false && newState.available === true) {
-            sendNotification(
-                'Device Online',
-                name + ' is back online',
-                'online-' + ieee
-            );
-        }
-
-        // Low battery warning
-        if (prefs.lowBattery) {
-            var battery = newState.battery || newState.battery_percentage;
-            var prevBattery = prev.battery || prev.battery_percentage;
-
-            if (battery !== undefined && battery <= 15) {
-                // Only notify once when crossing the threshold
-                if (prevBattery === undefined || prevBattery > 15) {
-                    sendNotification(
-                        'Low Battery',
-                        name + ' battery is at ' + battery + '%',
-                        'battery-' + ieee,
-                        { persistent: true }
-                    );
-                }
-            }
-        }
-
-        // Thermostat target reached
-        if (prefs.thermostatReached) {
-            var target = newState.occupied_heating_setpoint || newState.heating_setpoint;
-            var current = newState.internal_temperature || newState.temperature || newState.local_temperature;
-            var prevCurrent = prev.internal_temperature || prev.temperature || prev.local_temperature;
-
-            if (target && current && prevCurrent) {
-                var targetNum = Number(target);
-                var currentNum = Number(current);
-                var prevNum = Number(prevCurrent);
-
-                // Notify when temperature crosses the target threshold (within 0.3°C)
-                if (prevNum < targetNum - 0.3 && currentNum >= targetNum - 0.3) {
-                    sendNotification(
-                        'Target Temperature Reached',
-                        name + ' has reached ' + currentNum.toFixed(1) + '°C (target: ' + targetNum.toFixed(1) + '°C)',
-                        'temp-reached-' + ieee
-                    );
-                }
-            }
-        }
-
-        // Store current state for next comparison
-        previousStates[ieee] = Object.assign({}, prev, newState);
-    }
-
-    // Expose for the WebSocket handler to call
-    window.zbmCheckDeviceState = checkDeviceState;
+    // The bell's device alerts run on the hub (modules/notification_rules.py);
+    // they reach this page as notification_rule_fired, handled in notifications.js.
     window.zbmSendNotification = sendNotification;
-
-    // 5. HOOK INTO WEBSOCKET UPDATES
-
-    var _hookTries = 0;
-
-    function hookWebSocket() {
-        // Patch the global handleDeviceUpdate if it exists
-        // We watch for state.deviceCache changes via MutationObserver on the table
-        // as a simpler hook that doesn't require modifying existing modules
-
-        var tbody = document.getElementById('deviceTableBody');
-        if (!tbody) {
-            // Bounded: pages without a device table (Frames) would otherwise
-            // retry every second for the life of the tab, forever.
-            if (++_hookTries > 30) return;
-            setTimeout(hookWebSocket, 1000);
-            return;
-        }
-
-        // Use a polling approach to check for state changes
-        // This works because devices.js updates state.deviceCache on every WS message
-        setInterval(function () {
-            if (!window.state || !window.state.deviceCache) return;
-
-            var cache = window.state.deviceCache;
-            Object.keys(cache).forEach(function (ieee) {
-                var device = cache[ieee];
-                if (!device || !device.state) return;
-
-                var stateWithMeta = Object.assign({}, device.state, {
-                    available: device.available
-                });
-
-                checkDeviceState(ieee, stateWithMeta, device.friendly_name);
-            });
-        }, 5000); // Check every 5 seconds
-    }
 
     // 6. NOTIFICATION BELL + SETTINGS PANEL
 
@@ -674,6 +601,8 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
                         // Individual toggles
                         '<div id="zbm-notif-options" style="' + (prefs.enabled ? '' : 'opacity:0.5;pointer-events:none;') + '">' +
+                            '<p class="small text-muted mb-2">These run on the hub for your account and reach every device ' +
+                                'where push is enabled below — even with ZMM closed.</p>' +
                             '<div class="form-check form-switch mb-2">' +
                                 '<input class="form-check-input" type="checkbox" id="zbm-notif-offline" ' + (prefs.deviceOffline ? 'checked' : '') + '>' +
                                 '<label class="form-check-label" for="zbm-notif-offline">' +
@@ -729,6 +658,10 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         var optionsDiv = document.getElementById('zbm-notif-options');
 
         masterToggle.addEventListener('change', async function () {
+            // Save first: the hub's rules shouldn't wait on this browser's permission prompt.
+            optionsDiv.style.opacity = this.checked ? '1' : '0.5';
+            optionsDiv.style.pointerEvents = this.checked ? 'auto' : 'none';
+            saveCurrentPrefs();
             if (this.checked) {
                 var support = getNotificationSupport();
 
@@ -750,9 +683,6 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
                 }
                 // Always allow enabling (in-app fallback works everywhere)
             }
-            optionsDiv.style.opacity = this.checked ? '1' : '0.5';
-            optionsDiv.style.pointerEvents = this.checked ? 'auto' : 'none';
-            saveCurrentPrefs();
         });
 
         // Save on any toggle change
@@ -789,17 +719,17 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
     // 7. INIT
 
+    if (window.zmmAuth) window.zmmAuth.onChange(function (p) { if (p) syncHubPrefs(); });
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function () {
             registerServiceWorker();
             setTimeout(createNotificationBell, 300);
-            setTimeout(hookWebSocket, 2000);
             setTimeout(healPushSubscription, 4000);
         });
     } else {
         registerServiceWorker();
         setTimeout(createNotificationBell, 300);
-        setTimeout(hookWebSocket, 2000);
         setTimeout(healPushSubscription, 4000);
     }
 

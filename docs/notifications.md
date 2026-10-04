@@ -258,6 +258,28 @@ also has a push subscription shows only an in-app toast, so one alert doesn't
 arrive twice. A page without push (the LAN address) raises the notification
 itself through `zbmSendNotification`, as rules always did.
 
+### The navbar bell
+
+The bell's four switches (device offline, device online, low battery, heating
+target reached) are per-user settings on the hub, not a browser loop. While the
+bell's master switch is on, `NotificationRuleStore.set_bell()` keeps one rule
+per enabled switch for that user, marked `source: "bell"`, using the bell's own
+titles and its "suppress duplicates" time as the cooldown. Bell rules are
+evaluated and delivered like any other, but `GET /api/notification-rules`
+leaves them out and the rule API refuses to edit or delete them: the bell is
+where they're managed.
+
+`static/js/pwa.js` keeps a copy in `localStorage` because `sendNotification`
+reads the master switch synchronously. On sign-in the page adopts the hub's
+settings; if the hub has none yet for that user, it uploads the browser's
+existing settings once. The bell saves before asking for browser notification
+permission, so the hub never waits on a prompt.
+
+| | |
+|---|---|
+| `GET /api/notification-rules/bell` | your bell settings (`configured: false` until first saved) |
+| `PUT /api/notification-rules/bell` | save them and rebuild your bell rules |
+
 ### Moving from browser rules
 
 Rules used to live in each browser's `localStorage`. On the first signed-in
