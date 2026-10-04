@@ -317,7 +317,10 @@ def warm():
     caller pays the whole open — so callers must surface the failure (main.py
     raises an app alert) and must not assume the DB is ready afterwards.
     """
-    _get_db()
+    db = _get_db()
+    # DuckDB imports pandas on the first execute that binds parameters: seconds
+    # from a cold disk, and process-wide, so paying it here spares the loop.
+    db.cursor().execute("SELECT ?", [0]).fetchall()
 
 
 # The write backend can change under a database already on disk, so the engine

@@ -51,8 +51,11 @@ def warm():
     whole open, so callers must surface the failure rather than assume the
     cache is ready.
     """
-    _get_db()
+    db = _get_db()
     _init_schema()
+    # DuckDB imports pandas on the first execute that binds parameters: seconds
+    # from a cold disk, and process-wide, so paying it here spares the loop.
+    db.execute("SELECT ?", [0]).fetchall()
 
 
 def _safe_execute(sql: str, params=None, *, context: str = ""):
