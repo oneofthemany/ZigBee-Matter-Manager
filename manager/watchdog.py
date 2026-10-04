@@ -298,6 +298,28 @@ async def _sync_beekeeper_image(t: Dict[str, Any]):
         logger.warning("Beekeeper image sync failed: %s", res.get("error"))
 
 
+SERVICE_RETRY_S = 15 * 60
+
+
+async def _ensure_beekeeper_service(t: Dict[str, Any]):
+    """Ask the host for Beekeeper's boot-time service when a running sidecar has none.
+
+    Covers sidecars enabled before the helper existed. Not when the host reports
+    another unit already managing it, or no service manager at all."""
+    info = await containers.inspect_container(beekeeper.BEEKEEPER_CONTAINER)
+    if not info or not (info.get("State") or {}).get("Running"):
+        return
+    svc = beekeeper.service_status()
+    if svc.get("installed") or svc.get("pending") or svc.get("conflict") \
+            or svc.get("backend") == "none":
+        return
+    if time.time() - t.get("requested_at", 0) < SERVICE_RETRY_S:
+        return
+    t["requested_at"] = time.time()
+    beekeeper.request_service("install")
+    logger.info("Beekeeper has no boot-time service — asked the host to install one")
+
+
 async def run_loop():
     """The watchdog loop. Cancel-safe; runs for the lifetime of the manager."""
     if os.environ.get("ZMM_WATCHDOG_DISABLED"):
@@ -311,6 +333,7 @@ async def run_loop():
     app_t = {"streak": 0, "restarts": 0}
     ollama_t = {"streak": 0, "restarts": 0}
     beekeeper_t: Dict[str, Any] = {}
+    service_t: Dict[str, Any] = {}
     async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
         while True:
             await asyncio.sleep(INTERVAL)
@@ -333,3 +356,9 @@ async def run_loop():
                 raise
             except Exception as e:
                 logger.warning("Watchdog beekeeper-sync error: %s", e)
+            try:
+                await _ensure_beekeeper_service(service_t)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Watchdog beekeeper-service error: %s", e)

@@ -58,6 +58,8 @@ class FakeRuntime:
         self.stats: Dict[str, Dict[str, Any]] = {}
         self.deleted: List[str] = []
         self.refuse_delete: Dict[str, int] = {}     # ref -> status code to answer with
+        self.posts: List[Dict[str, Any]] = []       # every POST: path, query, body
+        self.on_post = None                         # optional hook(path) -> extra fields to record
         self._dir = tempfile.TemporaryDirectory()
         self.sock = os.path.join(self._dir.name, "runtime.sock")
         rt = self
@@ -91,6 +93,18 @@ class FakeRuntime:
                     if parts[2] == "stats" and name in rt.stats:
                         return self._send(200, rt.stats[name])
                 return self._send(404, {"message": "no such object"})
+
+            def do_POST(self):
+                u = urlparse(self.path)
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"null") if n else None
+                rec = {"path": u.path, "query": u.query, "body": body}
+                if rt.on_post:
+                    rec.update(rt.on_post(u.path) or {})
+                rt.posts.append(rec)
+                if u.path == "/containers/create":
+                    return self._send(201, {"Id": "new-container"})
+                return self._send(204)
 
             def do_DELETE(self):
                 path = urlparse(self.path).path

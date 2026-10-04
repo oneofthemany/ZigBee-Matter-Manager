@@ -25,6 +25,9 @@ _DATA_DIR = os.environ.get("ZMM_DATA_DIR") or os.environ.get("DATA_DIR") \
 _FW_DIR = os.path.join(_DATA_DIR, "data", "beekeeper")
 _FW_TRIGGER = os.path.join(_FW_DIR, "firewall_action")
 _FW_STATUS = os.path.join(_FW_DIR, "firewall_status.json")
+# Boot-time service, installed by the host's scripts/beekeeper_service.sh.
+_SVC_TRIGGER = os.path.join(_FW_DIR, "service_action")
+_SVC_STATUS = os.path.join(_FW_DIR, "service_status.json")
 
 
 def firewall_status() -> Dict[str, Any]:
@@ -55,6 +58,30 @@ def request_firewall(action: str = "open") -> Dict[str, Any]:
                 "helper applies it within a second or two; refresh to see the result."}
     except OSError as e:
         return {"success": False, "error": str(e)}
+
+def service_status() -> Dict[str, Any]:
+    """The host helper's last report on Beekeeper's boot-time service (never raises)."""
+    try:
+        with open(_SVC_STATUS) as f:
+            data = json.load(f)
+        return {"known": True, **data, "pending": os.path.isfile(_SVC_TRIGGER)}
+    except (OSError, ValueError):
+        return {"known": False, "installed": False, "pending": os.path.isfile(_SVC_TRIGGER),
+                "detail": "not checked yet — needs the host helper (install_watcher.sh)"}
+
+
+def request_service(action: str) -> Dict[str, Any]:
+    """Ask the host helper to install, remove or re-check the boot-time service."""
+    if action not in ("install", "remove", "check"):
+        return {"success": False, "error": "action must be install|remove|check"}
+    try:
+        os.makedirs(_FW_DIR, exist_ok=True)
+        with open(_SVC_TRIGGER, "w") as f:
+            f.write(action)
+        return {"success": True, "message": f"Autostart {action} requested"}
+    except OSError as e:
+        return {"success": False, "error": str(e)}
+
 
 # App-container mount destinations the sidecar needs to share.
 _SHARE_DESTS = ("/app/config", "/app/data", "/app/logs")
@@ -105,6 +132,7 @@ async def status() -> Dict[str, Any]:
         "image": (info.get("Config") or {}).get("Image"),
         "state": state.get("Status"),   # running | exited | created | ...
         "firewall": firewall_status(),
+        "service": service_status(),
         "error": None,
     }
 
@@ -130,7 +158,10 @@ async def _create_config(app_info: Dict[str, Any]) -> Dict[str, Any]:
         "HostConfig": {
             "NetworkMode": "host",          # serve the LAN on :53
             "Binds": _binds_from_app(app_info),
-            "RestartPolicy": {"Name": "always"},
+            # Crash restarts on both runtimes, and boot restarts on docker; on podman
+            # boot is the host service's job — "always" would also have
+            # podman-restart.service start it, racing the unit.
+            "RestartPolicy": {"Name": "unless-stopped"},
             "SecurityOpt": ["label=disable"],
         },
     }
@@ -151,6 +182,7 @@ async def _create_and_start(cx, app_info: Dict[str, Any]) -> Dict[str, Any]:
     cid = r.json().get("Id", BEEKEEPER_CONTAINER)
     r = await cx.post(f"/containers/{cid}/start")
     if r.status_code in (204, 304):
+        request_service("install")
         return {"success": True, "created": True,
                 "message": "Beekeeper installed and started.",
                 "image": cfg["Image"], "binds": cfg["HostConfig"]["Binds"]}
@@ -190,6 +222,7 @@ async def enable() -> Dict[str, Any]:
                 # Same image → just (re)start the existing container.
                 r = await cx.post(f"/containers/{BEEKEEPER_CONTAINER}/start")
                 if r.status_code in (204, 304):
+                    request_service("install")
                     return {"success": True, "created": False, "message": "Beekeeper started."}
                 return {"success": False, "error": f"start failed: {r.status_code} {r.text}"}
 
@@ -208,6 +241,9 @@ async def disable(remove: bool = False) -> Dict[str, Any]:
         async with _client(sock) as cx:
             if not await _inspect(cx, BEEKEEPER_CONTAINER):
                 return {"success": True, "message": "Beekeeper is not installed."}
+            # Before the stop: the service restarts a stopped container after 10s,
+            # and the helper takes it down within a second or two of the trigger.
+            request_service("remove")
             r = await cx.post(f"/containers/{BEEKEEPER_CONTAINER}/stop", params={"t": "10"})
             stopped = r.status_code in (204, 304)
             if remove:

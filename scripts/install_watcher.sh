@@ -7,7 +7,7 @@ set -euo pipefail
 # =============================================================================
 # WATCHER SCHEMA VERSION
 # =============================================================================
-WATCHER_SCHEMA_VERSION=8
+WATCHER_SCHEMA_VERSION=9
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 BOLD='\033[1m'; NC='\033[0m'
@@ -141,6 +141,15 @@ if src=$(find_script "beekeeper_firewall.sh"); then
     ok "Installed beekeeper_firewall.sh -> ${SCRIPTS_DIR}/beekeeper_firewall.sh"
 else
     warn "beekeeper_firewall.sh not found — Beekeeper firewall button will be a no-op."
+fi
+
+HAVE_BK_SERVICE=false
+if src=$(find_script "beekeeper_service.sh"); then
+    install_file "$src" "${SCRIPTS_DIR}/beekeeper_service.sh"
+    HAVE_BK_SERVICE=true
+    ok "Installed beekeeper_service.sh -> ${SCRIPTS_DIR}/beekeeper_service.sh"
+else
+    warn "beekeeper_service.sh not found — Beekeeper won't get a boot-time service."
 fi
 
 mkdir -p "${DATA_DIR}/data/os_updates"
@@ -325,6 +334,36 @@ WantedBy=multi-user.target
 PATHUNIT
     fi
 
+    if $HAVE_BK_SERVICE; then
+        sudo tee "$unit_dir/zmm-beekeeper-service.service" >/dev/null <<SERVICE
+[Unit]
+Description=ZMM Beekeeper autostart helper (oneshot — install/remove its boot-time service)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/beekeeper_service.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1
+TimeoutStartSec=180
+SERVICE
+
+        sudo tee "$unit_dir/zmm-beekeeper-service.path" >/dev/null <<PATHUNIT
+[Unit]
+Description=Watch for ZMM Beekeeper autostart triggers
+
+[Path]
+# The :8001 manager writes this when Beekeeper is enabled or disabled.
+PathChanged=${DATA_DIR}/data/beekeeper/service_action
+Unit=zmm-beekeeper-service.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now zmm-upgrade.path
     ok "systemd system path unit enabled (event-driven)"
@@ -339,6 +378,10 @@ PATHUNIT
     if $HAVE_BK_FIREWALL; then
         sudo systemctl enable --now zmm-beekeeper-firewall.path
         ok "Beekeeper firewall helper enabled (runs as root via system unit)"
+    fi
+    if $HAVE_BK_SERVICE; then
+        sudo systemctl enable --now zmm-beekeeper-service.path
+        ok "Beekeeper autostart helper enabled (runs as root via system unit)"
     fi
 }
 
@@ -360,6 +403,10 @@ OS_TRIGGER="${DATA_DIR}/data/os_updates/refresh"
 OS_APPLY_TRIGGER="${DATA_DIR}/data/os_updates/apply"
 OS_RELEASE_TRIGGER="${DATA_DIR}/data/os_updates/release_upgrade"
 OS_REBOOT_TRIGGER="${DATA_DIR}/data/os_updates/reboot"
+BK_FIREWALL_SH="${DATA_DIR}/scripts/beekeeper_firewall.sh"
+BK_FIREWALL_TRIGGER="${DATA_DIR}/data/beekeeper/firewall_action"
+BK_SERVICE_SH="${DATA_DIR}/scripts/beekeeper_service.sh"
+BK_SERVICE_TRIGGER="${DATA_DIR}/data/beekeeper/service_action"
 OS_INTERVAL=21600   # re-check the OS for updates every 6h
 INTERVAL=5
 
@@ -378,6 +425,13 @@ while true; do
     if [[ -x "$OS_APPLY_SH" ]] \
        && { [[ -f "$OS_APPLY_TRIGGER" ]] || [[ -f "$OS_RELEASE_TRIGGER" ]] || [[ -f "$OS_REBOOT_TRIGGER" ]]; }; then
         ZMM_DATA_DIR="$DATA_DIR" bash "$OS_APPLY_SH" || true
+    fi
+    # Beekeeper helpers: on demand. On hosts without systemd this loop is their only runner.
+    if [[ -x "$BK_FIREWALL_SH" && -f "$BK_FIREWALL_TRIGGER" ]]; then
+        ZMM_DATA_DIR="$DATA_DIR" bash "$BK_FIREWALL_SH" || true
+    fi
+    if [[ -x "$BK_SERVICE_SH" && -f "$BK_SERVICE_TRIGGER" ]]; then
+        ZMM_DATA_DIR="$DATA_DIR" bash "$BK_SERVICE_SH" || true
     fi
     sleep "$INTERVAL"
 done

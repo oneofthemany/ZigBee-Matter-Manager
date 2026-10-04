@@ -482,6 +482,11 @@ dialog .remember input{accent-color:var(--honey)}
     <span class="spacer"></span>
     <button class="btn" id="bkFwOpenBtn" onclick="openBeekeeperFirewall(this)" hidden>Open :53</button>
   </div>
+  <div class="rowline" style="border:0;margin-top:.3rem">
+    <span id="bkSvcInfo" class="muted"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="bkSvcBtn" onclick="installBeekeeperService(this)" hidden>Install autostart</button>
+  </div>
   <div class="muted" style="font-size:.76rem;margin-top:.4rem">
     Runs the DNS sinkhole as its own always-on container. Once it&rsquo;s running,
     manage blocklists &amp; stats and switch blocking on from the app&rsquo;s
@@ -828,7 +833,28 @@ function updateBeekeeper(bk){
   en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=false;
   svc.bee='bad';svc.beeTxt=bk.state||'stopped';}
  paintServices();
- updateBeekeeperFirewall(bk.firewall||{},bk.installed);}
+ updateBeekeeperFirewall(bk.firewall||{},bk.installed);
+ updateBeekeeperService(bk.service||{},bk.installed);}
+/* Boot-time service: without it, Beekeeper (the LAN's DNS) may not return after an outage. */
+function updateBeekeeperService(s,installed){
+ const info=$('bkSvcInfo'),btn=$('bkSvcBtn');
+ if(!info)return;
+ if(!installed){info.textContent='';btn.hidden=true;return;}
+ const via=s.backend&&s.backend!=='none'?' <span class="muted">('+esc(s.backend)+(s.unit?' · '+esc(s.unit):'')+')</span>':'';
+ if(s.pending){info.innerHTML=dot('s-warn')+'autostart: setting up&hellip;';btn.hidden=true;return;}
+ if(s.installed&&s.enabled){
+  info.innerHTML=dot(s.active?'s-ok':'s-warn')+'autostart: on'+(s.active?'':' <b>(service not active)</b>')+via;
+  btn.hidden=true;return;}
+ if(s.conflict){
+  info.innerHTML=dot('s-ok')+'autostart: handled by <code>'+esc(s.conflict)+'</code>';btn.hidden=true;return;}
+ if(s.backend==='none'){
+  info.innerHTML=dot('s-warn')+'autostart: '+esc(s.detail||'no service manager — restart policy only');btn.hidden=true;return;}
+ info.innerHTML=dot('s-bad')+'autostart: <b>off</b> — won&rsquo;t come back after a reboot'+
+  (s.known?'':' <span class="muted">('+esc(s.detail||'host helper not installed')+')</span>');
+ btn.hidden=false;}
+async function installBeekeeperService(btn){
+ const d=await act('/beekeeper/service',{action:'install'},false,btn);
+ if(d&&d.success)setTimeout(refresh,3000);}
 function updateBeekeeperFirewall(fw,installed){
  const info=$('bkFwInfo'),btn=$('bkFwOpenBtn');
  if(!info)return;

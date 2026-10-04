@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-MODULES = ["test_rpm_ostree", "test_manager_host", "test_reboot_route"]
+MODULES = ["test_rpm_ostree", "test_manager_host", "test_reboot_route", "test_beekeeper_service"]
 
 
 def main() -> int:
