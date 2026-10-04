@@ -272,7 +272,8 @@ async def beekeeper_firewall_open(authorization: str = Header(default="")):
 # Host OS: updates as collected by scripts/os_updates.sh
 # Reads are open; every action (re-check, apply, release upgrade) needs the
 # bearer token and just writes the trigger file the host-side path units
-# watch — scripts/os_apply.sh does the actual dnf/apt work as root.
+# watch — scripts/os_apply.sh does the actual package-manager work (and the
+# reboot) as root.
 
 @app.get("/host/os-updates")
 async def host_os_updates():
@@ -303,6 +304,15 @@ async def host_os_release_upgrade(data: dict = Body(...),
     if not upgrade.check_token(authorization):
         return _unauthorized()
     ok, msg = host.request_release_upgrade(str(data.get("target") or ""))
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 409)
+
+
+@app.post("/host/reboot")
+async def host_reboot(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = host.request_reboot()
     return JSONResponse({"success": ok, "message" if ok else "error": msg},
                         status_code=200 if ok else 409)
 

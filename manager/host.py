@@ -4,7 +4,7 @@ Host OS status and updates for the manager.
 The manager cannot touch the host package manager from inside a container, so
 host-side helpers installed by install_watcher.sh do the work and this module
 reads their output and writes the trigger files their systemd path units watch:
-refresh, apply, and release_upgrade — which REBOOTS the host at the end.
+refresh, apply, release_upgrade and reboot — the last two REBOOT the host.
 """
 import json
 import logging
@@ -20,6 +20,7 @@ OS_UPDATES_FILE = os.path.join(DATA_DIR, "data", "os_updates.json")
 REFRESH_TRIGGER = os.path.join(DATA_DIR, "data", "os_updates", "refresh")
 APPLY_TRIGGER = os.path.join(DATA_DIR, "data", "os_updates", "apply")
 RELEASE_TRIGGER = os.path.join(DATA_DIR, "data", "os_updates", "release_upgrade")
+REBOOT_TRIGGER = os.path.join(DATA_DIR, "data", "os_updates", "reboot")
 APPLY_STATUS_FILE = os.path.join(DATA_DIR, "data", "os_updates", "apply_status.json")
 
 # The collector runs every 6h; two missed runs means something is wrong on
@@ -62,6 +63,9 @@ def summary() -> Dict[str, Any]:
         "update_count": d.get("update_count") or 0,
         "security_count": d.get("security_count") or 0,
         "reboot_required": bool(d.get("reboot_required")),
+        "staged_version": d.get("staged_version"),
+        "live_applicable": d.get("live_applicable"),
+        "reboot_packages": d.get("reboot_packages") or [],
         "kernel_pending": bool(d.get("kernel_pending")),
         "checked_at": d.get("checked_at"),
         "age_seconds": age,
@@ -93,6 +97,7 @@ def apply_status() -> Optional[Dict[str, Any]]:
     if st is not None:
         st["apply_pending"] = os.path.isfile(APPLY_TRIGGER)
         st["release_pending"] = os.path.isfile(RELEASE_TRIGGER)
+        st["reboot_pending"] = os.path.isfile(REBOOT_TRIGGER)
     return st
 
 
@@ -108,7 +113,7 @@ def detail() -> Dict[str, Any]:
     out["os_release_available"] = d.get("os_release_available")
     out["os_release_automated"] = bool(d.get("os_release_automated"))
     out["apply"] = apply_status()
-    out["apply_pending"] = os.path.isfile(APPLY_TRIGGER) or os.path.isfile(RELEASE_TRIGGER)
+    out["apply_pending"] = any(os.path.isfile(t) for t in (APPLY_TRIGGER, RELEASE_TRIGGER, REBOOT_TRIGGER))
     return out
 
 
@@ -128,7 +133,7 @@ def request_refresh() -> Tuple[bool, str]:
 def _apply_running() -> bool:
     st = apply_status() or {}
     return st.get("state") in ("running", "rebooting") \
-        or os.path.isfile(APPLY_TRIGGER) or os.path.isfile(RELEASE_TRIGGER)
+        or any(os.path.isfile(t) for t in (APPLY_TRIGGER, RELEASE_TRIGGER, REBOOT_TRIGGER))
 
 
 def request_apply() -> Tuple[bool, str]:
@@ -169,4 +174,19 @@ def request_release_upgrade(target: str) -> Tuple[bool, str]:
                       "the new release, then REBOOTS to install it")
     except Exception as e:
         logger.warning("request_release_upgrade failed: %s", e)
+        return False, str(e)
+
+
+def request_reboot() -> Tuple[bool, str]:
+    """Ask the host worker to reboot — the way a staged rpm-ostree update takes effect."""
+    if _apply_running():
+        return False, "an OS update/upgrade is already in progress"
+    try:
+        os.makedirs(os.path.dirname(REBOOT_TRIGGER), exist_ok=True)
+        with open(REBOOT_TRIGGER, "w") as f:
+            f.write(str(int(time.time())))
+        return True, ("Reboot requested — the host and every container go down for a "
+                      "few minutes; this page reconnects when the manager is back")
+    except Exception as e:
+        logger.warning("request_reboot failed: %s", e)
         return False, str(e)

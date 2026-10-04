@@ -410,6 +410,7 @@ dialog .remember input{accent-color:var(--honey)}
     <span class="spacer"></span>
     <button class="btn" id="hoRelBtn" onclick="releaseUpgradeHost(this)" hidden>Upgrade OS</button>
     <button class="btn primary" id="hoApplyBtn" onclick="applyHostUpdates(this)" hidden>Apply updates</button>
+    <button class="btn" id="hoRebootBtn" onclick="rebootHost(this)" hidden>Reboot host</button>
     <button class="btn" id="hoCheckBtn" onclick="checkHostNow(this)">Check now</button>
   </div>
   <div id="hoApply" class="muted" style="margin-top:.3rem" hidden></div>
@@ -877,17 +878,29 @@ function ago(sec){if(sec==null)return '';
  if(sec<5400)return Math.round(sec/60)+'m ago';
  if(sec<129600)return Math.round(sec/3600)+'h ago';
  return Math.round(sec/86400)+'d ago';}
-let hoFast=0,hoLastChecked=null,hoRelTarget=null;
+let hoFast=0,hoLastChecked=null,hoRelTarget=null,hoLive=null,hoRebootPkgs=[];
 async function checkHostNow(btn){
  const d=await act('/host/os-updates/refresh',null,false,btn);
  if(d&&d.success)hoFast=24;}
 async function applyHostUpdates(btn){
+ // rpm-ostree reports whether the update can go in without a reboot.
+ const after=hoLive===true?'It can be applied live — no reboot needed.'
+  :hoLive===false?('It will be staged and needs a reboot to take effect ('+
+    hoRebootPkgs.slice(0,6).join(', ')+(hoRebootPkgs.length>6?', …':'')+').')
+  :'A kernel update will ask for a reboot afterwards.';
  if(!await confirmM('Install all pending package updates on the host?\n'+
    'This runs the package manager as root on the machine that hosts every '+
-   'container here. A kernel update will ask for a reboot afterwards.',
+   'container here. '+after,
    {title:'Apply host updates',confirmText:'Apply updates',danger:true}))return;
  const d=await act('/host/os-updates/apply',null,false,btn);
  if(d&&d.success){hoFast=60;toast('Host update started','ok');}}
+async function rebootHost(btn){
+ if(!await confirmM('Reboot the host now?\n\n'+
+   'The staged update takes effect on boot. The host and every container '+
+   '(including this manager and the app) go down for a few minutes.',
+   {title:'Reboot host',confirmText:'Reboot now',danger:true}))return;
+ const d=await act('/host/reboot',null,false,btn);
+ if(d&&d.success){hoFast=60;toast('Host reboot requested','ok');}}
 async function releaseUpgradeHost(btn){
  if(!hoRelTarget)return;
  if(!await confirmM('Upgrade the host operating system to release '+hoRelTarget+'?\n\n'+
@@ -906,13 +919,14 @@ async function loadHost(){
    $('hoInfo').innerHTML='no data yet &mdash; the collector installs with the '+
     'upgrade watcher; re-run <code>install_watcher.sh</code> on the host (or upgrade)';
    $('hoScroll').hidden=true;$('hoFoot').textContent='';
-   $('hoApplyBtn').hidden=true;$('hoRelBtn').hidden=true;$('hoApply').hidden=true;
+   $('hoApplyBtn').hidden=true;$('hoRelBtn').hidden=true;$('hoRebootBtn').hidden=true;$('hoApply').hidden=true;
   }else{
    const bits=[];
    if(d.os)bits.push(esc(d.os));
    if(d.kernel_running)bits.push('kernel <code>'+esc(d.kernel_running)+'</code>'+
     (d.kernel_pending?(' &rarr; <code>'+esc(d.kernel_latest||'?')+'</code> installed'):''));
-   if(d.reboot_required)bits.push('<strong style="color:var(--bad)">reboot required</strong>');
+   if(d.reboot_required)bits.push('<strong style="color:var(--bad)">'+
+    (d.staged_version?('update '+esc(d.staged_version)+' staged — reboot to apply'):'reboot required')+'</strong>');
    // Release detected but not automatable (e.g. Debian stable jumps): say so
    // instead of showing an "Upgrade OS" button that would only ever fail.
    if(d.os_release_available&&!d.os_release_automated)
@@ -933,13 +947,18 @@ async function loadHost(){
       (d.security_count?(' · <strong style="color:var(--bad)">'+d.security_count+
        ' security</strong>'):'')+
       (pk.length<(d.update_count||0)?(' · showing first '+pk.length):'')+
+      (d.update_count&&d.live_applicable===true?' · can be applied live, no reboot':'')+
+      (d.update_count&&d.live_applicable===false?(' · needs a reboot afterwards ('+
+        esc((d.reboot_packages||[]).slice(0,4).join(', '))+((d.reboot_packages||[]).length>4?', …':'')+')'):'')+
       (d.error?(' · '+esc(d.error)):''));
    // Apply / release-upgrade actions (host-side os_apply.sh does the work)
    const ap=d.apply||{};
    const busy=d.apply_pending||ap.state==='running'||ap.state==='rebooting';
    hoRelTarget=(d.os_release_available&&d.os_release_automated)
     ?d.os_release_available:null;
+   hoLive=d.live_applicable;hoRebootPkgs=d.reboot_packages||[];
    $('hoApplyBtn').hidden=!(d.update_count>0)||busy||d.status==='unsupported';
+   $('hoRebootBtn').hidden=!d.reboot_required||busy;
    $('hoRelBtn').hidden=!hoRelTarget||busy;
    if(hoRelTarget)$('hoRelBtn').textContent='Upgrade OS → '+hoRelTarget;
    if(busy){
@@ -947,7 +966,7 @@ async function loadHost(){
     $('hoApply').hidden=false;
     $('hoApply').innerHTML='<strong style="color:var(--warn)">'+
      (ap.state==='rebooting'?'host is rebooting into the OS upgrade&hellip;'
-      :((ap.action==='release_upgrade'?'OS release upgrade':'package update')+
+      :((ap.action==='release_upgrade'?'OS release upgrade':ap.action==='reboot'?'reboot':'package update')+
         ' running&hellip;'))+'</strong>'+
      (ap.detail?(' '+esc(ap.detail)):'')+
      ' · <a href="#" onclick="openLog(\'os_apply.log\');return false">watch log</a>';

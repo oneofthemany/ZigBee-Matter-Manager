@@ -7,7 +7,7 @@ set -euo pipefail
 # =============================================================================
 # WATCHER SCHEMA VERSION
 # =============================================================================
-WATCHER_SCHEMA_VERSION=7
+WATCHER_SCHEMA_VERSION=8
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 BOLD='\033[1m'; NC='\033[0m'
@@ -281,12 +281,13 @@ SERVICE
 
         sudo tee "$unit_dir/zmm-os-apply.path" >/dev/null <<PATHUNIT
 [Unit]
-Description=Watch for ZMM OS apply / release-upgrade triggers
+Description=Watch for ZMM OS apply / release-upgrade / reboot triggers
 
 [Path]
 # The :8001 manager writes these to apply updates / upgrade the OS release.
 PathChanged=${DATA_DIR}/data/os_updates/apply
 PathChanged=${DATA_DIR}/data/os_updates/release_upgrade
+PathChanged=${DATA_DIR}/data/os_updates/reboot
 Unit=zmm-os-apply.service
 
 [Install]
@@ -358,6 +359,7 @@ OS_JSON="${DATA_DIR}/data/os_updates.json"
 OS_TRIGGER="${DATA_DIR}/data/os_updates/refresh"
 OS_APPLY_TRIGGER="${DATA_DIR}/data/os_updates/apply"
 OS_RELEASE_TRIGGER="${DATA_DIR}/data/os_updates/release_upgrade"
+OS_REBOOT_TRIGGER="${DATA_DIR}/data/os_updates/reboot"
 OS_INTERVAL=21600   # re-check the OS for updates every 6h
 INTERVAL=5
 
@@ -374,7 +376,7 @@ while true; do
     fi
     # OS apply / release upgrade: on demand only.
     if [[ -x "$OS_APPLY_SH" ]] \
-       && { [[ -f "$OS_APPLY_TRIGGER" ]] || [[ -f "$OS_RELEASE_TRIGGER" ]]; }; then
+       && { [[ -f "$OS_APPLY_TRIGGER" ]] || [[ -f "$OS_RELEASE_TRIGGER" ]] || [[ -f "$OS_REBOOT_TRIGGER" ]]; }; then
         ZMM_DATA_DIR="$DATA_DIR" bash "$OS_APPLY_SH" || true
     fi
     sleep "$INTERVAL"

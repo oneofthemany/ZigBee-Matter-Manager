@@ -11,6 +11,29 @@ REFRESH_TRIGGER="${TRIGGER_DIR}/refresh"
 LOG_FILE="${DATA_DIR}/logs/os_updates.log"
 MAX_PKGS=300          # cap the package list in the JSON (counts stay exact)
 NET_TIMEOUT=300       # seconds allowed for metadata refresh / list commands
+# Overridable so tests can point the script at fixtures.
+OSTREE_BOOTED="${ZMM_OSTREE_BOOTED:-/run/ostree-booted}"
+OS_RELEASE_FILE="${ZMM_OS_RELEASE:-/etc/os-release}"
+# Bodhi's "current" state means released; "pending" covers branched and rawhide,
+# which already have mirrors and would otherwise look like an available release.
+BODHI_RELEASES_URL="${ZMM_BODHI_URL:-https://bodhi.fedoraproject.org/releases/?exclude_archived=true&rows_per_page=100}"
+
+# Packages whose new version only takes effect from boot. Keep in sync with os_apply.sh.
+REBOOT_PKGS_RE='^(kernel(-core|-modules|-modules-core|-modules-extra)?|kernel-rt.*|glibc|linux-firmware.*|microcode_ctl|systemd|systemd-libs|systemd-udev|udev|dbus|dbus-broker|dbus-daemon|dbus-libs|openssl-libs|gnutls|zlib|zlib-ng-compat|ostree|ostree-libs|rpm-ostree|rpm-ostree-libs|selinux-policy|selinux-policy-targeted)$'
+
+reboot_blockers() {   # newline-separated package names -> the ones needing a reboot, one per line
+    printf '%s\n' "$1" | grep -E "$REBOOT_PKGS_RE" | sort -u
+}
+
+# Keep in sync with os_apply.sh, which recomputes it rather than trusting the JSON.
+rebase_target() {   # origin current new -> origin moved to release `new`, or nothing
+    local origin="$1" cur="$2" new="$3"
+    if [[ "$origin" == *"/${cur}/"* ]]; then
+        printf '%s\n' "${origin/\/${cur}\//\/${new}\/}"          # fedora:fedora/44/x86_64/silverblue
+    elif [[ "$origin" == *":${cur}" ]]; then
+        printf '%s\n' "${origin%:${cur}}:${new}"                  # ...fedora-silverblue:44
+    fi
+}
 
 mkdir -p "${DATA_DIR}/data" "$TRIGGER_DIR" "${DATA_DIR}/logs" 2>/dev/null || true
 
@@ -30,7 +53,7 @@ if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 \
 fi
 
 OS_NAME="unknown"
-[[ -r /etc/os-release ]] && OS_NAME=$(. /etc/os-release && echo "${PRETTY_NAME:-unknown}")
+[[ -r "$OS_RELEASE_FILE" ]] && OS_NAME=$(. "$OS_RELEASE_FILE" && echo "${PRETTY_NAME:-unknown}")
 KERNEL_RUNNING=$(uname -r 2>/dev/null || echo "")
 KERNEL_LATEST=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
 UPTIME=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
@@ -39,22 +62,46 @@ PKG_MANAGER=""
 ERR=""
 SECURITY=0
 REBOOT=false
+STAGED_VERSION=""     # rpm-ostree: downloaded deployment waiting for a reboot
+LIVE_APPLICABLE=""    # rpm-ostree: "true"/"false" for the pending update, "" when none
+REBOOT_PKGS=""        # rpm-ostree: packages in the pending update that need a reboot
+OSTREE_ORIGIN=""      # rpm-ostree: what the booted deployment follows
 PKGS_TSV=""           # name<TAB>current<TAB>candidate
 
-if [[ -f /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1; then
+if [[ -f "$OSTREE_BOOTED" ]] && command -v rpm-ostree >/dev/null 2>&1; then
     PKG_MANAGER="rpm-ostree"
     log "checking updates via rpm-ostree"
-    RAW=$(timeout "$NET_TIMEOUT" rpm-ostree upgrade --check 2>>"$LOG_FILE")
+    # --check refreshes the cached update; status --json says what it is and
+    # whether it, or anything else, is already deployed and only needs a reboot.
+    timeout "$NET_TIMEOUT" rpm-ostree upgrade --check >/dev/null 2>>"$LOG_FILE"
     RC=$?
-    if [[ $RC -eq 0 ]]; then
-        NEW_VER=$(printf '%s\n' "$RAW" | awk '/Version:/ {print $2; exit}')
-        PKGS_TSV=$(printf "ostree deployment\t\t%s\n" "${NEW_VER:-new image}")
-        SECURITY=$(printf '%s\n' "$RAW" | grep -c 'SecAdvisories' || true)
-    elif [[ $RC -ne 77 ]]; then    # 77 = already up to date
+    if [[ $RC -ne 0 && $RC -ne 77 ]]; then    # 77 = already up to date
         ERR="rpm-ostree upgrade --check failed (exit $RC)"
         log "$ERR"
     fi
-    rpm-ostree status 2>/dev/null | grep -q '(pending)' && REBOOT=true
+    ST=$(rpm-ostree status --json 2>>"$LOG_FILE")
+    if [[ -n "$ST" ]]; then
+        BOOTED_VER=$(jq -r '[.deployments[] | select(.booted)][0].version // ""' <<<"$ST")
+        # Deployments are newest first; one ahead of the booted one is waiting for a reboot.
+        STAGED_VERSION=$(jq -r 'if (.deployments[0].booted | not) then (.deployments[0].version // "new deployment") else "" end' <<<"$ST")
+        CACHED_VER=$(jq -r '."cached-update".version // ""' <<<"$ST")
+        OSTREE_ORIGIN=$(jq -r '[.deployments[] | select(.booted)][0] | (."container-image-reference" // .origin // "")' <<<"$ST")
+        # After apply-live the booted deployment records the commit it now runs.
+        LIVE_MATCHES=$(jq -r '([.deployments[] | select(.booted)][0]["live-replaced"] // "") as $l
+                              | if $l != "" and $l == .deployments[0].checksum then "yes" else "" end' <<<"$ST")
+        [[ -n "$STAGED_VERSION" && -z "$LIVE_MATCHES" ]] && REBOOT=true
+        if [[ -n "$CACHED_VER" && "$CACHED_VER" != "$BOOTED_VER" && "$CACHED_VER" != "$STAGED_VERSION" ]]; then
+            PKGS_TSV=$(printf "ostree deployment\t%s\t%s\n" "$BOOTED_VER" "$CACHED_VER")
+            # Advisory kind 1 is security (libdnf's enum); rpm-ostree lists only those today.
+            SECURITY=$(jq '[."cached-update".advisories[]? | select(.[1] == 1)] | length' <<<"$ST")
+            CHANGED=$(jq -r '."cached-update"."rpm-diff" // {} | [.upgraded[]?, .downgraded[]?, .removed[]?, .added[]?] | .[][1]' <<<"$ST" 2>/dev/null)
+            REBOOT_PKGS=$(reboot_blockers "$CHANGED")
+            [[ -z "$REBOOT_PKGS" ]] && LIVE_APPLICABLE=true || LIVE_APPLICABLE=false
+        fi
+    else
+        ERR="${ERR:-rpm-ostree status --json returned nothing}"
+        log "$ERR"
+    fi
 elif command -v dnf >/dev/null 2>&1; then
     PKG_MANAGER="dnf"
     log "checking updates via dnf"
@@ -99,28 +146,28 @@ OS_ID=""
 RELEASE_CURRENT=""
 RELEASE_AVAILABLE=""
 RELEASE_AUTOMATED=false
-if [[ -r /etc/os-release ]]; then
-    OS_ID=$(. /etc/os-release && echo "${ID:-}")
-    RELEASE_CURRENT=$(. /etc/os-release && echo "${VERSION_ID:-}")
+if [[ -r "$OS_RELEASE_FILE" ]]; then
+    OS_ID=$(. "$OS_RELEASE_FILE" && echo "${ID:-}")
+    RELEASE_CURRENT=$(. "$OS_RELEASE_FILE" && echo "${VERSION_ID:-}")
 fi
 if [[ "$OS_ID" == "fedora" && "$RELEASE_CURRENT" =~ ^[0-9]+$ ]] \
    && command -v curl >/dev/null 2>&1; then
-    RELEASE_LATEST=""
-    NEXT=$((RELEASE_CURRENT + 1))
-    while (( NEXT <= RELEASE_CURRENT + 2 )); do
-        if curl -fsm 20 -o /dev/null \
-            "https://mirrors.fedoraproject.org/metalink?repo=fedora-${NEXT}&arch=$(uname -m)" \
-            2>>"$LOG_FILE"; then
-            RELEASE_LATEST="$NEXT"
-            NEXT=$((NEXT + 1))
-        else
-            break
-        fi
-    done
-    if [[ -n "$RELEASE_LATEST" ]]; then
+    RELEASE_LATEST=$(curl -fsm 20 "$BODHI_RELEASES_URL" 2>>"$LOG_FILE" | jq -r '
+        [.releases[]? | select(.id_prefix == "FEDORA" and .state == "current"
+                               and (.name | test("^F[0-9]+$"))) | .version | tonumber]
+        | max // empty' 2>>"$LOG_FILE")
+    if [[ "$RELEASE_LATEST" =~ ^[0-9]+$ ]] && (( RELEASE_LATEST > RELEASE_CURRENT )); then
+        # Fedora supports upgrading at most two releases in one step.
+        (( RELEASE_LATEST > RELEASE_CURRENT + 2 )) && RELEASE_LATEST=$((RELEASE_CURRENT + 2))
         RELEASE_AVAILABLE="$RELEASE_LATEST"
-        RELEASE_AUTOMATED=true
-        log "OS release upgrade available: Fedora $RELEASE_CURRENT -> $RELEASE_LATEST"
+        if [[ "$PKG_MANAGER" != "rpm-ostree" ]]; then
+            RELEASE_AUTOMATED=true
+        elif [[ -n "$(rebase_target "$OSTREE_ORIGIN" "$RELEASE_CURRENT" "$RELEASE_LATEST")" ]]; then
+            RELEASE_AUTOMATED=true
+        else
+            log "Fedora $RELEASE_LATEST released, but no rebase target derivable from '$OSTREE_ORIGIN' (manual)"
+        fi
+        log "OS release upgrade available: Fedora $RELEASE_CURRENT -> $RELEASE_LATEST (automated=$RELEASE_AUTOMATED)"
     fi
 elif [[ "$PKG_MANAGER" == "apt" ]] && command -v do-release-upgrade >/dev/null 2>&1; then
     DRU=$(timeout 120 do-release-upgrade -c 2>>"$LOG_FILE")
@@ -160,6 +207,9 @@ jq -n \
     --arg err "$ERR" \
     --arg relcur "$RELEASE_CURRENT" \
     --arg relav "$RELEASE_AVAILABLE" \
+    --arg staged "$STAGED_VERSION" \
+    --arg live "$LIVE_APPLICABLE" \
+    --arg rebootpkgs "$REBOOT_PKGS" \
     --argjson relauto "$RELEASE_AUTOMATED" \
     --argjson total "${TOTAL:-0}" \
     --argjson security "${SECURITY:-0}" \
@@ -176,6 +226,9 @@ jq -n \
       update_count: $total,
       security_count: $security,
       reboot_required: $reboot,
+      staged_version: (if $staged == "" then null else $staged end),
+      live_applicable: (if $live == "" then null else ($live == "true") end),
+      reboot_packages: ($rebootpkgs | split("\n") | map(select(. != ""))),
       packages: $packages,
       os_release_current: (if $relcur == "" then null else $relcur end),
       os_release_available: (if $relav == "" then null else $relav end),

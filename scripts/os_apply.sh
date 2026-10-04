@@ -8,11 +8,34 @@ DATA_DIR="${ZMM_DATA_DIR:-/opt/.zigbee-matter-manager}"
 TRIGGER_DIR="${DATA_DIR}/data/os_updates"
 APPLY_TRIGGER="${TRIGGER_DIR}/apply"
 RELEASE_TRIGGER="${TRIGGER_DIR}/release_upgrade"
+REBOOT_TRIGGER="${TRIGGER_DIR}/reboot"
 STATUS_FILE="${TRIGGER_DIR}/apply_status.json"
 LOCK_DIR="${TRIGGER_DIR}/.apply_lock"
 LOG_FILE="${DATA_DIR}/logs/os_apply.log"
 COLLECTOR="${DATA_DIR}/scripts/os_updates.sh"
 NET_TIMEOUT=3600      # a big dnf/apt transaction can legitimately take a while
+OSTREE_BOOTED="${ZMM_OSTREE_BOOTED:-/run/ostree-booted}"
+OS_RELEASE_FILE="${ZMM_OS_RELEASE:-/etc/os-release}"
+
+# Packages whose new version only takes effect from boot: the kernel and early
+# userspace every process links against. Same set as dnf needs-restarting -r,
+# plus ostree/rpm-ostree themselves. Keep in sync with os_updates.sh.
+REBOOT_PKGS_RE='^(kernel(-core|-modules|-modules-core|-modules-extra)?|kernel-rt.*|glibc|linux-firmware.*|microcode_ctl|systemd|systemd-libs|systemd-udev|udev|dbus|dbus-broker|dbus-daemon|dbus-libs|openssl-libs|gnutls|zlib|zlib-ng-compat|ostree|ostree-libs|rpm-ostree|rpm-ostree-libs|selinux-policy|selinux-policy-targeted)$'
+
+reboot_blockers() {   # newline-separated package names -> the ones needing a reboot, comma-joined
+    printf '%s\n' "$1" | grep -E "$REBOOT_PKGS_RE" | sort -u | paste -sd, - | sed 's/,/, /g'
+}
+
+# Keep in sync with os_updates.sh. Recomputed here rather than read from
+# os_updates.json, which sits in a directory the containers can write.
+rebase_target() {   # origin current new -> origin moved to release `new`, or nothing
+    local origin="$1" cur="$2" new="$3"
+    if [[ "$origin" == *"/${cur}/"* ]]; then
+        printf '%s\n' "${origin/\/${cur}\//\/${new}\/}"
+    elif [[ "$origin" == *":${cur}" ]]; then
+        printf '%s\n' "${origin%:${cur}}:${new}"
+    fi
+}
 
 mkdir -p "$TRIGGER_DIR" "${DATA_DIR}/logs" 2>/dev/null || true
 
@@ -47,6 +70,9 @@ if [[ -f "$RELEASE_TRIGGER" ]]; then
 elif [[ -f "$APPLY_TRIGGER" ]]; then
     ACTION="apply"
     rm -f "$APPLY_TRIGGER" 2>/dev/null || true
+elif [[ -f "$REBOOT_TRIGGER" ]]; then
+    ACTION="reboot"
+    rm -f "$REBOOT_TRIGGER" 2>/dev/null || true
 else
     exit 0
 fi
@@ -83,7 +109,7 @@ run_logged() {
 }
 
 PKG_MANAGER=""
-if [[ -f /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1; then
+if [[ -f "$OSTREE_BOOTED" ]] && command -v rpm-ostree >/dev/null 2>&1; then
     PKG_MANAGER="rpm-ostree"
 elif command -v dnf >/dev/null 2>&1; then
     PKG_MANAGER="dnf"
@@ -92,12 +118,27 @@ elif command -v apt-get >/dev/null 2>&1; then
 fi
 
 log "── $ACTION requested (pm=${PKG_MANAGER:-none} target=${RELEASE_TARGET:-—}) ──"
-write_status "running" "$ACTION" \
-    "$([[ $ACTION == apply ]] && echo 'applying package updates' \
-       || echo "downloading release upgrade to ${RELEASE_TARGET:-?}")"
+case "$ACTION" in
+    apply)  RUNNING_MSG="applying package updates" ;;
+    reboot) RUNNING_MSG="rebooting the host" ;;
+    *)      RUNNING_MSG="downloading release upgrade to ${RELEASE_TARGET:-?}" ;;
+esac
+write_status "running" "$ACTION" "$RUNNING_MSG"
+
+reboot_host() {   # detail
+    write_status "rebooting" "$ACTION" "$1"
+    log "rebooting: $1"
+    sync
+    $SUDO systemctl reboot >> "$LOG_FILE" 2>&1
+    exit 0   # (unreachable if the reboot proceeds)
+}
 
 RC=1
+DONE_DETAIL=""        # set by a branch that has something better to say than "completed"
 case "$ACTION:$PKG_MANAGER" in
+    reboot:*)
+        reboot_host "rebooting at your request — the host and every container will be down for a few minutes"
+        ;;
     apply:dnf)
         run_logged $SUDO dnf -y --refresh upgrade; RC=$?
         ;;
@@ -109,6 +150,48 @@ case "$ACTION:$PKG_MANAGER" in
         ;;
     apply:rpm-ostree)
         run_logged $SUDO rpm-ostree upgrade; RC=$?
+        if [[ $RC -eq 0 ]]; then
+            ST=$(rpm-ostree status --json 2>>"$LOG_FILE")
+            FROM=$(jq -r '[.deployments[] | select(.booted)][0].checksum // ""' <<<"$ST")
+            TO=$(jq -r 'if (.deployments[0].booted | not) then .deployments[0].checksum else "" end' <<<"$ST")
+            if [[ -z "$TO" ]]; then
+                DONE_DETAIL="already up to date — nothing new to deploy"
+            else
+                CHANGED=$(rpm-ostree db diff --format=json "$FROM" "$TO" 2>>"$LOG_FILE" | jq -r '.pkgdiff[]?[0]')
+                BLOCKERS=$(reboot_blockers "$CHANGED")
+                if [[ -n "$BLOCKERS" ]]; then
+                    DONE_DETAIL="update staged — reboot to apply (needs a reboot for: $BLOCKERS)"
+                    log "not applying live: $BLOCKERS"
+                else
+                    LIVE=(rpm-ostree apply-live --allow-replacement)
+                    rpm-ostree apply-live --help >/dev/null 2>&1 || LIVE=(rpm-ostree ex apply-live --allow-replacement)
+                    if run_logged $SUDO "${LIVE[@]}"; then
+                        DONE_DETAIL="applied live — no reboot needed"
+                    else
+                        DONE_DETAIL="update staged — live apply failed, reboot to apply"
+                    fi
+                fi
+            fi
+        fi
+        ;;
+    release_upgrade:rpm-ostree)
+        CURRENT=$( [[ -r "$OS_RELEASE_FILE" ]] && . "$OS_RELEASE_FILE" && echo "${VERSION_ID:-}")
+        if [[ ! "$RELEASE_TARGET" =~ ^[0-9]+$ || ! "$CURRENT" =~ ^[0-9]+$ ]] \
+           || (( RELEASE_TARGET <= CURRENT || RELEASE_TARGET > CURRENT + 2 )); then
+            write_status "failed" "$ACTION" "refusing release ${RELEASE_TARGET:-?} from ${CURRENT:-?} (must be one or two releases ahead)"
+            exit 0
+        fi
+        ORIGIN=$(rpm-ostree status --json 2>>"$LOG_FILE" \
+            | jq -r '[.deployments[] | select(.booted)][0] | (."container-image-reference" // .origin // "")')
+        NEW_REF=$(rebase_target "$ORIGIN" "$CURRENT" "$RELEASE_TARGET")
+        if [[ -z "$NEW_REF" ]]; then
+            write_status "failed" "$ACTION" "can't work out the release $RELEASE_TARGET equivalent of '$ORIGIN' — rebase manually"
+            exit 0
+        fi
+        run_logged $SUDO rpm-ostree rebase "$NEW_REF"; RC=$?
+        if [[ $RC -eq 0 ]]; then
+            reboot_host "rebased to $NEW_REF — rebooting into Fedora $RELEASE_TARGET; the host will be down for a few minutes"
+        fi
         ;;
     release_upgrade:dnf)
         if [[ -z "$RELEASE_TARGET" ]]; then
@@ -153,8 +236,8 @@ case "$ACTION:$PKG_MANAGER" in
 esac
 
 if [[ $RC -eq 0 ]]; then
-    log "$ACTION finished OK"
-    write_status "done" "$ACTION" "completed — see os_apply.log for details"
+    log "$ACTION finished OK${DONE_DETAIL:+ — $DONE_DETAIL}"
+    write_status "done" "$ACTION" "${DONE_DETAIL:-completed — see os_apply.log for details}"
 else
     log "$ACTION FAILED (exit $RC)"
     write_status "failed" "$ACTION" "exit $RC — see os_apply.log for details"
