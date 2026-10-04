@@ -9,6 +9,7 @@
 const log = zmmLog('media');
 
 import { confirmDialog, promptDialog } from './dialogs.js';
+import { whileVisible } from './utils.js';
 import { openSyncLab, restoreSyncLab, syncLabGroup } from './sync-lab.js';
 import * as local from './local-player.js';
 import { LOCAL_ID } from './local-player.js';
@@ -195,7 +196,7 @@ export function initMedia() {
     window.mediaEqPreset = eqPreset;
     window.mediaEqBand = eqBand;
     window.mediaEqBandRemote = eqBandRemote;
-    if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
+    if (!_posTimer) _posTimer = setInterval(whileVisible(_tickPositions), 1000);
 }
 
 // Karaoke mode (cast synced lyrics to the custom receiver)
@@ -1844,7 +1845,7 @@ function openLyricsScreen(pid) {
     // Re-anchor from a FRESH device read every 1.5s (vs the 10s media poll) so
     // the lyrics stay locked to the playhead; rAF interpolates in between.
     _lyrFreshPoll();
-    _lyr.poll = setInterval(_lyrFreshPoll, 1500);
+    _lyr.poll = setInterval(whileVisible(_lyrFreshPoll), 1500);
     _lyr.raf = requestAnimationFrame(lyricsTick);
 }
 
@@ -2659,7 +2660,7 @@ async function renderSyncPane() {
     }
     _mountZoneScopes();
     _stopSyncPoll();
-    if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
+    if (running) _syncTimer = setInterval(whileVisible(refreshSyncStats), 3000);
 }
 
 async function refreshSyncStats() {

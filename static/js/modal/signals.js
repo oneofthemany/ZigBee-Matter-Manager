@@ -12,6 +12,7 @@
  */
 
 import { state } from '../state.js';
+import { whileVisible } from '../utils.js';
 
 // Live instances, so the WebSocket dispatcher can fan updates to every mount.
 const _instances = new Set();
@@ -212,7 +213,7 @@ async function _startStream(inst, ieee) {
         _setLive(inst, true);
         _repaint(inst);
         if (inst.tick) clearInterval(inst.tick);
-        inst.tick = setInterval(() => _repaint(inst), 1000);
+        inst.tick = setInterval(whileVisible(() => _repaint(inst)), 1000);
     } catch (e) {
         _setInfo(inst, `Failed to start: ${e.message}`);
     }
@@ -349,7 +350,7 @@ async function _learnBaseline(inst) {
         if (!json.success) { _renderLearnStep(inst, 'ready', json.error); return; }
         _renderLearnStep(inst, 'demonstrate');
         if (inst.learn.timer) clearInterval(inst.learn.timer);
-        inst.learn.timer = setInterval(() => _learnPoll(inst), 1500);
+        inst.learn.timer = setInterval(whileVisible(() => _learnPoll(inst)), 1500);
         _learnPoll(inst);
     } catch (e) {
         _renderLearnStep(inst, 'ready', e.message);

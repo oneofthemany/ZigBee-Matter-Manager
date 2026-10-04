@@ -6,7 +6,7 @@
  */
 
 import { state } from './state.js';
-import { updateLastSeenTimes } from './utils.js';
+import { updateLastSeenTimes, whileVisible } from './utils.js';
 import { initWS } from './websocket.js';
 import { fetchAllDevices, filterByStatus } from './devices.js';
 import { initGroups } from './groups.js';
@@ -391,7 +391,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.addEventListener('shown.bs.tab', enhanceTabA11y);
 
         // Live "last seen" tick
-        setInterval(updateLastSeenTimes, 1000);
+        setInterval(whileVisible(updateLastSeenTimes), 1000);
 
         // Module inits
         initTables();          // delegated table sort/filter (once)
@@ -421,7 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.initMessagesUI) window.initMessagesUI();
         // Fallback poll — the matter_status websocket event is the primary
         // signal; this catches missed events (ws reconnects, backend restarts)
-        setInterval(checkMatterStatus, 60000);
+        setInterval(whileVisible(checkMatterStatus), 60000);
 
         // Drive tab listener — journeys + fuel prices load on first open
         const driveTab = document.querySelector('button[data-bs-target="#drive"]');

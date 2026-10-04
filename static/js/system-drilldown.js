@@ -9,6 +9,8 @@
  * the data directory).
  */
 
+import { whileVisible } from './utils.js';
+
 const AREAS = {
     cpu:         { title: 'CPU',            icon: 'microchip',        render: _renderCpu,    auto: true },
     memory:      { title: 'Memory',         icon: 'memory',           render: _renderMemory, auto: true },
@@ -89,7 +91,7 @@ function _ensureModal() {
 
 function _schedule() {
     _stop();
-    if (document.getElementById('sysDrillAuto')?.checked) _timer = setInterval(_fetch, 5000);
+    if (document.getElementById('sysDrillAuto')?.checked) _timer = setInterval(whileVisible(_fetch), 5000);
 }
 
 function _stop() {

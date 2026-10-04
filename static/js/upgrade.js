@@ -5,6 +5,7 @@
  */
 
 import { confirmDialog } from './dialogs.js';
+import { whileVisible } from './utils.js';
 
 const log = zmmLog('upgrade');
 
@@ -63,7 +64,7 @@ function startPolling(ms = POLL_ACTIVE_MS) {
     if (_pollTimer && _pollMs === ms) return;
     if (_pollTimer) clearInterval(_pollTimer);
     _pollMs = ms;
-    _pollTimer = setInterval(refreshUpgradeStatus, ms);
+    _pollTimer = setInterval(whileVisible(refreshUpgradeStatus), ms);
 }
 
 function stopPolling() {
@@ -476,7 +477,7 @@ async function refreshUpgradeStatus() {
         // Manage log polling based on state
         const state = data.upgrade_state;
         if (state === 'building' && !_logPollTimer) {
-            _logPollTimer = setInterval(refreshBuildLog, 2000);
+            _logPollTimer = setInterval(whileVisible(refreshBuildLog), 2000);
         } else if (state !== 'building' && _logPollTimer) {
             clearInterval(_logPollTimer);
             _logPollTimer = null;

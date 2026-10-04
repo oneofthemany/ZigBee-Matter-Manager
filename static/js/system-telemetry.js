@@ -10,6 +10,7 @@
  */
 
 import { state } from './state.js';
+import { whileVisible } from './utils.js';
 import { createChart } from './chart-utils.js';
 import { openSystemDrilldown } from './system-drilldown.js';
 
@@ -63,9 +64,9 @@ function _startTab() {
 
     // Staggered intervals
     _stopTab();
-    _gaugeTimer = setInterval(_refreshGauges, 5000);
-    _chartTimer = setInterval(_refreshChart, 30000);
-    _dbTimer    = setInterval(_refreshDbStats, 60000);
+    _gaugeTimer = setInterval(whileVisible(_refreshGauges), 5000);
+    _chartTimer = setInterval(whileVisible(_refreshChart), 30000);
+    _dbTimer    = setInterval(whileVisible(_refreshDbStats), 60000);
 }
 
 function _stopTab() {

@@ -6,7 +6,7 @@
 
 import { createChart } from './chart-utils.js';
 import { reapplySort } from './table-utils.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, whileVisible } from './utils.js';
 
 const log = zmmLog('mesh');
 
@@ -125,7 +125,7 @@ export async function loadMeshTopology() {
                 // When Packet Stats tab is shown, start polling every 2 seconds
                 statsTabBtn.addEventListener('shown.bs.tab', () => {
                     refreshPacketStats(); // Immediate update
-                    statsInterval = setInterval(refreshPacketStats, 2000);
+                    statsInterval = setInterval(whileVisible(refreshPacketStats), 2000);
                 });
 
                 // When leaving the tab, stop polling

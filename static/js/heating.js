@@ -11,6 +11,7 @@ import {
     initHeatingController,
     loadControllerStatus,
 } from './heating-controller.js';
+import { whileVisible } from './utils.js';
 import { createChart } from './chart-utils.js';
 
 
@@ -114,9 +115,9 @@ export function initHeating() {
 
 function startHeatingAutoRefresh() {
     stopHeatingAutoRefresh();
-    heatingRefreshTimer = setInterval(() => {
+    heatingRefreshTimer = setInterval(whileVisible(() => {
         if (heatingTabActive) loadHeatingDashboard({ silent: true });
-    }, REFRESH_MS);
+    }), REFRESH_MS);
 }
 
 function stopHeatingAutoRefresh() {

@@ -4,7 +4,7 @@
  */
 
 import { state } from './state.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, whileVisible } from './utils.js';
 
 const log = zmmLog('mqtt-explorer');
 
@@ -44,7 +44,7 @@ export function initMQTTExplorer() {
 export function startMQTTStats() {
     if (!statsInterval) {
         updateStats(); // Fetch immediately on tab open
-        statsInterval = setInterval(updateStats, 2000);
+        statsInterval = setInterval(whileVisible(updateStats), 2000);
         log.log('MQTT stats polling started.');
     }
 }

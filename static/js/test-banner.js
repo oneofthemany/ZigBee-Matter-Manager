@@ -85,8 +85,10 @@
                  '#b45309');
         });
 
+        // From a deadline, not a per-tick decrement: hidden tabs throttle timers.
+        var deadline = Date.now() + remaining * 1000;
         interval = setInterval(function () {
-            remaining--;
+            remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
             var el = document.getElementById('testCountdown');
             if (el) el.textContent = remaining;
             if (remaining <= 0) {

@@ -380,8 +380,12 @@
     refreshAll();
     refreshListsAndRules();
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(refreshAll, POLL_MS);
+    // Skip ticks in a hidden page; the visibilitychange listener below catches up.
+    pollTimer = setInterval(function () { if (!document.hidden) refreshAll(); }, POLL_MS);
   }
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && pollTimer) refreshAll();
+  });
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }

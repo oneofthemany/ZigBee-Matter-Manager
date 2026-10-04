@@ -149,10 +149,14 @@ function renderState(root, ieee, st) {
 
 function startCountdown(root, ieee, st) {
     clearInterval(timers.get(ieee));
+    // Both count from a deadline: hidden tabs throttle timers, and the step's
+    // finish is sent from here, so a drifting count would stretch the step.
+    const secondsLeft = deadline => Math.ceil((deadline - Date.now()) / 1000);
     if (st.trial) {
+        const deadline = Date.now() + st.trial.expires_in * 1000;
         let left = st.trial.expires_in;
         timers.set(ieee, setInterval(() => {
-            left -= 1;
+            left = secondsLeft(deadline);
             const el = root.querySelector('[data-learn-trial-left]');
             if (el) el.textContent = `${Math.max(left, 0)}`;
             if (left <= 0) {                       // the server has put it back: show that
@@ -164,10 +168,11 @@ function startCountdown(root, ieee, st) {
     }
     const step = st.steps.find(s => s.key === st.running);
     if (!step) return;
-    let left = step.window_s;
+    const deadline = Date.now() + step.window_s * 1000;
+    let left = step.window_s, ticks = 0;
     timers.set(ieee, setInterval(() => {
-        left -= 1;
-        if (left % 2 === 0) {                      // live readings, without re-rendering the step
+        left = secondsLeft(deadline);
+        if (++ticks % 2 === 0 && !document.hidden) {   // live readings, without re-rendering the step
             api(ieee, '/learn').then(fresh => { if (fresh.running === step.key) updateLive(root, fresh); })
                 .catch(() => {});
         }

@@ -505,13 +505,15 @@ export function updatePairingUI(time) {
     btn.classList.remove('btn-success');
     btn.classList.add('btn-danger');
 
+    // From a deadline, not a per-tick decrement: hidden tabs throttle timers.
+    const deadline = Date.now() + time * 1000;
     let timeLeft = time;
 
     // Initial render
     btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-xxl-inline"> Stop Pairing</span> (${timeLeft}s)`;
 
     state.pairingInterval = setInterval(() => {
-        timeLeft--;
+        timeLeft = Math.ceil((deadline - Date.now()) / 1000);
         if (timeLeft <= 0) {
             resetPairingUI();
         } else {

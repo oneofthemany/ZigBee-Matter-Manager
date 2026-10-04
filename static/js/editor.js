@@ -1228,9 +1228,10 @@ function showTestRecoveryBanner(status, timeout) {
     const total = Math.max(1, remaining);
     banner.innerHTML = buildBannerHTML(remaining);
 
-    // Countdown
+    // Countdown, from a deadline: hidden tabs throttle timers.
+    const deadline = Date.now() + remaining * 1000;
     const interval = setInterval(() => {
-        remaining--;
+        remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
         if (remaining <= 0) {
             clearInterval(interval);
             banner.innerHTML = `

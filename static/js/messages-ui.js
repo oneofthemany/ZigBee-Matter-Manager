@@ -311,7 +311,8 @@
     window.initMessagesUI = function () {
         loadThreads();
         if (state.timer) clearInterval(state.timer);
-        state.timer = setInterval(loadThreads, POLL_MS);
+        // Push covers new messages while hidden; the listener below refreshes on return.
+        state.timer = setInterval(function () { if (!document.hidden) loadThreads(); }, POLL_MS);
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'visible') loadThreads();
         });

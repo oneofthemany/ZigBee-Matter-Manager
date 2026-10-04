@@ -8,6 +8,7 @@
  */
 
 import { createChart } from './chart-utils.js';
+import { whileVisible } from './utils.js';
 
 const log = zmmLog('energy');
 
@@ -110,9 +111,9 @@ export function initEnergy() {
 
 function startAutoRefresh() {
     stopAutoRefresh();
-    refreshTimer = setInterval(() => {
+    refreshTimer = setInterval(whileVisible(() => {
         if (energyTabActive) loadEnergyDashboard({ silent: true });
-    }, REFRESH_MS);
+    }), REFRESH_MS);
 }
 
 function stopAutoRefresh() {

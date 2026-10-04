@@ -11,6 +11,31 @@ export function escapeHtml(value) {
     }[c]));
 }
 
+// Pollers that skipped a tick while the page was hidden; each runs once on return.
+const _missedWhileHidden = new Set();
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    const due = [..._missedWhileHidden];
+    _missedWhileHidden.clear();
+    for (const fn of due) {
+        try { fn(); } catch (e) { log.warn('catch-up after hidden failed', e); }
+    }
+});
+
+/**
+ * Wrap a setInterval callback so it doesn't run while the page is hidden (a
+ * background tab, a locked phone) and runs once when it's shown again, so the
+ * data is fresh the moment you look. Use for fetches and redraws, not for
+ * watchers that must act on their own (restart guards, countdowns).
+ */
+export function whileVisible(fn) {
+    const wrapped = (...args) => {
+        if (document.hidden) { _missedWhileHidden.add(wrapped); return; }
+        return fn(...args);
+    };
+    return wrapped;
+}
+
 /**
  * A value as a JS string argument inside an inline handler: onclick="f(${jsArg(name)})".
  * escapeHtml alone isn't enough there — the browser decodes &#39; back to ' before

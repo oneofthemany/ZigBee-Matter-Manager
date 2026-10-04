@@ -7,6 +7,7 @@
  * Refreshes every 3 s while a session runs. See docs/speaker_sync.md.
  */
 import { createChart } from './chart-utils.js';
+import { whileVisible } from './utils.js';
 
 const log = zmmLog('sync-lab');
 
@@ -236,7 +237,7 @@ async function _fetchDetail(sessionId) {
 
 function _startLive() {
     _stopLive();
-    _timer = setInterval(async () => {
+    _timer = setInterval(whileVisible(async () => {
         if (!_gid) return;
         try {
             const st = await (await fetch('/api/media/sync/status')).json();
@@ -266,7 +267,7 @@ function _startLive() {
                 _renderDetail(true);   // merged in-place update — no reset
             }
         } catch (e) { /* transient — next tick */ }
-    }, 3000);
+    }), 3000);
 }
 
 function _stopLive() {
