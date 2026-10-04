@@ -54,6 +54,12 @@ media:
                               # (the Cast device rejects our self-signed HTTPS).
       app_id: ""              # Cast console App ID registered for
                               # http://<zmm-host>:8010/cast/sync_receiver.html
+      live_art_models:        # screens given artwork that follows the track:
+        - pixel tablet        # one never-ending image, a new part per cover
+        - nest hub            # (open-zone.md §10.7). Substrings of the model
+                              # name; a display that does not redraw a streamed
+                              # image shows no cover at all, so list only
+                              # models seen to. [] turns it off.
       crossfade_s: 0.0        # overlap between queue items, 0 = plain seam.
                               # Paid for out of written-but-unserved timeline,
                               # so it cannot exceed source_delay_s (4.0) less a

@@ -15,6 +15,7 @@ import uuid as uuid_mod
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+import httpx
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -160,6 +161,15 @@ POLICY_MODES = ("auto", "sticky", "reclaim")
 # over another input (so a TV left on HDMI does not keep it), once, within
 # this long — a session started hours later must not take it from a game.
 HANDBACK_S = 600.0
+# Live artwork (open-zone.md §10.7): the default receiver takes one artwork URL
+# at load and never asks again, so the URL is a stream of images and each track's
+# cover is a new part of it. Only for models seen to redraw it — elsewhere the
+# picture would be missing rather than merely fixed. Matched as substrings of
+# the lower-cased model name.
+LIVE_ART_MODELS = ("pixel tablet", "nest hub")
+LIVE_ART_BOUNDARY = "zmmart"
+LIVE_ART_MAX_BYTES = 2 * 1024 * 1024
+LIVE_ART_POLL_S = 1.0
 # The Cast home screen: nothing owns the device.
 BACKDROP_APP_ID = "E8C28D3C"
 # Every URL a zone serves its devices, whatever the session.
@@ -568,6 +578,12 @@ class OpenZone:
         self._controllers: Dict[str, object] = {}      # cast uuid -> controller
         self._streams: Dict[str, _Stream] = {}         # sid -> _Stream
         self._monitor: Optional[asyncio.Task] = None
+        models = cfg.get("live_art_models", LIVE_ART_MODELS)
+        self._live_art_models = tuple(str(m).lower() for m in (models or ()))
+        self._art_task: Optional[asyncio.Task] = None
+        self._art_urls: Dict[str, str] = {}     # stream URL -> its art URL
+        # (key, content type, bytes) of the cover the zone is hearing now.
+        self._art_now: Optional[tuple] = None
         self._spectrum: Optional[asyncio.Task] = None
         self._target_lag: Optional[float] = None       # common lag target (s)
         self._realigning: bool = False                 # _realign_group in flight
@@ -1355,6 +1371,8 @@ class OpenZone:
         if stream_mode:
             self._preroll_task = asyncio.create_task(self._preroll_probe())
             self._monitor = asyncio.create_task(self._stream_monitor())
+            if self._live_art_models and len(self._queue) > 1:
+                self._art_task = asyncio.create_task(self._art_watch())
         self._spectrum = asyncio.create_task(self._spectrum_feed())
         if self._duration_s:
             self._auto_stop = asyncio.create_task(
@@ -1408,6 +1426,11 @@ class OpenZone:
         if self._monitor:
             self._monitor.cancel()
             self._monitor = None
+        if self._art_task:
+            self._art_task.cancel()
+            self._art_task = None
+        self._art_now = None
+        self._art_urls = {}
         if self._spectrum:
             self._spectrum.cancel()
             self._spectrum = None
@@ -2004,8 +2027,11 @@ class OpenZone:
         self._consume_handback(player_id)
         host = getattr(getattr(cast, "cast_info", None), "host", None) or \
             getattr(getattr(cast, "socket_client", None), "host", "")
-        url = (f"http://{self._local_ip_for(host)}:{self.http_port}"
-               f"/sync/stream/{sid}.wav")
+        base = f"http://{self._local_ip_for(host)}:{self.http_port}"
+        url = f"{base}/sync/stream/{sid}.wav"
+        live = self._live_art_url(player_id, sid, base)
+        if live:
+            self._art_urls[url] = live
         for attempt in (1, 2):
             if not self.running:
                 return
@@ -2110,10 +2136,80 @@ class OpenZone:
         self._now_key = key
         await self._push_now()
 
+    def _live_art_url(self, player_id: str, sid: str, base: str) -> str:
+        """The live-artwork URL for this device, or "" where the session's own
+        cover is the right answer: one item, or a model not known to redraw."""
+        if self._art_task is None:
+            return ""
+        model = (self._model_key(player_id) or "").lower()
+        if not any(m in model for m in self._live_art_models):
+            return ""
+        return f"{base}/sync/art/{sid}.mjpg"
+
+    async def _art_watch(self) -> None:
+        """Keep ``_art_now`` on the cover of the item the zone is *hearing*.
+
+        The queue index moves when the decoder opens an item, a delay line
+        ahead of the speakers, so a change is held for the group's lag before
+        it is shown. The first cover is not held: nothing is on screen yet."""
+        shown = None
+        try:
+            async with httpx.AsyncClient(timeout=10.0,
+                                         follow_redirects=True) as http:
+                while self.running:
+                    try:
+                        np_ = self.now_playing()
+                        url = np_.get("artwork_url") or self._session_art()[0]
+                        key = (np_.get("index"), url)
+                        if url and key != shown:
+                            if shown is not None:
+                                await asyncio.sleep(
+                                    self._target_lag or self._source.delay_s)
+                            got = await self._fetch_art(http, url)
+                            if got is not None:
+                                self._art_now = (key, *got)
+                                shown = key
+                    except Exception as e:      # a picture, never the session
+                        logger.debug(f"Zone artwork watch: {e}")
+                    await asyncio.sleep(LIVE_ART_POLL_S)
+        except asyncio.CancelledError:
+            pass
+
+    @staticmethod
+    async def _fetch_art(http, url: str) -> Optional[tuple]:
+        """``(content type, bytes)`` of one cover, or None to try again."""
+        try:
+            r = await http.get(url)
+            r.raise_for_status()
+        except Exception as e:
+            logger.debug(f"Zone artwork fetch failed for {url}: {e}")
+            return None
+        ctype = (r.headers.get("content-type") or "").split(";")[0].strip()
+        if not ctype.startswith("image/") or not r.content \
+                or len(r.content) > LIVE_ART_MAX_BYTES:
+            return None
+        return ctype, r.content
+
+    async def _art_stream(self, st: _Stream):
+        """One device's artwork: an image that never ends, a part per cover."""
+        sent = None
+        while self.running and self._streams.get(st.sid) is st:
+            now = self._art_now
+            if now is not None and now[0] != sent:
+                sent, ctype, body = now
+                part = (f"--{LIVE_ART_BOUNDARY}\r\nContent-Type: {ctype}\r\n"
+                        f"Content-Length: {len(body)}\r\n\r\n").encode() \
+                    + body + b"\r\n"
+                # Twice: a part is drawn once the next one begins.
+                yield part
+                yield part
+            await asyncio.sleep(LIVE_ART_POLL_S)
+
     def _play_stream(self, cast, url: str):
         cast.wait(timeout=10)
         mc = cast.media_controller
         art, title, artist = self._session_art()
+        art = self._art_urls.get(url) or art
         meta = {"metadataType": 3, "title": title, "artist": artist}
         if art:
             meta["images"] = [{"url": art}]
@@ -4106,6 +4202,17 @@ class OpenZone:
             return StreamingResponse(self._pcm_stream(st),
                                      media_type="audio/wav",
                                      headers={"Cache-Control": "no-store"})
+
+        @app.get("/sync/art/{sid}.mjpg")
+        async def stream_art(sid: str):
+            st = self._streams.get(sid)
+            if st is None or not self.running:
+                return Response(status_code=404)
+            return StreamingResponse(
+                self._art_stream(st),
+                media_type="multipart/x-mixed-replace; "
+                           f"boundary={LIVE_ART_BOUNDARY}",
+                headers={"Cache-Control": "no-store"})
 
         @app.websocket("/ws")
         async def ws_endpoint(ws: WebSocket):
