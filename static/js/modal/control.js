@@ -5,6 +5,7 @@
 
 import { state } from '../state.js';
 import { hasCluster } from './config.js';
+import { escapeHtml } from '../utils.js';
 import { renderScheduleSection, bindScheduleEvents } from './schedule.js';
 
 const log = zmmLog('modal-control');
@@ -202,7 +203,7 @@ function renderTempSourceOptions(excludeIeee) {
         return header + `<option value="" disabled>No temperature-reporting devices found</option>`;
     }
     return header + sources.map(src =>
-        `<option value="${src.ieee}">${src.name} (${src.temperature.toFixed(1)}°C)</option>`
+        `<option value="${escapeHtml(src.ieee)}">${escapeHtml(src.name)} (${src.temperature.toFixed(1)}°C)</option>`
     ).join('');
 }
 

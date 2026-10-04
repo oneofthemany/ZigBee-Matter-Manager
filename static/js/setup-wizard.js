@@ -9,6 +9,12 @@
 (function () {
     'use strict';
 
+    // Classic script, so no import of utils.escapeHtml; port strings come from USB descriptors.
+    function esc(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
     let wizardVisible = false;
     let scanning = false;
     let selectedResult = null;
@@ -398,9 +404,9 @@
                     </div>
                     <div class="flex-grow-1">
                         <div class="adapter-name">${result.adapter_family}</div>
-                        <div class="adapter-port">${result.port}</div>
+                        <div class="adapter-port">${esc(result.port)}</div>
                         ${fw ? `<span class="badge bg-light text-dark adapter-badge">${fw}</span>` : ''}
-                        ${result.board_name ? `<span class="badge bg-light text-dark adapter-badge">${result.board_name}</span>` : ''}
+                        ${result.board_name ? `<span class="badge bg-light text-dark adapter-badge">${esc(result.board_name)}</span>` : ''}
                         ${baud ? `<div class="adapter-detail mt-1">${baud}${flow}</div>` : ''}
                     </div>
                 </div>
@@ -856,7 +862,7 @@
                     ${coord.board_name ? `
                     <div class="row small">
                         <div class="col-4 text-muted">Board</div>
-                        <div class="col-8">${coord.board_name}</div>
+                        <div class="col-8">${esc(coord.board_name)}</div>
                     </div>` : ''}
                     ${coord.firmware_version ? `
                     <div class="row small">
@@ -922,7 +928,7 @@
                     </div>
                     <div class="row small">
                         <div class="col-4 text-muted">Username</div>
-                        <div class="col-8">${m.username || '<span class="text-muted">none</span>'}</div>
+                        <div class="col-8">${m.username ? esc(m.username) : '<span class="text-muted">none</span>'}</div>
                     </div>
                     <div class="row small">
                         <div class="col-4 text-muted">Base Topic</div>
@@ -1207,10 +1213,10 @@
 
             el.innerHTML = ports.map(p => `
                 <div class="port-list-item">
-                    <span class="port-name">${p.port}</span>
+                    <span class="port-name">${esc(p.port)}</span>
                     <span class="port-desc">
-                        ${p.manufacturer ? p.manufacturer + ' ' : ''}${p.product || p.description}
-                        ${p.vid ? `<span class="badge bg-light text-dark ms-1">${p.vid}:${p.pid}</span>` : ''}
+                        ${p.manufacturer ? esc(p.manufacturer) + ' ' : ''}${esc(p.product || p.description)}
+                        ${p.vid ? `<span class="badge bg-light text-dark ms-1">${esc(p.vid)}:${esc(p.pid)}</span>` : ''}
                     </span>
                 </div>
             `).join('');

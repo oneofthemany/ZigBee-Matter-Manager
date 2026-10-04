@@ -10,6 +10,7 @@
  */
 
 import { confirmDialog, promptDialog } from './dialogs.js';
+import { escapeHtml, jsArg } from './utils.js';
 
 const log = zmmLog('editor');
 
@@ -504,7 +505,7 @@ function renderTreeItem(item) {
     if (item.is_dir) {
         return `<div class="tree-folder ms-2 mt-1">
             <div class="tree-label text-muted" style="cursor:pointer;" onclick="window.editorToggleFolder(this)">
-                <i class="fas fa-folder fa-fw me-1" style="color:#dcb67a;"></i>${item.name}
+                <i class="fas fa-folder fa-fw me-1" style="color:#dcb67a;"></i>${escapeHtml(item.name)}
             </div>
             <div class="tree-children ms-2" style="display:none;"></div>
         </div>`;
@@ -517,9 +518,9 @@ function renderTreeItem(item) {
     return `<div class="tree-file d-flex align-items-center py-1 px-2 rounded" style="cursor:pointer;${active}"
                  onmouseover="this.style.background='#2a2d2e'"
                  onmouseout="this.style.background='${currentFile === item.path ? '#37373d' : ''}'">
-        <div class="flex-grow-1" onclick="window.editorOpenFile('${item.path}')">
+        <div class="flex-grow-1" onclick="window.editorOpenFile(${jsArg(item.path)})">
             <i class="${icon} fa-fw me-1"></i>
-            <span class="text-light">${item.name}</span>
+            <span class="text-light">${escapeHtml(item.name)}</span>
             <span class="text-muted ms-1" style="font-size:10px;">${formatSize(item.size)}</span>
         </div>
         ${!isCritical ? `<button class="btn btn-link btn-sm p-0 ms-1 editor-tree-del-btn"
@@ -1307,7 +1308,7 @@ window.editorSearchFiles = async function(query) {
                 <div class="search-result px-2 py-1 rounded" style="cursor:pointer;"
                      onmouseover="this.style.background='#37373d'"
                      onmouseout="this.style.background=''"
-                     onclick="window.editorOpenFileAtLine('${r.path}', ${r.line})">
+                     onclick="window.editorOpenFileAtLine(${jsArg(r.path)}, ${Number(r.line) || 0})">
                     <div>
                         <span class="text-info">${r.path}</span>
                         <span class="text-muted">:${r.line}</span>
@@ -1364,11 +1365,11 @@ window.editorShowBackups = async function() {
                 <div class="d-flex justify-content-between align-items-center py-1 px-2 rounded"
                      onmouseover="this.style.background='#37373d'" onmouseout="this.style.background=''">
                     <div>
-                        <div class="text-light" style="font-size: 12px;">${b.name}</div>
+                        <div class="text-light" style="font-size: 12px;">${escapeHtml(b.name)}</div>
                         <div class="text-muted" style="font-size: 10px;">${formatSize(b.size)} &bull; ${new Date(b.created * 1000).toLocaleString()}</div>
                     </div>
                     ${currentFile ? `<button class="btn btn-sm btn-outline-warning py-0 px-2"
-                             onclick="window.editorRestoreBackup('${b.name}', '${currentFile}')">
+                             onclick="window.editorRestoreBackup(${jsArg(b.name)}, ${jsArg(currentFile)})">
                         Restore
                     </button>` : ''}
                 </div>
@@ -1488,7 +1489,7 @@ function updateTabBar() {
         <div class="editor-tab d-flex align-items-center gap-1 px-2 py-1 rounded"
              style="background:#1e1e1e; color:#fff; font-size:12px;">
             <i class="${icon} fa-xs"></i>
-            <span id="editorTabName">${name}</span>
+            <span id="editorTabName">${escapeHtml(name)}</span>
             <span id="editorTabDirty" style="display:${unsavedChanges ? 'inline' : 'none'}; color:#e8e8e8;">●</span>
         </div>
     `;
@@ -1514,10 +1515,6 @@ function formatSize(bytes) {
     if (bytes < 1024) return bytes + 'B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
     return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
-}
-
-function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function escapeAttr(str) {

@@ -12,7 +12,7 @@
  * once the simple choice has been made.
  */
 
-import { showToast } from './utils.js';
+import { showToast, escapeHtml as esc } from './utils.js';
 
 const log = (typeof zmmLog === 'function') ? zmmLog('swarm-suggest') : console;
 
@@ -55,8 +55,6 @@ export function sourcedBy(suggestions, ieee) {
     return (suggestions || []).filter(s => s && s.rule && s.rule.source_ieee === ieee);
 }
 
-const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 
 /**

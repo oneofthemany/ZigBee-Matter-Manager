@@ -25,12 +25,6 @@ function timeAgo(ts) {
     return `${Math.floor(s / 86400)}d ago`;
 }
 
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str ?? '';
-    return div.innerHTML;
-}
-
 // Navbar bell + badge
 
 function createBell() {
@@ -191,6 +185,7 @@ function onLiveAlert(e) {
 }
 
 
+import { escapeHtml } from './utils.js';
 export function initAppAlerts() {
     const boot = () => {
         createBell();

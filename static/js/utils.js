@@ -11,6 +11,15 @@ export function escapeHtml(value) {
     }[c]));
 }
 
+/**
+ * A value as a JS string argument inside an inline handler: onclick="f(${jsArg(name)})".
+ * escapeHtml alone isn't enough there — the browser decodes &#39; back to ' before
+ * running the handler — so it's JSON-quoted first, then HTML-escaped for the attribute.
+ */
+export function jsArg(value) {
+    return escapeHtml(JSON.stringify(String(value ?? '')));
+}
+
 
 /**
  * Get icon for device type

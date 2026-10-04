@@ -133,11 +133,11 @@ function _devOpts(list, selectedIeee, extraAttrs='') {
     const devs = list.filter(d => !d._is_group);
     const grps = list.filter(d => d._is_group);
     let h = devs.map(d =>
-        `<option value="${d.ieee}" ${extraAttrs ? extraAttrs.replace('$IEEE', d.ieee).replace('$SEL', d.ieee===selectedIeee?'selected':'') : (d.ieee===selectedIeee?'selected':'')}>${d.friendly_name}</option>`
+        `<option value="${d.ieee}" ${extraAttrs ? extraAttrs.replace('$IEEE', d.ieee).replace('$SEL', d.ieee===selectedIeee?'selected':'') : (d.ieee===selectedIeee?'selected':'')}>${esc(d.friendly_name)}</option>`
     ).join('');
     if (grps.length) {
         h += `<optgroup label="── Groups ──">` + grps.map(d =>
-            `<option value="${d.ieee}" ${extraAttrs ? extraAttrs.replace('$IEEE', d.ieee).replace('$SEL', d.ieee===selectedIeee?'selected':'') : (d.ieee===selectedIeee?'selected':'')}>${d.friendly_name}</option>`
+            `<option value="${d.ieee}" ${extraAttrs ? extraAttrs.replace('$IEEE', d.ieee).replace('$SEL', d.ieee===selectedIeee?'selected':'') : (d.ieee===selectedIeee?'selected':'')}>${esc(d.friendly_name)}</option>`
         ).join('') + '</optgroup>';
     }
     return h;
@@ -286,7 +286,7 @@ function _renderRules(rules) {
     let h = '';
     rules.forEach(rule => {
         const en = rule.enabled !== false;
-        const nm = rule.name ? `<strong>${rule.name}</strong> ` : '';
+        const nm = rule.name ? `<strong>${esc(rule.name)}</strong> ` : '';
         const st = rule._state||'unknown';
         const stB = st==='matched'?'<span class="badge bg-success ms-1">matched</span>':st==='unmatched'?'<span class="badge bg-secondary ms-1">unmatched</span>':'<span class="badge bg-dark ms-1">init</span>';
         const run = rule._running?'<span class="badge bg-warning text-dark ms-1">⏳</span>':'';
@@ -343,7 +343,7 @@ function _renderRules(rules) {
             } else if (p.type === 'sun') {
                 pDesc = _sunDesc(p);
             } else {
-                pDesc = `${p.device_name||p.ieee} <code>${p.attribute}</code> ${OP[p.operator]||p.operator} <code>${p.value}</code>`;
+                pDesc = `${esc(p.device_name||p.ieee)} <code>${esc(p.attribute)}</code> ${esc(OP[p.operator]||p.operator)} <code>${esc(p.value)}</code>`;
             }
             cH += `<div class="small"><strong class="text-info">CHECK</strong>${neg} ${pDesc}</div>`;
         });
@@ -374,8 +374,8 @@ function _seqSummary(steps, label, color) {
     const parts = steps.map(s => {
         if (s.type==='command') return `<span class="badge bg-info text-dark">${s.command}${s.value!=null?' ='+s.value:''}</span> <small class="text-muted">${s.target_name||s.target_ieee||'?'}</small>`;
         if (s.type==='delay') return `<span class="badge bg-warning text-dark">⏱${s.seconds}s</span>`;
-        if (s.type==='wait_for') return `<span class="badge bg-secondary">⏳ ${s.device_name||s.ieee||'?'} ${s.attribute}</span>`;
-        if (s.type==='condition') return `<span class="badge bg-dark">🔒 ${s.device_name||s.ieee||'?'} ${s.attribute}</span>`;
+        if (s.type==='wait_for') return `<span class="badge bg-secondary">⏳ ${esc(s.device_name||s.ieee||'?')} ${esc(s.attribute)}</span>`;
+        if (s.type==='condition') return `<span class="badge bg-dark">🔒 ${esc(s.device_name||s.ieee||'?')} ${esc(s.attribute)}</span>`;
         if (s.type==='if_then_else') return `<span class="badge bg-purple" style="background:#6f42c1">IF/THEN/ELSE</span>`;
         if (s.type==='parallel') return `<span class="badge bg-dark">⚡ PARALLEL(${(s.branches||[]).length})</span>`;
         if (s.type==='snapshot') return `<span class="badge bg-secondary">📸 ${esc(s.name||'before')} (${(s.targets||[]).length})</span>`;
@@ -840,8 +840,8 @@ function _renderPrereq(id, ptype) {
     const _filtP = cachedAllDevices.filter(d => d.ieee !== currentSourceIeee);
     const _devP  = _filtP.filter(d => !d._is_group);
     const _grpP  = _filtP.filter(d => d._is_group);
-    let devs = _devP.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('');
-    if (_grpP.length) devs += `<optgroup label="── Groups ──">` + _grpP.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('') + '</optgroup>';
+    let devs = _devP.map(d => `<option value="${d.ieee}">${esc(d.friendly_name)}</option>`).join('');
+    if (_grpP.length) devs += `<optgroup label="── Groups ──">` + _grpP.map(d => `<option value="${d.ieee}">${esc(d.friendly_name)}</option>`).join('') + '</optgroup>';
 
     const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     const dayBoxes = DAYS.map((d,i) => `<label class="me-1 small"><input type="checkbox" class="ptd" data-id="${id}" data-day="${i}" checked> ${d}</label>`).join('');
@@ -941,8 +941,8 @@ function _renderStep(step, path, idx, total) {
     if(step.type==='command') {
             const _devActs=cachedActuators.filter(d=>!d._is_group);
             const _grpActs=cachedActuators.filter(d=>d._is_group);
-            let acts=_devActs.map(d=>`<option value="${d.ieee}" data-cmds='${_jsonAttr(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
-            if(_grpActs.length){acts+=`<optgroup label="── Groups ──">`+_grpActs.map(d=>`<option value="${d.ieee}" data-cmds='${_jsonAttr(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
+            let acts=_devActs.map(d=>`<option value="${d.ieee}" data-cmds='${_jsonAttr(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${esc(d.friendly_name)}</option>`).join('');
+            if(_grpActs.length){acts+=`<optgroup label="── Groups ──">`+_grpActs.map(d=>`<option value="${d.ieee}" data-cmds='${_jsonAttr(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${esc(d.friendly_name)}</option>`).join('')+'</optgroup>';}
         body=`<div class="row g-1"><div class="col-md-5"><select class="form-select form-select-sm s-tgt" data-sid="${sid}" onchange="window._aSTC(${sid},this)"><option value="">Target...</option>${acts}</select></div>
             <div class="col-md-4"><select class="form-select form-select-sm s-cmd" data-sid="${sid}"><option value="">Cmd...</option></select></div>
             <div class="col-md-3"><input type="text" class="form-control form-control-sm s-val" data-sid="${sid}" placeholder="Value" value="${step.value!=null?step.value:''}"></div></div>
@@ -952,8 +952,8 @@ function _renderStep(step, path, idx, total) {
     } else if(step.type==='wait_for'||step.type==='condition') {
             const _devW=cachedAllDevices.filter(d=>!d._is_group);
             const _grpW=cachedAllDevices.filter(d=>d._is_group);
-            let devs=_devW.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
-            if(_grpW.length){devs+=`<optgroup label="── Groups ──">`+_grpW.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
+            let devs=_devW.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${esc(d.friendly_name)}</option>`).join('');
+            if(_grpW.length){devs+=`<optgroup label="── Groups ──">`+_grpW.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${esc(d.friendly_name)}</option>`).join('')+'</optgroup>';}
         const neg = step.type==='condition'||step.type==='wait_for'?`<div class="form-check form-check-inline mb-0"><input class="form-check-input s-neg" type="checkbox" data-sid="${sid}" ${step.negate?'checked':''}><label class="small text-danger">NOT</label></div>`:'';
         const tout = step.type==='wait_for'?`<input type="number" class="form-control form-control-sm s-tout" data-sid="${sid}" value="${step.timeout||300}" min="1" style="width:65px" title="Timeout(s)">`:'';
         body=`<div class="row g-1 align-items-center"><div class="col-auto">${neg}</div><div class="col"><select class="form-select form-select-sm s-ieee" data-sid="${sid}" onchange="window._aSDC(${sid},this)"><option value="">Device...</option>${devs}</select></div>
@@ -1024,7 +1024,7 @@ function _renderStep(step, path, idx, total) {
         // accounts — push subscriptions key on the username.
         const userOpt = (u, sel) => {
             const account = u.account || u.user_id;
-            return `<option value="${account}" ${sel===account?'selected':''}>${u.display_name||u.user_id}</option>`;
+            return `<option value="${esc(account)}" ${sel===account?'selected':''}>${esc(u.display_name||u.user_id)}</option>`;
         };
         const toOpts = cachedPresenceUsers.map(u=>userOpt(u, step.to_user)).join('');
         const fromOpts = cachedPresenceUsers.map(u=>userOpt(u, step.from_user)).join('');
@@ -1044,7 +1044,7 @@ function _renderStep(step, path, idx, total) {
         // the rule decides what happens, not whatever comes back over the wire.
         const userOpt = (u, sel) => {
             const account = u.account || u.user_id;
-            return `<option value="${account}" ${sel===account?'selected':''}>${u.display_name||u.user_id}</option>`;
+            return `<option value="${esc(account)}" ${sel===account?'selected':''}>${esc(u.display_name||u.user_id)}</option>`;
         };
         const toOpts = cachedPresenceUsers.map(u=>userOpt(u, step.to_user)).join('');
         const toSel = cachedPresenceUsers.length
@@ -1073,8 +1073,8 @@ function _renderStep(step, path, idx, total) {
 function _renderInlineCond(ic, idx, parentSid, total) {
     const _devIC=cachedAllDevices.filter(d=>!d._is_group);
     const _grpIC=cachedAllDevices.filter(d=>d._is_group);
-    let devs=_devIC.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
-    if(_grpIC.length){devs+=`<optgroup label="── Groups ──">`+_grpIC.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
+    let devs=_devIC.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${esc(d.friendly_name)}</option>`).join('');
+    if(_grpIC.length){devs+=`<optgroup label="── Groups ──">`+_grpIC.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${esc(d.friendly_name)}</option>`).join('')+'</optgroup>';}
     const icId = ic._id;
     const rmBtn = total > 1 ? `<button class="btn btn-sm btn-outline-danger py-0" onclick="window._aRmIC(${parentSid},${icId})"><i class="fas fa-times"></i></button>` : '';
     return `<div class="row g-1 mb-1 align-items-center" id="ic-row-${icId}">
@@ -1139,7 +1139,7 @@ window._aRpMode = (sid, sel) => {
 // Media step rendering
 function _mediaStepBody(step, sid) {
     const zone = isZoneId(step.player_id);
-    const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${p.name}${p.is_group?' (group)':''}</option>`).join('');
+    const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${esc(p.name)}${p.is_group?' (group)':''}</option>`).join('');
     const zones = cachedZones.length
         ? `<optgroup label="── OpenZone ──">${cachedZones.map(z=>`<option value="zone:${z.id}" ${step.player_id==='zone:'+z.id?'selected':''}>${String(z.name).replace(/</g,'&lt;')} (${(z.members||[]).length} speakers)</option>`).join('')}</optgroup>`
         : '';
@@ -1344,7 +1344,7 @@ async function _aMediaLoadLib(sid, kind, selId) {
         }
         if (!items.length) { sel.innerHTML = `<option value="">${(err||'none in library')}</option>`; return; }
         sel.innerHTML = '<option value="">— pick —</option>' + items.map(it=>
-            `<option value="${it.id}" data-label="${String(it.name||it.id).replace(/"/g,'&quot;')}" ${String(it.id)===String(selId)?'selected':''}>${it.name||it.id}</option>`).join('');
+            `<option value="${esc(it.id)}" data-label="${esc(it.name||it.id)}" ${String(it.id)===String(selId)?'selected':''}>${esc(it.name||it.id)}</option>`).join('');
         if (selId && !items.some(it=>String(it.id)===String(selId)))
             sel.insertAdjacentHTML('afterbegin', `<option value="${selId}" selected>${selId}</option>`);
     } catch(e) { sel.innerHTML = '<option value="">load failed</option>'; }
@@ -1418,7 +1418,7 @@ window._aMediaSearch = async (sid, kind) => {
             const j = await (await fetch(`/api/media/radio/search?q=${encodeURIComponent(q)}&limit=20`)).json();
             const st = j.success ? (j.stations||[]) : [];
             sel.innerHTML = '<option value="">— pick —</option>' + st.map(s=>
-                `<option value="${s.uuid}" data-label="${String(s.name||'').replace(/"/g,'&quot;')}">${s.name}${s.country?' · '+s.country:''}</option>`).join('');
+                `<option value="${esc(s.uuid)}" data-label="${esc(s.name||'')}">${esc(s.name)}${s.country?' · '+esc(s.country):''}</option>`).join('');
         } else {
             const j = await (await fetch(`/api/media/tidal/search?q=${encodeURIComponent(q)}&limit=20`)).json();
             const tr = (j.success && j.results) ? (j.results.tracks||[]) : [];
@@ -1819,7 +1819,7 @@ window._aEdit=async id=>{try{const r=await(await fetch(`/api/automations/rule/${
 // Trace
 window._aTrace=async()=>{document.getElementById('a-trace').style.display='block';
     const f=document.getElementById('tf');if(f){const c=f.value;f.innerHTML='<option value="">All</option>';
-        try{(await(await fetch(`/api/automations?source_ieee=${encodeURIComponent(currentSourceIeee)}`)).json()).forEach(r=>{f.innerHTML+=`<option value="${r.id}">${r.name||r.id}</option>`;});}catch(e){}f.innerHTML+='<option value="-">System</option>';f.value=c||'';}
+        try{(await(await fetch(`/api/automations?source_ieee=${encodeURIComponent(currentSourceIeee)}`)).json()).forEach(r=>{f.innerHTML+=`<option value="${esc(r.id)}">${esc(r.name||r.id)}</option>`;});}catch(e){}f.innerHTML+='<option value="-">System</option>';f.value=c||'';}
     _loadTr();};
 window._aRefTrace=_loadTr;
 window._aTraceR=async id=>{await window._aTrace();const f=document.getElementById('tf');if(f)f.value=id;_loadTr();};
@@ -2324,13 +2324,13 @@ async function _loadTr() {
                 }else{
                     pLine=`CHECK${p.negate?' NOT':''} ${p.device_name||p.ieee} ${p.attribute} ${p.operator||''} ${p.threshold_raw||'?'} → ${p.actual_raw||'?'}`;
                 }
-                h+=`<div class="${pc}">${pLine} [${p.result}]`;
-                if(p.reason)h+=` — ${p.reason}`;h+='</div>';});h+='</div>';}
+                h+=`<div class="${pc}">${esc(pLine)} [${esc(p.result)}]`;
+                if(p.reason)h+=` — ${esc(p.reason)}`;h+='</div>';});h+='</div>';}
             if(e.inline_conditions?.length){h+='<div class="ms-3">';e.inline_conditions.forEach(ic=>{const cc=ic.result==='PASS'?'text-success':'text-danger';
-                h+=`<div class="${cc}">  ${ic.negate?'NOT ':''}${ic.device_name||''} ${ic.attribute} ${ic.operator||''} ${ic.threshold||''} → ${ic.actual||'?'} [${ic.result}]</div>`;});h+='</div>';}
-            if(e.error)h+=`<div class="ms-3 text-danger">${e.error}</div>`;h+='</div>';});
+                h+=`<div class="${cc}">  ${esc(`${ic.negate?'NOT ':''}${ic.device_name||''} ${ic.attribute} ${ic.operator||''} ${ic.threshold||''} → ${ic.actual||'?'} [${ic.result}]`)}</div>`;});h+='</div>';}
+            if(e.error)h+=`<div class="ms-3 text-danger">${esc(e.error)}</div>`;h+='</div>';});
         el.innerHTML=h;
-    }catch(err){el.innerHTML=`<div class="text-danger">${err.message}</div>`;}
+    }catch(err){el.innerHTML=`<div class="text-danger">${esc(err.message)}</div>`;}
 }
 
 

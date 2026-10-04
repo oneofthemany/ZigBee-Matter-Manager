@@ -3,11 +3,13 @@
  * Rich Settings Panel - Config / Security / Spectrum tabs
  * Replaces the raw YAML textarea with a structured form UI.
  */
+
 const log = zmmLog('settings');
 
 
  import { createChart } from './chart-utils.js';
  import { confirmDialog } from './dialogs.js';
+ import { jsArg } from './utils.js';
  import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard,
           startRestartGuardWatch, stopRestartGuardWatch } from './restart-guard.js';
 
@@ -1728,7 +1730,7 @@ async function loadAirPlayDevices() {
                 : '<span class="badge bg-success">ready</span>'}
             <span class="text-body">${w_escape(d.name)}</span>
             ${d.pairing_required ? `<button class="btn btn-sm btn-outline-primary py-0 ms-auto"
-                onclick="window.airplayPair('${w_escape(d.player_id)}', '${w_escape(d.name)}')">
+                onclick="window.airplayPair(${jsArg(d.player_id)}, ${jsArg(d.name)})">
                 <i class="fas fa-link me-1"></i>Pair</button>` : ''}
           </li>`).join('')}</ul>`;
     } catch (e) {

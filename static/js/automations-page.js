@@ -326,7 +326,7 @@ function _renderPage(container, devices) {
                     <select class="form-select form-select-sm" id="ap-source-select" onchange="window._apSourceSelected(this.value)">
                         <option value="">Select a trigger…</option>
                         <option value="__time__">⏰ Time / event — no device (alarm, date, webhook, startup)</option>
-                        ${devices.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('')}
+                        ${devices.map(d => `<option value="${esc(d.ieee)}">${esc(d.friendly_name)}</option>`).join('')}
                     </select>
                 </div>
                 <div id="ap-form-host"></div>

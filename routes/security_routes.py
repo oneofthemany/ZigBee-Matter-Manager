@@ -83,6 +83,11 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
         return {"success": bool(res.get("success")),
                 "battery_critical": res.get("batteryCritical")}
 
+    def _local_name(ieee: str):
+        """Name given in ZMM; /api/device/rename keeps these in names.json."""
+        svc = get_zigbee_service() if get_zigbee_service else None
+        return (getattr(svc, "friendly_names", None) or {}).get(ieee)
+
     def _sync_lock_registry(locks: List[Dict[str, Any]]) -> Dict[str, Dict]:
         """Upsert NukiLockDevice objects from a fresh /list snapshot;
         returns {ieee: changed_state} for devices whose state moved."""
@@ -93,7 +98,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             seen.add(ieee)
             dev = lock_devices.get(ieee)
             if dev is None:
-                lock_devices[ieee] = NukiLockDevice(lock, _send_bridge_action)
+                lock_devices[ieee] = NukiLockDevice(lock, _send_bridge_action, _local_name)
             else:
                 changed = dev.update_from_lock(lock)
                 if changed:
@@ -396,6 +401,9 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
                     locks.extend(await _fetch_bridge_locks())
             except Exception as e:
                 errors.append(f"bridge: {str(e) or type(e).__name__}")
+            # Copies, so the cached bridge snapshot keeps the Nuki app's names.
+            locks = [{**l, "name": _local_name(f"nuki_{l.get('nuki_id')}") or l.get("name")}
+                     for l in locks]
         if _channel_enabled("matter"):
             locks.extend(_matter_locks("nuki"))
         return {"success": True, "enabled": True, "locks": locks,

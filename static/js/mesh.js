@@ -6,6 +6,7 @@
 
 import { createChart } from './chart-utils.js';
 import { reapplySort } from './table-utils.js';
+import { escapeHtml } from './utils.js';
 
 const log = zmmLog('mesh');
 
@@ -354,7 +355,7 @@ function initialiseMeshGraph(data) {
                 }
                 const n = p.data._info || {};
                 const s = n.packet_stats || {};
-                return `<strong>${n.friendly_name || n.id}</strong><br/>`
+                return `<strong>${escapeHtml(n.friendly_name || n.id)}</strong><br/>`
                     + `Role: ${n.role}<br/>`
                     + `LQI: ${n.lqi}<br/>`
                     + `RSSI: ${n.rssi != null ? n.rssi + ' dBm' : '—'}<br/>`
@@ -742,12 +743,6 @@ function formatUptime(seconds) {
     if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
     if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
     return `${Math.round(seconds / 86400)}d`;
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 export async function dashboardMeshRefresh() {

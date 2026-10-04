@@ -1,6 +1,7 @@
 // static/js/tabs.js
 import { renderDeviceTable } from './devices.js';
 import { state } from './state.js';
+import { escapeHtml, jsArg } from './utils.js';
 
 let deviceTabs = {};
 
@@ -60,6 +61,7 @@ export function openTabManager() {
         </div>
     `;
 
+    document.getElementById('tabManagerModal')?.remove();
     document.body.insertAdjacentHTML('beforeend', modal);
     renderTabsList();
     new bootstrap.Modal(document.getElementById('tabManagerModal')).show();
@@ -76,12 +78,12 @@ function renderTabsList() {
             <div class="card mb-2">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
-                        <h6>${tab} <span class="badge bg-secondary">${deviceTabs[tab].length}</span></h6>
+                        <h6>${escapeHtml(tab)} <span class="badge bg-secondary">${deviceTabs[tab].length}</span></h6>
                         <div>
-                            <button class="btn btn-sm btn-primary" onclick="manageTabDevices('${tab}')">
+                            <button class="btn btn-sm btn-primary" onclick="manageTabDevices(${jsArg(tab)})">
                                 <i class="fas fa-edit"></i> Devices
                             </button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteTab('${tab}')">
+                            <button class="btn btn-sm btn-danger" onclick="deleteTab(${jsArg(tab)})">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
@@ -119,7 +121,7 @@ export async function deleteTab(tab) {
         variant: 'danger'
     })) return;
 
-    await fetch(`/api/tabs/${tab}`, {method: 'DELETE'});
+    await fetch(`/api/tabs/${encodeURIComponent(tab)}`, {method: 'DELETE'});
     await loadTabs();
     renderTabsList();
 }
@@ -133,7 +135,7 @@ export function manageTabDevices(tab) {
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5>Devices in "${tab}"</h5>
+                        <h5>Devices in "${escapeHtml(tab)}"</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -144,6 +146,7 @@ export function manageTabDevices(tab) {
         </div>
     `;
 
+    document.getElementById('tabDevicesModal')?.remove();
     document.body.insertAdjacentHTML('beforeend', modal);
 
     const list = document.getElementById('deviceCheckList');
@@ -152,8 +155,8 @@ export function manageTabDevices(tab) {
         list.innerHTML += `
             <label class="list-group-item">
                 <input class="form-check-input me-1" type="checkbox" ${checked}
-                    onchange="toggleDeviceInTab('${tab}', '${dev.ieee}', this.checked)">
-                ${dev.friendly_name || dev.ieee}
+                    onchange="toggleDeviceInTab(${jsArg(tab)}, ${jsArg(dev.ieee)}, this.checked)">
+                ${escapeHtml(dev.friendly_name || dev.ieee)}
             </label>
         `;
     });
@@ -163,13 +166,13 @@ export function manageTabDevices(tab) {
 
 export async function toggleDeviceInTab(tab, ieee, add) {
     if (add) {
-        await fetch(`/api/tabs/${tab}/devices`, {
+        await fetch(`/api/tabs/${encodeURIComponent(tab)}/devices`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ieee})
         });
     } else {
-        await fetch(`/api/tabs/${tab}/devices/${ieee}`, {method: 'DELETE'});
+        await fetch(`/api/tabs/${encodeURIComponent(tab)}/devices/${encodeURIComponent(ieee)}`, {method: 'DELETE'});
     }
 
     await loadTabs();

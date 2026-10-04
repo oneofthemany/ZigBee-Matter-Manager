@@ -4,6 +4,7 @@
  */
 
 import { state } from './state.js';
+import { escapeHtml } from './utils.js';
 
 const log = zmmLog('mqtt-explorer');
 
@@ -520,12 +521,6 @@ function debounce(func, wait) {
 /**
  * Utility: Escape HTML
  */
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 /**
  * Utility: Show toast notification
  */

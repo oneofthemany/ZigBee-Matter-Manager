@@ -7,6 +7,7 @@
 
 import { state } from './state.js';
 import { createChart } from './chart-utils.js';
+import { escapeHtml as _esc } from './utils.js';
 
 // Cache of last snapshot — also enables a quick re-render if the user opens
 // the modal between WS pushes.
@@ -403,11 +404,4 @@ function renderClusters(clusters) {
     });
     html += '</tbody></table>';
     el.innerHTML = html;
-}
-
-function _esc(s) {
-    if (s == null) return '';
-    const d = document.createElement('div');
-    d.textContent = String(s);
-    return d.innerHTML;
 }

@@ -6,6 +6,8 @@
  * to friendly names with optional scale, unit, and device_class.
  */
 
+import { escapeHtml } from '../utils.js';
+
 let _mappingsData = null;
 
 // RENDER
@@ -53,7 +55,7 @@ function renderMappingsContent(container, ieee) {
         html += `
             <div class="alert alert-success py-2 mb-3">
                 <i class="fas fa-check-circle"></i>
-                <strong>Model definition active</strong> for ${model || 'Unknown'} (${manufacturer || 'Unknown'})
+                <strong>Model definition active</strong> for ${escapeHtml(model || 'Unknown')} (${escapeHtml(manufacturer || 'Unknown')})
             </div>
         `;
     }
@@ -79,7 +81,7 @@ function renderMappingsContent(container, ieee) {
             html += `
                 <tr>
                     <td><code class="small">${rawKey}</code></td>
-                    <td><strong>${m.name}</strong></td>
+                    <td><strong>${escapeHtml(m.name)}</strong></td>
                     <td>${m.scale || 1}</td>
                     <td>${m.unit || '—'}</td>
                     <td class="text-end">
@@ -148,7 +150,7 @@ function renderMappingsContent(container, ieee) {
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-2">
-                    Save current mappings as a model definition so all <strong>${model || 'Unknown'}</strong>
+                    Save current mappings as a model definition so all <strong>${escapeHtml(model || 'Unknown')}</strong>
                     devices get the same mappings automatically.
                 </p>
                 <button class="btn btn-sm btn-outline-success"

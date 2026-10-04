@@ -4,6 +4,7 @@
  */
 
 import { state } from '../state.js';
+import { escapeHtml } from '../utils.js';
 
 export function renderBindingTab(device) {
     const outputClusters = [];
@@ -30,7 +31,7 @@ export function renderBindingTab(device) {
         .sort((a, b) => (a.friendly_name || a.ieee).localeCompare(b.friendly_name || b.ieee));
 
     const targetOptions = targets.map(t =>
-        `<option value="${t.ieee}">${t.friendly_name} (${t.ieee})</option>`
+        `<option value="${escapeHtml(t.ieee)}">${escapeHtml(t.friendly_name)} (${escapeHtml(t.ieee)})</option>`
     ).join('');
 
     const clusterOptions = outputClusters.map(c =>

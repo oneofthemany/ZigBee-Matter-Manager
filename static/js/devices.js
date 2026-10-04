@@ -479,12 +479,12 @@ function populateRouterList() {
     // Create dropdown items
     routers.forEach(router => {
         const name = router.friendly_name || router.ieee;
-        const model = router.model ? ` <small class="text-muted">(${router.model})</small>` : '';
+        const model = router.model ? ` <small class="text-muted">(${escapeHtml(router.model)})</small>` : '';
 
         const item = document.createElement('a');
         item.className = 'dropdown-item d-flex justify-content-between align-items-center cursor-pointer';
         item.href = '#'; // Prevent default anchor behavior
-        item.innerHTML = `<span>${name}${model}</span>`;
+        item.innerHTML = `<span>${escapeHtml(name)}${model}</span>`;
 
         // Add click handler
         item.onclick = (e) => {

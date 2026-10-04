@@ -9,6 +9,7 @@
  */
 
 import { state } from './state.js';
+import { escapeHtml as escapeAttr } from './utils.js';
 
 const log = zmmLog('interview-status-badge');
 
@@ -105,14 +106,6 @@ function labelFor(snap) {
                 snap.advice || '',
             ];
     }
-}
-
-function escapeAttr(s) {
-    return String(s ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
 }
 
 function cssEscape(s) {

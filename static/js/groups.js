@@ -5,6 +5,7 @@
 
 import { state } from './state.js';
 import { confirmDialog } from './dialogs.js';
+import { escapeHtml, jsArg } from './utils.js';
 import { ensureChambers, getChambers, chamberName } from './chambers.js';
 
 const log = zmmLog('groups');
@@ -17,12 +18,6 @@ const groupsState = {
     selectedDevices: new Set(),
     currentGroup: null
 };
-
-function esc(s) {
-    return String(s ?? '').replace(/[&<>"']/g, c => (
-        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
-}
 
 /**
  * Initialize groups tab
@@ -270,8 +265,8 @@ function renderCompatibleDevices(devices) {
                        value="${device.ieee}"
                        onchange="onDeviceCheckChanged('${device.ieee}')">
                 <label class="form-check-label" for="dev_${safeId}">
-                    <strong>${device.name || device.ieee}</strong>
-                    <div class="small text-muted">${device.type || 'Unknown type'}</div>
+                    <strong>${escapeHtml(device.name || device.ieee)}</strong>
+                    <div class="small text-muted">${escapeHtml(device.type || 'Unknown type')}</div>
                     ${renderCapabilityBadges(device.capabilities || [])}
                 </label>
             </div>
@@ -454,7 +449,6 @@ function renderGroupsList(groups) {
     container.innerHTML = '';
 
     groups.forEach(group => {
-        const safeName = group.name.replace(/'/g, "\\'");
 
         const card = document.createElement('div');
         card.className = 'group-card card mb-2';
@@ -463,7 +457,7 @@ function renderGroupsList(groups) {
                 <div class="row align-items-center">
                     <div class="col-md-6">
                         <h6 class="mb-1">
-                            <i class="fas fa-layer-group text-primary"></i> ${group.name}
+                            <i class="fas fa-layer-group text-primary"></i> ${escapeHtml(group.name)}
                         </h6>
                         <small class="text-muted">
                             ${group.type || 'Unknown'} Group • ${group.members.length} devices
@@ -476,7 +470,7 @@ function renderGroupsList(groups) {
                         <button class="btn btn-sm btn-primary" onclick="openGroupControl(${group.id})">
                             <i class="fas fa-sliders-h"></i> Control
                         </button>
-                        <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteGroup(${group.id}, '${safeName}')" title="Delete Group" aria-label="Delete group ${safeName}">
+                        <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteGroup(${group.id}, ${jsArg(group.name)})" title="Delete Group" aria-label="Delete group ${escapeHtml(group.name)}">
                             <i class="fas fa-trash" aria-hidden="true"></i>
                         </button>
                     </div>
@@ -496,7 +490,7 @@ function renderGroupsList(groups) {
 function renderGroupMembers(devices) {
     return devices.map(dev => `
         <span class="member-device">
-            <i class="fas fa-lightbulb"></i> ${dev.name}
+            <i class="fas fa-lightbulb"></i> ${escapeHtml(dev.name)}
         </span>
     `).join('');
 }
@@ -539,12 +533,12 @@ function chamberOptionsHtml(currentId) {
     const chambers = getChambers();
     let opts = `<option value="" ${currentId ? '' : 'selected'}>— No chamber —</option>`;
     opts += chambers.map(c =>
-        `<option value="${esc(c.id)}" ${c.id === currentId ? 'selected' : ''}>${esc(c.name)}</option>`
+        `<option value="${escapeHtml(c.id)}" ${c.id === currentId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
     ).join('');
     // A chamber id pointing nowhere (deleted since assignment) shouldn't be
     // silently dropped from the list — show it, flagged, so it can be fixed.
     if (currentId && !chambers.some(c => c.id === currentId)) {
-        opts += `<option value="${esc(currentId)}" selected>${esc(currentId)} (unknown)</option>`;
+        opts += `<option value="${escapeHtml(currentId)}" selected>${escapeHtml(currentId)} (unknown)</option>`;
     }
     return opts;
 }
@@ -832,8 +826,8 @@ function renderGroupMembersModal(group) {
     container.innerHTML = group.devices.map(dev => `
         <div class="d-flex justify-content-between align-items-center mb-2 p-2 border rounded">
             <div>
-                <strong>${dev.name}</strong>
-                <br><small class="text-muted">${dev.model}</small>
+                <strong>${escapeHtml(dev.name)}</strong>
+                <br><small class="text-muted">${escapeHtml(dev.model)}</small>
             </div>
             <button class="btn btn-sm btn-outline-danger"
                     onclick="removeDeviceFromGroup(${group.id}, '${dev.ieee}')">

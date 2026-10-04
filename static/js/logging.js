@@ -4,7 +4,7 @@
  */
 
 import { state } from './state.js';
-import { getTimestamp } from './utils.js';
+import { getTimestamp, escapeHtml } from './utils.js';
 import { analysePacket, renderPacketAnalysis } from './packet-analysis.js';
 import { initPacketFlow } from './packet-flow.js';
 import { compareValues } from './table-utils.js';
@@ -14,14 +14,6 @@ const log = zmmLog('logging');
 // Local utility: HTML-escape arbitrary values. Defined at the very top of
 // the module so it's unambiguously in scope for every function below,
 // avoiding any hoisting / TDZ surprises in bundled or transformed builds.
-const escapeHtml = (text) => {
-    if (text === null || text === undefined) return '';
-    if (typeof text !== 'string') text = String(text);
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-};
-
 // Debug packets cache and sort state
 let _debugPacketCache = [];
 let _debugSortState = { col: 'time', dir: 'desc' };

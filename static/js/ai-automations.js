@@ -7,6 +7,7 @@
  */
 
 import { initAutomationTab } from './modal/automation.js';
+import { escapeHtml as _esc, jsArg } from './utils.js';
 
 let _aiConfigured = false;
 let _aiHost = null;            // last host assessment (for Ollama gating)
@@ -377,7 +378,7 @@ async function _aiSaveRule() {
         const result = document.getElementById('ai-result');
         if (data.success) {
             result.innerHTML = `<div class="alert alert-success mb-0 py-2 small">
-                <i class="fas fa-check-circle me-1"></i> Rule saved: <strong>${data.rule?.name || data.rule?.id}</strong>
+                <i class="fas fa-check-circle me-1"></i> Rule saved: <strong>${_esc(data.rule?.name || data.rule?.id)}</strong>
             </div>`;
             // Clear the prompt
             const input = document.getElementById('ai-prompt');
@@ -559,7 +560,7 @@ async function _aiSaveSettings() {
             if (alert) {
                 alert.innerHTML = `<div class="alert alert-success py-1 mb-2 small">
                     <i class="fas fa-check-circle me-1"></i> Settings saved to config.yaml
-                    — ${data.provider}/${data.model}
+                    — ${_esc(data.provider)}/${_esc(data.model)}
                 </div>`;
                 setTimeout(() => { alert.innerHTML = ''; }, 4000);
             }
@@ -867,10 +868,10 @@ async function _aiOllamaRender() {
                     `<span class="badge bg-light text-dark border">${_esc(m.name)}${m.size_gb ? ` (${m.size_gb} GB)` : ''}</span>`).join(' ') + '</div>';
             }
             if (rec && !haveModel) {
-                html += `<button class="btn btn-sm btn-primary me-1" onclick="window._aiOllamaPull('${_esc(rec)}')"><i class="fas fa-cloud-download-alt me-1"></i>Pull ${_esc(rec)}</button>`;
+                html += `<button class="btn btn-sm btn-primary me-1" onclick="window._aiOllamaPull(${jsArg(rec)})"><i class="fas fa-cloud-download-alt me-1"></i>Pull ${_esc(rec)}</button>`;
             }
             if (haveModel) {
-                html += `<button class="btn btn-sm btn-success" onclick="window._aiOllamaUse('${_esc(rec)}')"><i class="fas fa-plug me-1"></i>Use ${_esc(rec)} for AI</button>`;
+                html += `<button class="btn btn-sm btn-success" onclick="window._aiOllamaUse(${jsArg(rec)})"><i class="fas fa-plug me-1"></i>Use ${_esc(rec)} for AI</button>`;
             }
         }
         box.innerHTML = html + '</div>';
@@ -983,7 +984,7 @@ async function _aiSglangRender() {
             html += `<div class="mb-1">Status: <span class="badge bg-success">running</span>
                 ${s.model ? ` · <code>${_esc(s.model)}</code>` : ' · <span class="text-muted">starting / loading weights…</span>'}</div>`;
             if (s.model) {
-                html += `<button class="btn btn-sm btn-success" onclick="window._aiSglangUse('${_esc(s.model)}')">
+                html += `<button class="btn btn-sm btn-success" onclick="window._aiSglangUse(${jsArg(s.model)})">
                     <i class="fas fa-plug me-1"></i>Use for AI</button>`;
             }
         } else {
@@ -1106,12 +1107,7 @@ async function _aiShowHelp(ev) {
 }
 
 
-function _esc(s) {
-    if (!s) return '';
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-}
+
 
 // WINDOW HANDLERS
 

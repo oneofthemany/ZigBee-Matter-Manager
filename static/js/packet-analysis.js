@@ -646,6 +646,8 @@ function formatRawValue(v) {
  * Main Packet Analysis Function
  * Robust against undefined/missing data
  */
+import { escapeHtml } from './utils.js';
+
 export function analysePacket(packet) {
     // 1. Safety Normalization
     const cid = packet.cluster_id !== undefined ? packet.cluster_id : (packet.cluster || 0);
@@ -1034,10 +1036,3 @@ function bytesToString(bytes) {
     return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
-function escapeHtml(text) {
-    if (text === null || text === undefined) return '';
-    if (typeof text !== 'string') text = String(text);
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}

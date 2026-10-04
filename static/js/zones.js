@@ -8,6 +8,7 @@
  */
 
 import { confirmDialog } from './dialogs.js';
+import { escapeHtml, jsArg } from './utils.js';
 
 const log = zmmLog('zones');
 
@@ -68,7 +69,7 @@ async function fetchZones() {
         log.error("Error fetching zones:", e);
         const c = document.getElementById('zones-container');
         if (c) c.innerHTML =
-            `<div class="col-12 text-center text-danger">Failed to load zones: ${e.message}</div>`;
+            `<div class="col-12 text-center text-danger">Failed to load zones: ${escapeHtml(e.message)}</div>`;
     }
 }
 
@@ -116,7 +117,7 @@ function createZoneCard(zone) {
     col.innerHTML = `
         <div class="card h-100 shadow-sm border-${isOccupied ? 'success' : 'light'}">
             <div class="card-header bg-transparent d-flex justify-content-between align-items-center">
-                <h5 class="mb-0 text-truncate" title="${zone.name}">${zone.name}</h5>
+                <h5 class="mb-0 text-truncate" title="${escapeHtml(zone.name)}">${escapeHtml(zone.name)}</h5>
                 <span class="badge bg-${stateColor} text-uppercase">${zone.state}</span>
             </div>
             <div class="card-body">
@@ -136,11 +137,11 @@ function createZoneCard(zone) {
             </div>
             <div class="card-footer bg-transparent border-top-0 d-flex gap-2">
                 <button class="btn btn-sm btn-outline-primary flex-grow-1"
-                        onclick="window.viewZoneDetails('${zone.name}')">
+                        onclick="window.viewZoneDetails(${jsArg(zone.name)})">
                     <i class="bi bi-graph-up"></i> Details
                 </button>
                 <button class="btn btn-sm btn-outline-danger"
-                        onclick="window.deleteZone('${zone.name}')" title="Delete" aria-label="Delete zone ${zone.name}">
+                        onclick="window.deleteZone(${jsArg(zone.name)})" title="Delete" aria-label="Delete zone ${escapeHtml(zone.name)}">
                     <i class="bi bi-trash" aria-hidden="true"></i>
                 </button>
             </div>
@@ -184,14 +185,14 @@ function renderZoneModalContent(zone, container, fullRender = true) {
             </span>
             <div class="btn-group btn-group-sm">
                 ${canCalibrate ? `
-                    <button class="btn btn-warning" onclick="window.startZoneCalibration('${zone.name}')">
+                    <button class="btn btn-warning" onclick="window.startZoneCalibration(${jsArg(zone.name)})">
                         <i class="bi bi-record-circle"></i> Calibrate (room empty)
                     </button>` : ''}
                 ${isCalibrating ? `
-                    <button class="btn btn-success" onclick="window.stopZoneCalibration('${zone.name}')">
+                    <button class="btn btn-success" onclick="window.stopZoneCalibration(${jsArg(zone.name)})">
                         <i class="bi bi-check-circle"></i> Finalize now
                     </button>
-                    <button class="btn btn-outline-secondary" onclick="window.cancelZoneCalibration('${zone.name}')">
+                    <button class="btn btn-outline-secondary" onclick="window.cancelZoneCalibration(${jsArg(zone.name)})">
                         <i class="bi bi-x-circle"></i> Cancel
                     </button>` : ''}
             </div>
@@ -246,7 +247,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
                             class="form-control form-control-sm agg-input"
                             data-ieee="${ieee}" style="max-width:70px;">
                         <button class="btn btn-outline-primary btn-sm"
-                            onclick="window.setZoneAggressiveness('${zone.name}', '${ieee}')">Set</button>
+                            onclick="window.setZoneAggressiveness(${jsArg(zone.name)}, ${jsArg(ieee)})">Set</button>
                    </div>`
                 : `<span class="badge bg-light text-muted border">
                         End-device (fixed ${(d.aggressiveness ?? 1.0).toFixed(1)}σ)
@@ -255,7 +256,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
             return `
                 <tr class="${rowClass}">
                     <td>
-                        <div class="small fw-bold text-truncate" style="max-width:180px" title="${ieee}">${friendly}</div>
+                        <div class="small fw-bold text-truncate" style="max-width:180px" title="${escapeHtml(ieee)}">${escapeHtml(friendly)}</div>
                         <div class="text-muted small font-monospace">${ieee.slice(-11)}</div>
                         <span class="badge bg-${d.is_router ? 'primary' : 'secondary'}">
                             ${d.is_router ? 'Router' : 'End-device'}
@@ -298,11 +299,11 @@ function renderZoneModalContent(zone, container, fullRender = true) {
         return `
             <li class="list-group-item d-flex justify-content-between align-items-center">
                 <div>
-                    <strong>${displayName}</strong><br>
-                    <small class="text-muted">${d.model}</small>
+                    <strong>${escapeHtml(displayName)}</strong><br>
+                    <small class="text-muted">${escapeHtml(d.model)}</small>
                 </div>
                 <button class="btn btn-sm btn-outline-danger"
-                        onclick="window.removeDeviceFromZone('${zone.name}', '${ieee}')" title="Remove">
+                        onclick="window.removeDeviceFromZone(${jsArg(zone.name)}, ${jsArg(ieee)})" title="Remove">
                     <i class="bi bi-trash"></i>
                 </button>
             </li>`;
@@ -310,7 +311,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
 
     const availableDevices = deviceListCache.filter(d => !deviceList.includes(d.ieee.toLowerCase()));
     const addOptions = availableDevices.map(d =>
-        `<option value="${d.ieee}">${d.friendly_name || d.ieee}</option>`).join('');
+        `<option value="${escapeHtml(d.ieee)}">${escapeHtml(d.friendly_name || d.ieee)}</option>`).join('');
 
     const devicesTab = `
         <div class="card mb-3">
@@ -322,7 +323,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
                         ${addOptions}
                     </select>
                     <button class="btn btn-sm btn-success"
-                            onclick="window.addDeviceToZoneFromModal('${zone.name}')">Add</button>
+                            onclick="window.addDeviceToZoneFromModal(${jsArg(zone.name)})">Add</button>
                 </div>
             </div>
         </div>
@@ -401,7 +402,7 @@ export async function startZoneCalibration(zoneName) {
         confirmText: 'Start'
     })) return;
     try {
-        const r = await fetch(`/api/zones/${zoneName}/calibrate/start`, { method: 'POST' });
+        const r = await fetch(`/api/zones/${encodeURIComponent(zoneName)}/calibrate/start`, { method: 'POST' });
         if (!r.ok) throw new Error((await r.json()).detail || 'Failed to start');
         const data = await r.json();
         if (data.zone) zonesData.set(zoneName, data.zone);
@@ -411,7 +412,7 @@ export async function startZoneCalibration(zoneName) {
 
 export async function stopZoneCalibration(zoneName) {
     try {
-        const r = await fetch(`/api/zones/${zoneName}/calibrate/stop`, { method: 'POST' });
+        const r = await fetch(`/api/zones/${encodeURIComponent(zoneName)}/calibrate/stop`, { method: 'POST' });
         if (!r.ok) throw new Error((await r.json()).detail || 'Failed to stop');
         const data = await r.json();
         window.toast.success(`Calibration complete: ${data.ready_devices} device baselines computed.`);
@@ -421,7 +422,7 @@ export async function stopZoneCalibration(zoneName) {
 
 export async function cancelZoneCalibration(zoneName) {
     try {
-        await fetch(`/api/zones/${zoneName}/calibrate/cancel`, { method: 'POST' });
+        await fetch(`/api/zones/${encodeURIComponent(zoneName)}/calibrate/cancel`, { method: 'POST' });
         fetchZones();
     } catch (e) { window.toast.error("Error: " + e.message); }
 }
@@ -434,7 +435,7 @@ export async function setZoneAggressiveness(zoneName, ieee) {
         return window.toast.warning("Aggressiveness must be between 0.5 and 2.0");
     }
     try {
-        const r = await fetch(`/api/zones/${zoneName}/devices/${ieee}/aggressiveness`, {
+        const r = await fetch(`/api/zones/${encodeURIComponent(zoneName)}/devices/${encodeURIComponent(ieee)}/aggressiveness`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ value }),
@@ -449,7 +450,7 @@ export async function addDeviceToZoneFromModal(zoneName) {
     const ieee = select?.value;
     if (!ieee) return;
     try {
-        const r = await fetch(`/api/zones/${zoneName}/devices`, {
+        const r = await fetch(`/api/zones/${encodeURIComponent(zoneName)}/devices`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ add: [ieee], remove: [] }),
@@ -469,7 +470,7 @@ export async function removeDeviceFromZone(zoneName, ieee) {
         variant: 'danger'
     })) return;
     try {
-        const r = await fetch(`/api/zones/${zoneName}/devices`, {
+        const r = await fetch(`/api/zones/${encodeURIComponent(zoneName)}/devices`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ add: [], remove: [ieee] }),
@@ -488,7 +489,7 @@ export async function deleteZone(zoneName) {
         variant: 'danger'
     })) return;
     try {
-        await fetch(`/api/zones/${zoneName}`, { method: 'DELETE' });
+        await fetch(`/api/zones/${encodeURIComponent(zoneName)}`, { method: 'DELETE' });
         fetchZones();
     } catch (e) { window.toast.error("Delete failed: " + e.message); }
 }
@@ -503,7 +504,7 @@ export async function recalibrateZone(zoneName) {
         variant: 'danger'
     })) return;
     try {
-        await fetch(`/api/zones/${zoneName}/recalibrate`, { method: 'POST' });
+        await fetch(`/api/zones/${encodeURIComponent(zoneName)}/recalibrate`, { method: 'POST' });
         fetchZones();
     } catch (e) { window.toast.error("Reset failed: " + e.message); }
 }
@@ -535,8 +536,8 @@ function renderDeviceList(devices) {
         item.style.cursor = 'pointer';
         item.innerHTML = `
             <div>
-                <strong>${device.friendly_name || device.ieee}</strong><br>
-                <small class="text-muted">${device.model || ''} (${device.type || ''})</small>
+                <strong>${escapeHtml(device.friendly_name || device.ieee)}</strong><br>
+                <small class="text-muted">${escapeHtml(device.model || '')} (${escapeHtml(device.type || '')})</small>
             </div>
             <input class="form-check-input" type="checkbox"
                 ${selectedDevices.has(device.ieee) ? 'checked' : ''}>`;

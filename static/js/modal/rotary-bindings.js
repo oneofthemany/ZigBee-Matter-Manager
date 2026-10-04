@@ -7,6 +7,7 @@
  */
 
 import { state } from '../state.js';
+import { escapeHtml } from '../utils.js';
 
 let _commandDefaults = null;
 
@@ -123,8 +124,8 @@ function _renderBindingCard(group, rotaryKey, existing, sourceIeee, targetDevice
     ).join('');
 
     const deviceOptions = targetDevices.map(d =>
-        `<option value="${d.ieee}" ${existing?.target_ieee === d.ieee ? 'selected' : ''}>
-            ${d.friendly_name} (${d.model || d.ieee})
+        `<option value="${escapeHtml(d.ieee)}" ${existing?.target_ieee === d.ieee ? 'selected' : ''}>
+            ${escapeHtml(d.friendly_name)} (${escapeHtml(d.model || d.ieee)})
         </option>`
     ).join('');
 

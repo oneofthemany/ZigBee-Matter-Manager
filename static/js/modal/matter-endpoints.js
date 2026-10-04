@@ -9,6 +9,8 @@
  *   4. Saves definitions to config/matter_definitions/
  */
 
+import { escapeHtml } from '../utils.js';
+
 
  import { renderRotaryBindingsSection, initRotaryBindings } from './rotary-bindings.js';
 
@@ -85,7 +87,7 @@ function _renderScanResults(data, nodeId) {
 
     return `
         <div class="small text-muted mb-2">
-            <strong>${data.friendly_name}</strong> — ${data.manufacturer} ${data.model}
+            <strong>${escapeHtml(data.friendly_name)}</strong> — ${escapeHtml(data.manufacturer)} ${escapeHtml(data.model)}
             — ${nonRoot.length} functional endpoint(s)
         </div>
         ${_existingDef ? `
@@ -269,7 +271,7 @@ function _renderDefEditor(container, defn, isEdit) {
                     <div class="col-3">
                         <label class="form-label mb-0">Model</label>
                         <input type="text" class="form-control form-control-sm" id="defModel"
-                               value="${defn.model || ''}">
+                               value="${escapeHtml(defn.model || '')}">
                     </div>
                     <div class="col-3">
                         <label class="form-label mb-0">Device Type</label>

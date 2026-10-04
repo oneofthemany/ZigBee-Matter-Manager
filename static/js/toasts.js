@@ -47,16 +47,17 @@
         // Errors interrupt screen readers; everything else is polite
         toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
 
-        // Handle multi-line messages (from alert() calls that use \n)
-        var formattedMessage = String(message).replace(/\n/g, '<br>');
-
         toast.innerHTML =
             '<span class="zbm-toast-icon">' + ICONS[type] + '</span>' +
             '<div class="zbm-toast-body">' +
-                '<div class="zbm-toast-title">' + title + '</div>' +
-                '<div class="zbm-toast-message">' + formattedMessage + '</div>' +
+                '<div class="zbm-toast-title"></div>' +
+                '<div class="zbm-toast-message"></div>' +
             '</div>' +
             '<button class="zbm-toast-close" aria-label="Close">&times;</button>';
+        // Text, not HTML: messages carry device names and server errors.
+        // Newlines still break lines via white-space: pre-line in toasts.css.
+        toast.querySelector('.zbm-toast-title').textContent = title;
+        toast.querySelector('.zbm-toast-message').textContent = String(message);
 
         // Click to dismiss
         toast.addEventListener('click', function () {

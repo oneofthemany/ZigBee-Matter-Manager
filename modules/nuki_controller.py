@@ -15,7 +15,7 @@ import logging
 import random
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import aiohttp
 
@@ -189,9 +189,12 @@ class NukiLockDevice:
     other device. Pseudo-ieee: nuki_<nukiId>.
     """
 
-    def __init__(self, lock: Dict[str, Any], action_sender):
+    def __init__(self, lock: Dict[str, Any], action_sender,
+                 name_lookup: Optional[Callable[[str], Optional[str]]] = None):
         # action_sender: async (nuki_id, action, device_type) -> result dict
+        # name_lookup: ieee -> name the user gave it in ZMM (names.json), if any
         self._send_action = action_sender
+        self._name_lookup = name_lookup
         self.nuki_id = lock.get("nuki_id")
         self.ieee = f"nuki_{self.nuki_id}"
         self.manufacturer = "Nuki"
@@ -203,7 +206,9 @@ class NukiLockDevice:
 
     @property
     def friendly_name(self) -> str:
-        return self._lock.get("name") or self.ieee
+        # A rename in ZMM wins over the name set in the Nuki app.
+        local = self._name_lookup(self.ieee) if self._name_lookup else None
+        return local or self._lock.get("name") or self.ieee
 
     @property
     def model(self) -> str:

@@ -14,6 +14,7 @@
  */
 
 import { DEVICE_ICON, deviceType, attrLabel, valueLabel } from './automation-humanize.js';
+import { escapeHtml } from './utils.js';
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -41,10 +42,7 @@ const RUN_MODE_PHRASE = {
     parallel: 'if it fires again while running, both run at once',
 };
 
-export function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, c => (
-        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-}
+export { escapeHtml as esc };
 
 /**
  * Build a humanizer bound to one set of name lookups.

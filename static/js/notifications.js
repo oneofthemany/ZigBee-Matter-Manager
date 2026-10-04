@@ -4,6 +4,7 @@
    This module is the editor plus in-page delivery. See docs/notifications.md. */
 
 import { state } from './state.js';
+import { escapeHtml } from './utils.js';
 
 const log = zmmLog('notifications');
 
@@ -123,12 +124,6 @@ async function handleRuleFired(p) {
 }
 
 // UI rendering
-
-function escapeHtml(s) {
-    return String(s ?? '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 
 function getAllDevices() {
     const cache = (window.state && window.state.deviceCache) || {};
