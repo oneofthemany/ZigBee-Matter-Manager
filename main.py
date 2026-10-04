@@ -1368,7 +1368,7 @@ set_message_store(message_store)
 
 # Notification rules — evaluated here so they fire with no browser open.
 from modules.notification_rules import (NotificationRuleStore, NotificationRuleEngine,
-                                        set_rule_engine)
+                                        set_rule_engine, STATE_PATH as NOTIFICATION_STATE_PATH)
 from routes.notification_rule_routes import register_notification_rule_routes
 
 
@@ -1398,6 +1398,7 @@ notification_rule_engine = NotificationRuleEngine(
     get_names=lambda: zigbee_service.automation._get_all_names(),
     get_tabs=lambda: zigbee_service.get_device_tabs(),
     deliver=_deliver_rule_notification,
+    state_path=NOTIFICATION_STATE_PATH,
 )
 set_rule_engine(notification_rule_engine)
 zigbee_service.automation.add_state_listener(notification_rule_engine.observe)

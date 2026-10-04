@@ -240,9 +240,12 @@ browser had ZMM open, which is the one time an alert is least needed.
   and the current one, never on a steady state. The first change seen for a
   device after a restart still fires: keys it didn't just change are taken as
   its previous values. A button reporting the same action twice fires twice.
-- **Cooldowns** are per rule and device, held in memory, and so reset on restart.
-- **Last fired and tests.** The engine keeps each rule's latest firing in memory for the
-  rule list. A test send goes through the real delivery path but neither counts as a
+- **Cooldowns** are per rule and device. With each rule's last firing they're kept in
+  `data/notification_rules_state.json`, so a restart or upgrade neither repeats an alert
+  nor forgets when a rule last fired. Writes are batched over a couple of seconds and
+  done off the event loop; entries for deleted rules and long-expired cooldowns are dropped.
+- **Last fired and tests.** The engine keeps each rule's latest firing (persisted with the
+  cooldowns) for the rule list. A test send goes through the real delivery path but neither counts as a
   firing nor starts a cooldown, and reports where it went so a silent phone has a reason.
 - **Time windows** use the hub's local time (the container mounts the host's
   `/etc/localtime`) and may wrap midnight.
@@ -295,7 +298,7 @@ failed upload keeps the local copy and retries on the next load.
 
 | | |
 |---|---|
-| `GET /api/notification-rules` | your rules, each with `last_fired` (latest firing since the hub started, or null) |
+| `GET /api/notification-rules` | your rules, each with `last_fired` (latest firing, or null) |
 | `POST /api/notification-rules` | create one |
 | `PUT /api/notification-rules/{id}` | replace one of yours |
 | `DELETE /api/notification-rules/{id}` | delete one of yours |

@@ -21,6 +21,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger("notification_rules")
 
 RULES_PATH = Path("./data/notification_rules.json")
+# Cooldowns and last firings, kept apart from the rules because they change on every firing.
+STATE_PATH = Path("./data/notification_rules_state.json")
+STATE_SAVE_DELAY_S = 2.0      # a burst of firings becomes one write
 SWEEP_INTERVAL_S = 30          # online/offline has no state-change event to ride on
 COOLDOWN_MINUTES = (0, 1, 5, 15, 30, 60)
 
@@ -345,7 +348,9 @@ class NotificationRuleEngine:
                  get_tabs: Callable[[], Dict[str, List[str]]],
                  deliver: Deliver,
                  clock: Callable[[], float] = time.time,
-                 local_now: Callable[[], datetime] = datetime.now) -> None:
+                 local_now: Callable[[], datetime] = datetime.now,
+                 state_path: Optional[Path] = None) -> None:
+        """state_path: where cooldowns and last firings survive a restart; None keeps them in memory."""
         self.store = store
         self._get_devices = get_devices
         self._get_names = get_names
@@ -357,6 +362,9 @@ class NotificationRuleEngine:
         self._fired_at: Dict[str, float] = {}           # "rule|ieee" -> epoch s
         self._last: Dict[str, Dict[str, Any]] = {}      # rule id -> latest firing, for the rule list
         self._tasks: set = set()
+        self._state_path = Path(state_path) if state_path else None
+        self._save_pending = False
+        self._load_state()
 
     # inputs
 
@@ -431,7 +439,7 @@ class NotificationRuleEngine:
         return out
 
     def last_fired(self, rule_id: str) -> Optional[Dict[str, Any]]:
-        """Latest real firing since the hub started; tests don't count."""
+        """Latest real firing (kept across restarts with a state_path); tests don't count."""
         return self._last.get(rule_id)
 
     async def send_test(self, rule: Dict[str, Any]) -> Dict[str, Any]:
@@ -484,7 +492,53 @@ class NotificationRuleEngine:
         last = self._fired_at.get(f"{rule['id']}|{ieee}")
         return not cd or last is None or self._clock() - last >= cd
 
+    # persistence of cooldowns / last firings
+
+    def _load_state(self) -> None:
+        if not self._state_path:
+            return
+        try:
+            raw = json.loads(self._state_path.read_text())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as e:
+            logger.warning("[notification_rules] ignoring unreadable %s: %s", self._state_path, e)
+            return
+        self._fired_at = {k: float(v) for k, v in (raw.get("fired_at") or {}).items()}
+        self._last = dict(raw.get("last") or {})
+
+    def _state_snapshot(self) -> Dict[str, Any]:
+        """What's worth keeping: rules that still exist, cooldowns that haven't run out."""
+        live = set(self.store.rules)
+        horizon = self._clock() - max(COOLDOWN_MINUTES) * 60
+        return {
+            "fired_at": {k: v for k, v in self._fired_at.items()
+                         if k.split("|", 1)[0] in live and v >= horizon},
+            "last": {k: v for k, v in self._last.items() if k in live},
+        }
+
+    def _write_state(self, snapshot: Dict[str, Any]) -> None:
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(snapshot))
+        tmp.replace(self._state_path)
+
+    async def _save_state_soon(self) -> None:
+        try:
+            await asyncio.sleep(STATE_SAVE_DELAY_S)
+            self._save_pending = False
+            # Off the event loop: firings arrive on it.
+            await asyncio.to_thread(self._write_state, self._state_snapshot())
+        except Exception as e:
+            self._save_pending = False
+            logger.warning("[notification_rules] saving cooldowns failed: %s", e)
+
     def _dispatch(self, firings: List[Tuple[str, Dict[str, Any]]]) -> None:
+        if firings and self._state_path and not self._save_pending:
+            self._save_pending = True
+            task = asyncio.get_running_loop().create_task(self._save_state_soon())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         for owner, payload in firings:
             task = asyncio.get_running_loop().create_task(self._safe_deliver(owner, payload))
             self._tasks.add(task)

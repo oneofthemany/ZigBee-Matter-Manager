@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-PY_MODULES = ["test_rule_engine", "test_rule_store", "test_catalogue_sync", "test_rule_routes"]
+PY_MODULES = ["test_rule_engine", "test_rule_store", "test_rule_state", "test_catalogue_sync", "test_rule_routes"]
 NEEDS_FASTAPI = {"test_rule_routes"}
 
 

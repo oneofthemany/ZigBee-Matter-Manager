@@ -55,8 +55,9 @@ class Rig:
     """An engine over fake devices, a settable clock and a recording deliverer."""
 
     def __init__(self, tmp: Path, devices: Dict[str, FakeDevice],
-                 tabs: Optional[Dict[str, List[str]]] = None, local_time: str = "12:00"):
-        self.store = NotificationRuleStore(tmp / "rules.json")
+                 tabs: Optional[Dict[str, List[str]]] = None, local_time: str = "12:00",
+                 state_path: Optional[Path] = None, store: Optional[NotificationRuleStore] = None):
+        self.store = store or NotificationRuleStore(tmp / "rules.json")
         self.devices = devices
         self.tabs = tabs or {}
         self.now = 1_000_000.0
@@ -74,6 +75,7 @@ class Rig:
             deliver=deliver,
             clock=lambda: self.now,
             local_now=lambda: datetime.strptime(f"2026-10-02 {self.local_time}", "%Y-%m-%d %H:%M"),
+            state_path=state_path,
         )
 
     def rule(self, owner: str = "alice", **fields) -> Dict[str, Any]:
@@ -94,6 +96,7 @@ class Rig:
             fn()
             await asyncio.sleep(0)       # let the delivery tasks run
             await asyncio.sleep(0)
+            await asyncio.sleep(0.05)    # …and any state save handed to a thread
 
         asyncio.run(go())
         return self.sent[before:]

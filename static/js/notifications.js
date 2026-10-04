@@ -243,7 +243,7 @@ function renderRulesList() {
 // Last fired / test
 
 function lastFiredLine(last) {
-    if (!last) return '<div class="small text-muted mt-1">Hasn\'t fired since the hub last started.</div>';
+    if (!last) return '<div class="small text-muted mt-1">Hasn\'t fired yet.</div>';
     const at = last.at * 1000;
     return `<div class="small text-muted mt-1" title="${escapeHtml(new Date(at).toLocaleString())}">
         <i class="fas fa-clock-rotate-left me-1"></i>Last fired ${escapeHtml(timeAgo(at))} — ${escapeHtml(last.body)}</div>`;
