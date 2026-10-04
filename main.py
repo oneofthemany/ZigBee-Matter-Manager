@@ -977,6 +977,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start upgrade manager loops: {e}")
 
+        app.state.notification_rule_sweeper = asyncio.create_task(
+            notification_rule_engine.run_sweeper())
+
         # Pushes a 2 s snapshot of rates / top talkers / anomalies to all
         # clients. Independent of debug capture; packet_flow counters are always on.
         try:
@@ -1362,6 +1365,41 @@ async def _message_notifier(event: str, payload: dict):
 from modules.messages_store import MessageStore, set_message_store, get_message_store
 message_store = MessageStore(notifier=_message_notifier)
 set_message_store(message_store)
+
+# Notification rules — evaluated here so they fire with no browser open.
+from modules.notification_rules import (NotificationRuleStore, NotificationRuleEngine,
+                                        set_rule_engine)
+from routes.notification_rule_routes import register_notification_rule_routes
+
+
+async def _deliver_rule_notification(owner: str, payload: dict):
+    """The owner's open pages over the websocket, the owner's phones over push."""
+    try:
+        await manager.send_to_user(owner, {"type": "notification_rule_fired", "payload": payload})
+    except Exception as e:
+        logger.debug(f"[notification_rules] websocket send failed: {e}")
+    await push_manager.send_to_user(owner, {
+        "title": payload["title"],
+        "body": payload["body"],
+        "tag": payload["tag"],
+        "kind": "notification_rule",
+        "requireInteraction": payload["persistent"],
+        "data": {"ieee": payload["ieee"]},
+    })
+
+
+_notification_rule_store = NotificationRuleStore()
+_notification_rule_store.load()
+notification_rule_engine = NotificationRuleEngine(
+    _notification_rule_store,
+    get_devices=lambda: zigbee_service.automation._get_all_devices(),
+    get_names=lambda: zigbee_service.automation._get_all_names(),
+    get_tabs=lambda: zigbee_service.get_device_tabs(),
+    deliver=_deliver_rule_notification,
+)
+set_rule_engine(notification_rule_engine)
+zigbee_service.automation.add_state_listener(notification_rule_engine.observe)
+register_notification_rule_routes(app)
 
 # Named places — shared geofences beyond home. Loaded before the routes so a
 # request arriving immediately after startup sees the configured set.

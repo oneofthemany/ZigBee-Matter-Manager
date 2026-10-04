@@ -1,197 +1,37 @@
 /* Settings -> Notifications: per-device, per-event rules with cooldowns, time
-   windows and condition logic, stored in localStorage.
-
-   Delivery goes through window.zbmSendNotification (pwa.js) for the same
-   service-worker / native / in-app fallback. Independent of pwa.js' four
-   hard-coded toggles, which stay on the navbar bell. See docs/notifications.md. */
+   windows and condition logic. Rules live on the hub (modules/notification_rules.py),
+   which evaluates them and pushes to the owner, so they fire with ZMM closed.
+   This module is the editor plus in-page delivery. See docs/notifications.md. */
 
 import { state } from './state.js';
 
 const log = zmmLog('notifications');
 
-
-const RULES_KEY = 'zbm-notification-rules';
-const POLL_INTERVAL_MS = 5000;
+// Rules this browser kept before they moved to the hub; imported once, then cleared.
+const LEGACY_RULES_KEY = 'zbm-notification-rules';
 
 /**
- * Trigger catalogue. Each entry describes one kind of event we can detect
- * on a device. The `match(prev, curr, rule)` function returns true when the
- * trigger has just fired (i.e. the transition happened between prev → curr).
- *
- * Keep this list in sync with the icons used in the UI builder below.
+ * Editor catalogue. Keys and labels mirror TRIGGERS in
+ * modules/notification_rules.py, which does the matching; tests/notifications
+ * checks the two agree.
  */
 const TRIGGERS = {
-    motion_detected: {
-        label: 'Motion detected',
-        icon: 'fa-running',
-        category: 'motion',
-        match: (prev, curr) => {
-            const was = !!(prev.occupancy || prev.motion || prev.presence);
-            const now = !!(curr.occupancy || curr.motion || curr.presence);
-            return !was && now;
-        },
-        defaultBody: (name) => `Motion detected — ${name}`,
-    },
-    motion_cleared: {
-        label: 'Motion cleared',
-        icon: 'fa-shield-alt',
-        category: 'motion',
-        match: (prev, curr) => {
-            const was = !!(prev.occupancy || prev.motion || prev.presence);
-            const now = !!(curr.occupancy || curr.motion || curr.presence);
-            return was && !now;
-        },
-        defaultBody: (name) => `Motion cleared — ${name}`,
-    },
-    contact_opened: {
-        label: 'Door / window opened',
-        icon: 'fa-door-open',
-        category: 'contact',
-        match: (prev, curr) => {
-            // contact === false means open in the ZCL convention used here
-            const wasOpen = prev.contact === false || prev.is_open === true;
-            const nowOpen = curr.contact === false || curr.is_open === true;
-            return !wasOpen && nowOpen;
-        },
-        defaultBody: (name) => `${name} opened`,
-    },
-    contact_closed: {
-        label: 'Door / window closed',
-        icon: 'fa-door-closed',
-        category: 'contact',
-        match: (prev, curr) => {
-            const wasOpen = prev.contact === false || prev.is_open === true;
-            const nowOpen = curr.contact === false || curr.is_open === true;
-            return wasOpen && !nowOpen;
-        },
-        defaultBody: (name) => `${name} closed`,
-    },
-    water_leak: {
-        label: 'Water leak detected',
-        icon: 'fa-tint',
-        category: 'safety',
-        match: (prev, curr) => !prev.water_leak && !!curr.water_leak,
-        defaultBody: (name) => `🚨 Water leak — ${name}`,
-        persistent: true,
-    },
-    smoke: {
-        label: 'Smoke detected',
-        icon: 'fa-fire',
-        category: 'safety',
-        match: (prev, curr) => !prev.smoke && !!curr.smoke,
-        defaultBody: (name) => `🚨 Smoke detected — ${name}`,
-        persistent: true,
-    },
-    vibration: {
-        label: 'Vibration / tamper',
-        icon: 'fa-bolt',
-        category: 'safety',
-        match: (prev, curr) => !prev.vibration && !!curr.vibration,
-        defaultBody: (name) => `Vibration — ${name}`,
-    },
-    button_pressed: {
-        label: 'Button pressed',
-        icon: 'fa-hand-pointer',
-        category: 'control',
-        match: (prev, curr) => {
-            // Edge-trigger any change in `action` that is not empty
-            if (!curr.action || curr.action === '') return false;
-            return prev.action !== curr.action;
-        },
-        defaultBody: (name, curr) => `${name}: ${curr.action}`,
-    },
-    low_battery: {
-        label: 'Low battery (< 15%)',
-        icon: 'fa-battery-quarter',
-        category: 'maintenance',
-        match: (prev, curr) => {
-            const b = curr.battery ?? curr.battery_percentage;
-            const pb = prev.battery ?? prev.battery_percentage;
-            if (b === undefined) return false;
-            // Edge trigger when crossing the threshold downward
-            return (pb === undefined || pb > 15) && b <= 15;
-        },
-        defaultBody: (name, curr) => {
-            const b = curr.battery ?? curr.battery_percentage;
-            return `${name} battery at ${b}%`;
-        },
-        persistent: true,
-    },
-    offline: {
-        label: 'Device went offline',
-        icon: 'fa-plug',
-        category: 'maintenance',
-        // Note: `available` is merged in from device.available (not state)
-        match: (prev, curr) => prev.available === true && curr.available === false,
-        defaultBody: (name) => `${name} is offline`,
-    },
-    online: {
-        label: 'Device came online',
-        icon: 'fa-plug-circle-bolt',
-        category: 'maintenance',
-        match: (prev, curr) => prev.available === false && curr.available === true,
-        defaultBody: (name) => `${name} is online`,
-    },
-    temp_target_reached: {
-        label: 'Heating target reached',
-        icon: 'fa-thermometer-half',
-        category: 'heating',
-        match: (prev, curr) => {
-            const target = curr.occupied_heating_setpoint ?? curr.heating_setpoint;
-            const cnow = curr.internal_temperature ?? curr.temperature ?? curr.local_temperature;
-            const cprev = prev.internal_temperature ?? prev.temperature ?? prev.local_temperature;
-            if (!target || cnow === undefined || cprev === undefined) return false;
-            return cprev < (target - 0.3) && cnow >= (target - 0.3);
-        },
-        defaultBody: (name, curr) => {
-            const target = curr.occupied_heating_setpoint ?? curr.heating_setpoint;
-            const cnow = curr.internal_temperature ?? curr.temperature ?? curr.local_temperature;
-            return `${name} reached ${Number(cnow).toFixed(1)}°C (target ${Number(target).toFixed(1)}°C)`;
-        },
-    },
-    temp_above: {
-        label: 'Temperature rises above threshold',
-        icon: 'fa-temperature-high',
-        category: 'heating',
-        needsThreshold: true,
-        match: (prev, curr, rule) => {
-            const t = curr.temperature ?? curr.local_temperature ?? curr.internal_temperature;
-            const pt = prev.temperature ?? prev.local_temperature ?? prev.internal_temperature;
-            if (t === undefined || pt === undefined) return false;
-            const thr = Number(rule.threshold);
-            return pt <= thr && t > thr;
-        },
-        defaultBody: (name, curr, rule) => `${name} now ${Number(curr.temperature ?? curr.local_temperature).toFixed(1)}°C (above ${rule.threshold}°C)`,
-    },
-    temp_below: {
-        label: 'Temperature drops below threshold',
-        icon: 'fa-temperature-low',
-        category: 'heating',
-        needsThreshold: true,
-        match: (prev, curr, rule) => {
-            const t = curr.temperature ?? curr.local_temperature ?? curr.internal_temperature;
-            const pt = prev.temperature ?? prev.local_temperature ?? prev.internal_temperature;
-            if (t === undefined || pt === undefined) return false;
-            const thr = Number(rule.threshold);
-            return pt >= thr && t < thr;
-        },
-        defaultBody: (name, curr, rule) => `${name} now ${Number(curr.temperature ?? curr.local_temperature).toFixed(1)}°C (below ${rule.threshold}°C)`,
-    },
-    valve_alarm: {
-        label: 'Valve alarm (TRV)',
-        icon: 'fa-exclamation-triangle',
-        category: 'heating',
-        match: (prev, curr) => !prev.valve_alarm && !!curr.valve_alarm,
-        defaultBody: (name) => `Valve alarm — ${name}`,
-        persistent: true,
-    },
-    window_open_trv: {
-        label: 'Window-open detected (TRV)',
-        icon: 'fa-window-maximize',
-        category: 'heating',
-        match: (prev, curr) => !prev.window_open && !!curr.window_open,
-        defaultBody: (name) => `Window-open detected — ${name}`,
-    },
+    motion_detected:     { label: 'Motion detected',                   icon: 'fa-running',              category: 'motion' },
+    motion_cleared:      { label: 'Motion cleared',                    icon: 'fa-shield-alt',           category: 'motion' },
+    contact_opened:      { label: 'Door / window opened',              icon: 'fa-door-open',            category: 'contact' },
+    contact_closed:      { label: 'Door / window closed',              icon: 'fa-door-closed',          category: 'contact' },
+    water_leak:          { label: 'Water leak detected',               icon: 'fa-tint',                 category: 'safety' },
+    smoke:               { label: 'Smoke detected',                    icon: 'fa-fire',                 category: 'safety' },
+    vibration:           { label: 'Vibration / tamper',                icon: 'fa-bolt',                 category: 'safety' },
+    button_pressed:      { label: 'Button pressed',                    icon: 'fa-hand-pointer',         category: 'control' },
+    low_battery:         { label: 'Low battery (< 15%)',               icon: 'fa-battery-quarter',      category: 'maintenance' },
+    offline:             { label: 'Device went offline',               icon: 'fa-plug',                 category: 'maintenance' },
+    online:              { label: 'Device came online',                icon: 'fa-plug-circle-bolt',     category: 'maintenance' },
+    temp_target_reached: { label: 'Heating target reached',            icon: 'fa-thermometer-half',     category: 'heating' },
+    temp_above:          { label: 'Temperature rises above threshold', icon: 'fa-temperature-high',     category: 'heating', needsThreshold: true },
+    temp_below:          { label: 'Temperature drops below threshold', icon: 'fa-temperature-low',      category: 'heating', needsThreshold: true },
+    valve_alarm:         { label: 'Valve alarm (TRV)',                 icon: 'fa-exclamation-triangle', category: 'heating' },
+    window_open_trv:     { label: 'Window-open detected (TRV)',        icon: 'fa-window-maximize',      category: 'heating' },
 };
 
 // Sensible defaults for rule cooldowns
@@ -203,139 +43,83 @@ const COOLDOWN_OPTIONS = [
     { value: 60, label: '1 hour' },
 ];
 
-// Persistence
+// Persistence — the hub's /api/notification-rules, cached for rendering
 
-function loadRules() {
+let rulesCache = [];
+
+async function api(method, url, body) {
+    const res = await fetch(url, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+}
+
+async function refreshRules() {
+    rulesCache = (await api('GET', '/api/notification-rules')).rules || [];
+    return rulesCache;
+}
+
+async function saveRule(rule) {
+    return rule.id
+        ? api('PUT', `/api/notification-rules/${encodeURIComponent(rule.id)}`, rule)
+        : api('POST', '/api/notification-rules', rule);
+}
+
+let importing = null;
+
+/** Upload rules this browser kept locally, once; they then run on the hub. */
+function importLegacyRules() {
+    // onChange can fire twice in quick succession; one upload, not two copies.
+    importing ??= doImportLegacyRules().finally(() => { importing = null; });
+    return importing;
+}
+
+async function doImportLegacyRules() {
+    let legacy;
+    try { legacy = JSON.parse(localStorage.getItem(LEGACY_RULES_KEY) || 'null'); } catch (e) { return; }
+    if (!Array.isArray(legacy) || legacy.length === 0) return;
     try {
-        const raw = localStorage.getItem(RULES_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
+        const { imported, errors } = await api('POST', '/api/notification-rules/import', { rules: legacy });
+        localStorage.removeItem(LEGACY_RULES_KEY);
+        if (imported && window.toast) {
+            window.toast.success(`Moved ${imported} notification rule${imported === 1 ? '' : 's'} to the hub — they now work with ZMM closed.`);
+        }
+        if (errors.length) log.warn('[notifications] rules not imported:', errors);
     } catch (e) {
-        log.warn('[notifications] Failed to load rules', e);
-        return [];
+        log.warn('[notifications] legacy import failed; will retry next load', e);
     }
 }
 
-function saveRules(rules) {
-    localStorage.setItem(RULES_KEY, JSON.stringify(rules));
-}
+// In-page delivery
 
-function newRuleId() {
-    return 'rule-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-}
-
-// Rule engine
-
-const previousStates = {};   // ieee → last seen merged state
-const lastFiredAt   = {};    // ruleId+ieee → epoch ms
-
-function withinTimeWindow(rule) {
-    if (!rule.timeFrom || !rule.timeTo) return true;
-    const now = new Date();
-    const mins = now.getHours() * 60 + now.getMinutes();
-    const [fH, fM] = rule.timeFrom.split(':').map(Number);
-    const [tH, tM] = rule.timeTo.split(':').map(Number);
-    const from = fH * 60 + fM;
-    const to = tH * 60 + tM;
-    if (from === to) return true;
-    if (from < to)  return mins >= from && mins <= to;
-    // wraps midnight (e.g. 22:00 → 06:00)
-    return mins >= from || mins <= to;
-}
-
-function deviceMatchesRule(rule, ieee, device) {
-    if (rule.scope === 'all') return true;
-    if (rule.scope === 'devices') {
-        return Array.isArray(rule.devices) && rule.devices.includes(ieee);
+async function hasPushSubscription() {
+    try {
+        if (!window.isSecureContext || !navigator.serviceWorker) return false;
+        const reg = await navigator.serviceWorker.getRegistration();
+        return !!(reg && await reg.pushManager.getSubscription());
+    } catch (e) {
+        return false;
     }
-    if (rule.scope === 'tab') {
-        // Optional: filter by user-defined tab. The deviceTabs map lives in
-        // tabs.js — accessed lazily via window.state if exposed.
-        const tabs = (window.state && window.state.deviceTabs) || {};
-        const list = tabs[rule.tab] || [];
-        return list.includes(ieee);
-    }
-    return false;
-}
-
-function ruleCooldownPassed(rule, ieee) {
-    const key = rule.id + '|' + ieee;
-    const cd = (Number(rule.cooldownMinutes) || 0) * 60_000;
-    if (!cd) return true;
-    const last = lastFiredAt[key] || 0;
-    return (Date.now() - last) >= cd;
-}
-
-function markFired(rule, ieee) {
-    lastFiredAt[rule.id + '|' + ieee] = Date.now();
 }
 
 /**
- * Evaluate every enabled rule against every cached device. Called every
- * POLL_INTERVAL_MS from the main poller. Edge-triggered: a rule only fires
- * on transition (prev → curr), never on a steady state.
+ * A rule fired on the hub. With push on this browser the system notification
+ * arrives that way, so the page only adds a toast while visible; without push
+ * (e.g. the LAN address) the page raises it itself, as before.
  */
-function evaluateRules() {
-    const cache = window.state && window.state.deviceCache;
-    if (!cache) return;
-
-    const rules = loadRules().filter(r => r.enabled !== false);
-    if (rules.length === 0) {
-        // Still need to update previousStates so we have a baseline if the
-        // user enables a rule later.
-        Object.keys(cache).forEach(ieee => {
-            const d = cache[ieee];
-            if (d && d.state) {
-                previousStates[ieee] = { ...d.state, available: d.available };
-            }
-        });
+async function handleRuleFired(p) {
+    if (await hasPushSubscription()) {
+        if (document.visibilityState === 'visible' && window.toast) window.toast.info(`${p.title}: ${p.body}`);
         return;
     }
-
-    Object.keys(cache).forEach(ieee => {
-        const device = cache[ieee];
-        if (!device || !device.state) return;
-        const curr = { ...device.state, available: device.available };
-        const prev = previousStates[ieee] || {};
-        const name = device.friendly_name || ieee.slice(-8);
-
-        rules.forEach(rule => {
-            const trigger = TRIGGERS[rule.trigger];
-            if (!trigger) return;
-            if (!deviceMatchesRule(rule, ieee, device)) return;
-            if (!withinTimeWindow(rule)) return;
-            if (!ruleCooldownPassed(rule, ieee)) return;
-
-            let matched = false;
-            try {
-                matched = !!trigger.match(prev, curr, rule);
-            } catch (e) {
-                log.warn('[notifications] match error', rule, e);
-            }
-            if (!matched) return;
-
-            const title = rule.title || trigger.label;
-            const body  = rule.message
-                ? rule.message.replace(/\{device\}/g, name)
-                : trigger.defaultBody(name, curr, rule);
-
-            const send = window.zbmSendNotification;
-            // Falsy means that channel is switched off (master toggle), not
-            // that it failed — fall back to a toast so a rule the user built
-            // still shows up somewhere.
-            const delivered = typeof send === 'function' && send(
-                title, body, `${rule.id}-${ieee}`,
-                { persistent: !!trigger.persistent });
-            if (!delivered && window.toast) {
-                window.toast.info(`${title}: ${body}`);
-            }
-
-            markFired(rule, ieee);
-        });
-
-        previousStates[ieee] = curr;
-    });
+    const send = window.zbmSendNotification;
+    // Falsy means the master toggle is off, not a failure — still show it somewhere.
+    const delivered = typeof send === 'function' && send(p.title, p.body, p.tag, { persistent: !!p.persistent });
+    if (!delivered && window.toast) window.toast.info(`${p.title}: ${p.body}`);
 }
 
 // UI rendering
@@ -357,7 +141,7 @@ function renderRulesList() {
     const container = document.getElementById('notifRulesList');
     if (!container) return;
 
-    const rules = loadRules();
+    const rules = rulesCache;
     if (rules.length === 0) {
         container.innerHTML = `
             <div class="text-center text-muted py-5">
@@ -384,7 +168,7 @@ function renderRulesList() {
         }
 
         let extras = '';
-        if (rule.threshold !== undefined && rule.threshold !== '') {
+        if (rule.threshold != null && rule.threshold !== '') {
             extras += `<span class="badge bg-light text-dark border me-1">Threshold: ${escapeHtml(rule.threshold)}</span>`;
         }
         if (rule.timeFrom && rule.timeTo) {
@@ -395,7 +179,7 @@ function renderRulesList() {
         }
 
         return `
-            <div class="card notif-rule-card mb-2 ${enabled ? '' : 'opacity-50'}" data-rule-id="${rule.id}">
+            <div class="card notif-rule-card mb-2 ${enabled ? '' : 'opacity-50'}" data-rule-id="${escapeHtml(rule.id)}">
                 <div class="card-body py-2 px-3">
                     <div class="d-flex align-items-center gap-2">
                         <i class="fas ${icon} fa-fw text-primary"></i>
@@ -424,12 +208,15 @@ function renderRulesList() {
     // Wire up per-card actions
     container.querySelectorAll('[data-rule-id]').forEach(card => {
         const id = card.dataset.ruleId;
-        card.querySelector('[data-action="toggle"]').addEventListener('change', (ev) => {
-            const rules = loadRules();
-            const r = rules.find(x => x.id === id);
+        card.querySelector('[data-action="toggle"]').addEventListener('change', async (ev) => {
+            const r = rulesCache.find(x => x.id === id);
             if (!r) return;
-            r.enabled = ev.target.checked;
-            saveRules(rules);
+            try {
+                await saveRule({ ...r, enabled: ev.target.checked });
+                await refreshRules();
+            } catch (e) {
+                window.toast?.error(`Couldn't update rule: ${e.message}`);
+            }
             renderRulesList();
         });
         card.querySelector('[data-action="edit"]').addEventListener('click', () => openRuleEditor(id));
@@ -440,8 +227,12 @@ function renderRulesList() {
                 confirmText: 'Delete',
                 variant: 'danger'
             })) return;
-            const rules = loadRules().filter(x => x.id !== id);
-            saveRules(rules);
+            try {
+                await api('DELETE', `/api/notification-rules/${encodeURIComponent(id)}`);
+                await refreshRules();
+            } catch (e) {
+                window.toast?.error(`Couldn't delete rule: ${e.message}`);
+            }
             renderRulesList();
         });
     });
@@ -449,12 +240,10 @@ function renderRulesList() {
 
 // Rule editor modal
 
-function openRuleEditor(ruleId) {
-    const rules = loadRules();
+async function openRuleEditor(ruleId) {
     const rule = ruleId
-        ? rules.find(r => r.id === ruleId)
+        ? rulesCache.find(r => r.id === ruleId)
         : {
-            id: newRuleId(),
             enabled: true,
             trigger: 'motion_detected',
             scope: 'all',
@@ -505,7 +294,8 @@ function openRuleEditor(ruleId) {
         `;
     }).join('');
 
-    const tabs = (window.state && window.state.deviceTabs) || {};
+    let tabs = {};
+    try { tabs = await api('GET', '/api/tabs'); } catch (e) { log.warn('[notifications] tabs unavailable', e); }
     const tabOptions = Object.keys(tabs).map(t =>
         `<option value="${escapeHtml(t)}" ${rule.tab === t ? 'selected' : ''}>${escapeHtml(t)}</option>`
     ).join('');
@@ -647,7 +437,7 @@ function openRuleEditor(ruleId) {
     }
 
     // Save handler
-    document.getElementById('notifRuleSave').addEventListener('click', () => {
+    document.getElementById('notifRuleSave').addEventListener('click', async () => {
         const triggerKey = document.getElementById('notifRuleTrigger').value;
         const trigger = TRIGGERS[triggerKey];
         const scope = modalEl.querySelector('input[name="notifRuleScope"]:checked').value;
@@ -686,17 +476,17 @@ function openRuleEditor(ruleId) {
             return;
         }
 
-        const all = loadRules();
-        const idx = all.findIndex(r => r.id === updated.id);
-        if (idx >= 0) all[idx] = updated; else all.push(updated);
-        saveRules(all);
+        try {
+            await saveRule(updated);
+            await refreshRules();
+        } catch (e) {
+            window.toast.error(`Couldn't save rule: ${e.message}`);
+            return;
+        }
 
         modal.hide();
         renderRulesList();
-
-        if (window.toast) {
-            window.toast.success(idx >= 0 ? 'Rule updated' : 'Rule added');
-        }
+        window.toast?.success(rule.id ? 'Rule updated' : 'Rule added');
     });
 
     modalEl.addEventListener('hidden.bs.modal', () => modalEl.remove());
@@ -733,13 +523,10 @@ function renderNotificationsPane() {
             <div class="card-body">
                 <div class="alert alert-info small mb-3" id="notifGlobalStatus">
                     <i class="fas fa-info-circle me-1"></i>
-                    Rules fire browser notifications via the same channel as the bell icon in the navbar.
-                    Make sure the master notification toggle there is <strong>enabled</strong> for delivery to work.
+                    Rules run on the hub and notify you on every device where push is
+                    enabled above — even with ZMM closed. Pages you have open show them too.
                 </div>
                 <div id="notifRulesList"></div>
-            </div>
-            <div class="card-footer bg-light small text-muted">
-                Rules are stored locally in this browser. Clear your browser storage and they're gone.
             </div>
         </div>
     `;
@@ -755,7 +542,9 @@ function renderNotificationsPane() {
     }
 
     pane.dataset.rendered = '1';
-    renderRulesList();
+    refreshRules()
+        .catch(e => window.toast?.error(`Couldn't load notification rules: ${e.message}`))
+        .finally(renderRulesList);
 }
 
 export function initNotifications() {
@@ -774,13 +563,8 @@ export function initNotifications() {
         }
     });
 
-    // Start the rule engine. Independent from pwa.js' own poller.
-    setInterval(evaluateRules, POLL_INTERVAL_MS);
+    window.zbmHandleRuleFired = handleRuleFired;
 
-    // Expose for debugging
-    window.zbmNotificationRules = {
-        list:   loadRules,
-        clear:  () => { saveRules([]); renderRulesList(); },
-        evaluate: evaluateRules,
-    };
+    // Signed in is when the import can be attributed to someone.
+    window.zmmAuth?.onChange(principal => { if (principal) importLegacyRules(); });
 }

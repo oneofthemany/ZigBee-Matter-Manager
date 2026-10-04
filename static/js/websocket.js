@@ -150,6 +150,11 @@ export function initWS() {
                                                          { detail: msg.payload }));
                     break;
 
+                // Sent only to the rule's owner; see notifications.js.
+                case 'notification_rule_fired':
+                    if (window.zbmHandleRuleFired) window.zbmHandleRuleFired(msg.payload);
+                    break;
+
                 // Messages are pushed rather than waited for: the recipient
                 // sees them the moment they arrive, read receipts flow back.
                 case 'message_created':

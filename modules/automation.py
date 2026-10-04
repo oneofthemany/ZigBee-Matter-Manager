@@ -231,6 +231,8 @@ class AutomationEngine:
         # getter returning {ieee: device-like} with .state, .friendly_name and
         # async send_command().
         self._extra_device_getters: List[Callable[[], Dict]] = []
+        # Sync observers of every state change (notification rules); see add_state_listener.
+        self._state_listeners: List[Callable[[str, Dict[str, Any]], None]] = []
         # Injected post-construction via set_media_service_getter, since the media
         # service is built after the engine.
         self._get_media_service: Optional[Callable] = None
@@ -290,6 +292,13 @@ class AutomationEngine:
     def set_media_service_getter(self, getter: Callable) -> None:
         """Wire the media service in after construction (see __init__)."""
         self._get_media_service = getter
+
+    def add_state_listener(self, listener: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Call listener(ieee, changed) on every state change from any provider.
+
+        evaluate() is the one place Zigbee, Matter and extra providers all reach;
+        listeners run before its no-rules early return and must not block."""
+        self._state_listeners.append(listener)
 
     def add_device_getter(self, getter: Callable) -> None:
         """Merge another device registry into the engine's view (see __init__).
@@ -1317,6 +1326,12 @@ class AutomationEngine:
     # STATE MACHINE EVALUATION
 
     async def evaluate(self, source_ieee: str, changed_data: Dict[str, Any]):
+        for listener in self._state_listeners:
+            try:
+                listener(source_ieee, changed_data)
+            except Exception as e:
+                logger.warning(f"State listener failed for {source_ieee}: {e}")
+
         rule_ids = self._source_index.get(source_ieee)
         if not rule_ids:
             return

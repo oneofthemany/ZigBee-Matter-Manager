@@ -23,8 +23,8 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections = []
         # ws -> username, for sockets that authenticated as someone. Anonymous
-        # setup-phase sockets are absent. Only used to hang up on a user whose
-        # credentials changed; broadcast still goes to every connection.
+        # setup-phase sockets are absent. Used to hang up on a user whose
+        # credentials changed and for per-user sends; broadcast goes to all.
         self._owners: Dict[WebSocket, str] = {}
 
     async def connect(self, ws: WebSocket, username: Optional[str] = None):
@@ -39,6 +39,21 @@ class ConnectionManager:
             self.active_connections.remove(ws)
         self._owners.pop(ws, None)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+
+    async def send_to_user(self, username: str, message: dict) -> int:
+        """Send to every socket authenticated as `username`; returns the count."""
+        targets = [ws for ws, owner in self._owners.items() if owner == username]
+        if not targets:
+            return 0
+        json_msg = json.dumps(prepare_for_json(message))
+        sent = 0
+        for ws in targets:
+            try:
+                await ws.send_text(json_msg)
+                sent += 1
+            except Exception:
+                self.disconnect(ws)
+        return sent
 
     async def disconnect_user(self, username: str) -> int:
         """Hang up every socket authenticated as `username`; returns the count.

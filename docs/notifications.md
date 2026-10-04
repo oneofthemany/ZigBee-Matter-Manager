@@ -164,7 +164,7 @@ Subscriptions are removed automatically when a push service reports them gone
 |---|---|
 | "Notifications need a secure connection" | You are on the LAN self-signed address. Use the tunnel URL. |
 | Toggle enables, nothing arrives | Permission granted but no push subscription — usually the same cause. Check `GET /api/push/subscriptions`. |
-| Works with ZMM open, not when closed | No push subscription; only the in-app channel is active. |
+| Works with ZMM open, not when closed | No push subscription; only the in-app channel is active. Rules still run on the hub — enable push on that device. |
 | Nothing on iOS | ZMM must be installed to the home screen first. |
 | `POST /api/push/test` says no subscriptions | That account has not registered a device. Enable notifications in a browser signed in as that account. |
 | Requests expire though the phone was on | Push not configured for the recipient — the ask still lapses and the sender is told, which is the intended honest outcome. |
@@ -215,19 +215,70 @@ point.
 
 ## Notification rules
 
-`static/js/notifications.js` backs Settings → Notifications. Users create rules
-that fire browser or in-app notifications on device events. Rules live in
-`localStorage` so they survive reloads, and delivery goes through
-`window.zbmSendNotification` (set up in `pwa.js`) so the service-worker /
-native / in-app fallback behaviour comes for free.
+Settings → Notifications lets each user build per-device, per-event rules
+("tell me when the back door opens between 22:00 and 06:00") with cooldowns,
+time windows and thresholds.
 
-`initNotifications()` is called once at boot from `main.js`; the rules list
-renders on the sub-tab's `shown.bs.tab`; and a 5-second poll over
-`window.state.deviceCache` evaluates the rules.
+### Rules run on the hub
 
-The rule engine is independent of the four hard-coded toggles in `pwa.js`,
-which continue to work via the navbar bell. This module adds *per-device* and
-*per-event* rules with cooldowns, time windows and condition logic.
+`modules/notification_rules.py` holds the rules and evaluates them; the browser
+only edits them. A rule that lived in a browser could fire only while that
+browser had ZMM open, which is the one time an alert is least needed.
+
+- **Storage.** `data/notification_rules.json`, every user's rules in one file,
+  each rule carrying its `owner`. Written atomically.
+- **Ownership.** A rule notifies the user who created it, and the API only ever
+  shows or changes the caller's own rules — admins included, as with Messages.
+- **Input.** `AutomationEngine.evaluate()` is where Zigbee, Matter and the extra
+  providers all report state changes, so the engine registers there with
+  `add_state_listener()`. Listeners run before evaluate's "no automation rules
+  for this device" return and must not block.
+- **Online / offline** changes no state key, so no change event carries it. A
+  30-second sweep compares each device's `is_available()` with what it last
+  saw. A device coming back with a state report is caught immediately.
+- **Edge-triggered.** A rule fires on a transition between the state last seen
+  and the current one, never on a steady state. The first change seen for a
+  device after a restart still fires: keys it didn't just change are taken as
+  its previous values. A button reporting the same action twice fires twice.
+- **Cooldowns** are per rule and device, held in memory, and so reset on restart.
+- **Time windows** use the hub's local time (the container mounts the host's
+  `/etc/localtime`) and may wrap midnight.
+
+### Delivery
+
+Each firing goes two ways, both addressed to the owner only:
+
+| Channel | Reaches |
+|---|---|
+| Web Push (`kind: notification_rule`) | the owner's subscribed devices, with ZMM closed |
+| websocket `notification_rule_fired`, sent only to the owner's sockets | the owner's open pages |
+
+Both carry the tag `zmm-rule-<rule>-<ieee>`. An open page in a browser that
+also has a push subscription shows only an in-app toast, so one alert doesn't
+arrive twice. A page without push (the LAN address) raises the notification
+itself through `zbmSendNotification`, as rules always did.
+
+### Moving from browser rules
+
+Rules used to live in each browser's `localStorage`. On the first signed-in
+load, the page uploads them to `POST /api/notification-rules/import` under the
+signed-in user and clears the local copy; a toast says how many moved. Rules
+that no longer validate are reported in the console, not silently dropped. A
+failed upload keeps the local copy and retries on the next load.
+
+### API
+
+| | |
+|---|---|
+| `GET /api/notification-rules` | your rules |
+| `POST /api/notification-rules` | create one |
+| `PUT /api/notification-rules/{id}` | replace one of yours |
+| `DELETE /api/notification-rules/{id}` | delete one of yours |
+| `POST /api/notification-rules/import` | adopt a browser's local rules (`{"rules": [...]}`) |
+
+The trigger catalogue exists twice: matching in `modules/notification_rules.py`,
+labels and icons for the editor in `static/js/notifications.js`.
+`tests/notifications/test_catalogue_sync.py` fails if they drift.
 
 ## Web Push
 
