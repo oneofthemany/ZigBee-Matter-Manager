@@ -136,17 +136,26 @@ Rooms with no outside window get no estimate.
 `W` the window area, `θ = 70°` the visible sky angle (a little obstruction), and
 `R = 0.5` the mean reflectance of the room's surfaces.
 
-**Sunlight.** The outdoor estimate is split into diffuse and beam using the same
-diffuse fraction the solar-gain model uses (`0.15 + 0.85·cloud`). Beam light
+**Sunlight.** The outdoor estimate is split into diffuse and beam
+(`daylight.diffuse_fraction`). Under a clear sky the diffuse share is
+
+    f_clear = 0.15 + 0.85 · e^(−elevation / 6°)
+
+which is the solar-gain model's 0.15 with the sun high, and rises to 1 on the
+horizon: a low sun's beam crosses so much air that most of what reaches the
+ground has been scattered into the sky. Cloud takes the rest of the way to 1,
+`f = f_clear + (1 − f_clear)·cloud`. The split is continuous in elevation, so a
+room's estimate only falls through dusk and a "dark below" rule switches once.
+Beam light
 through each window is `E_beam_normal · T · W · cos(incidence)`. The incidence
 comes from `solar_gain._cos_incidence` against the window's bearing, and is zero
-when the sun is behind the wall or below 2°. The resulting light is spread over
+when the sun is behind the wall or below 2°, where the horizon blocks it. The resulting light is spread over
 the room the same way, `/ (A · (1 − R²))`. That makes it an average, not the
 bright patch on the floor.
 
 For a 5 × 4 m room with a 1.7 m² double-glazed window, at a clear midwinter noon
-in London: facing south about 1,300 lux with sun in; facing north about 40 lux.
-Under full cloud, about 70 lux either way.
+in London: facing south about 1,100 lux with sun in; facing north about 55 lux.
+Under full cloud, about 65 lux either way.
 
 **Published** on `virtual::daylight::<room id>`, named "<Room> daylight", which
 sits in its room:

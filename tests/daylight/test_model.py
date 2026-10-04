@@ -150,6 +150,18 @@ def run() -> Checker:
             lux_in(room(0, glazing="triple"), noon)[0] < lux_in(room(0, glazing="single"), noon)[0])
     c.check("night is dark indoors", lux_in(room(180), datetime(2026, 12, 21, 22, tzinfo=timezone.utc))[0] < 0.01)
 
+    dusk = datetime(2026, 10, 4, 16, 0, tzinfo=timezone.utc)        # sun at 12°, setting
+    for bearing, label in ((0, "north"), (270, "west")):
+        fall = [lux_in(room(bearing), dusk + timedelta(minutes=m))[0] for m in range(0, 150)]
+        c.check(f"a {label} room only darkens through a clear dusk",
+                all(a >= b for a, b in zip(fall, fall[1:])),
+                [round(x) for x in fall[::15]])
+    c.check("a setting sun's beam is weaker than the midday one",
+            dl.split_outdoor(dl.clear_sky_lux(3), 3, 0.0)[1]
+            < dl.split_outdoor(dl.clear_sky_lux(40), 40, 0.0)[1] / 3)
+    c.check("on the horizon a clear sky's light is all sky",
+            dl.diffuse_fraction(0, 0.0) == 1.0 and dl.diffuse_fraction(60, 0.0) < 0.2)
+
     c.section("the sky at any time today")
     t = noon.timestamp()
     cur = {"shortwave_radiation": 30.0, "cloud_cover": 100, "fetched_at": t - 600}

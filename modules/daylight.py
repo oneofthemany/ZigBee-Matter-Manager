@@ -179,18 +179,32 @@ GLAZING_TRANSMITTANCE = {"single": 0.85, "double": 0.75, "triple": 0.65}
 SKY_ANGLE_DEG = 70.0
 #: Mean reflectance of the room's surfaces: pale walls, mid-tone floor.
 SURFACE_REFLECTANCE = 0.5
-#: Below this the sun is too low for its beam to be told apart from the sky.
+#: Below this the beam is lost to the horizon: fences, the house opposite.
 BEAM_MIN_ELEVATION_DEG = 2.0
+#: Elevation scale over which a clear sky's light turns from beam to sky as the
+#: sun drops and its path through the air lengthens. docs/daylight.md §7.
+LOW_SUN_SCALE_DEG = 6.0
+
+
+def diffuse_fraction(elevation_deg: float, cloud_fraction: Optional[float]) -> float:
+    """Share of the horizontal light that comes from the sky, not the beam.
+
+    The solar-gain model's fraction with the sun high, rising to all of it on
+    the horizon, so the split has no step for a room's estimate to jump across.
+    """
+    clear = _diffuse_fraction(0.0)
+    clear += (1.0 - clear) * math.exp(-max(0.0, elevation_deg) / LOW_SUN_SCALE_DEG)
+    cf = max(0.0, min(1.0, cloud_fraction or 0.0))
+    return clear + (1.0 - clear) * cf
 
 
 def split_outdoor(lux: float, elevation_deg: float,
                   cloud_fraction: Optional[float]) -> Tuple[float, float]:
     """(diffuse horizontal, beam normal) lux from the total horizontal estimate."""
-    diffuse = lux * _diffuse_fraction(cloud_fraction or 0.0)
+    diffuse = lux * diffuse_fraction(elevation_deg, cloud_fraction)
     if elevation_deg < BEAM_MIN_ELEVATION_DEG:
-        return lux, 0.0
-    beam_h = lux - diffuse
-    return diffuse, beam_h / math.sin(math.radians(elevation_deg))
+        return diffuse, 0.0
+    return diffuse, (lux - diffuse) / math.sin(math.radians(elevation_deg))
 
 
 def sky_parts(sk: Optional[dict]) -> Optional[dict]:
