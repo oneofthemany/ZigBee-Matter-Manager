@@ -11,10 +11,11 @@ const humanize = fs.readFileSync(path.join(REPO, 'static/js/automation-humanize.
 
 // automation-humanize.js supplies DEVICE_ICON and deviceType; pull them in the
 // same way so the phrasing is exercised against the real device typing.
-// A re-export (`export { escapeHtml as esc };`) becomes a plain alias.
+// A utils.js import keeps the binding the file gives it (`escapeHtml as esc`),
+// so a name the file uses but never binds still fails here as in a browser.
 function strip(text) {
-  return text.replace(/^import .*$/gm, '')
-             .replace(/^export \{ (\w+) as (\w+) \};$/gm, 'const $2 = $1;')
+  return text.replace(/^import \{ (\w+) as (\w+) \} from '\.\/utils\.js';$/gm, 'const $2 = $1;')
+             .replace(/^import .*$/gm, '')
              .replace(/^export /gm, '');
 }
 
