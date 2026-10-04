@@ -26,6 +26,7 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/auth",              {"*": AUTHENTICATED}),
     ("/api/messages",          {"*": AUTHENTICATED}),
     ("/api/push",              {"*": AUTHENTICATED}),
+    ("/api/notification-rules", {"*": AUTHENTICATED}),
     ("/api/wiki",              {"*": AUTHENTICATED}),
     ("/api/therapy",           {"*": AUTHENTICATED}),
     # Anonymous in practice (ANONYMOUS_PATHS); mapped so coverage sees intent.
