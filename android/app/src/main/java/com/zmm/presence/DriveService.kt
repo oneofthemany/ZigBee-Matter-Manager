@@ -279,6 +279,7 @@ class DriveService : Service() {
                     motion = window,
                     events = events,
                     activity = prefs.currentActivity,
+                    kind = "drive",
                 )
 
                 scope.launch {

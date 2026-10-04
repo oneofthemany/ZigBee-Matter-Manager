@@ -47,6 +47,7 @@ class PassiveLocationReceiver : BroadcastReceiver() {
                     prefs, loc.latitude, loc.longitude,
                     if (loc.hasAccuracy()) loc.accuracy else null,
                     loc.time / 1000.0,
+                    kind = "passive",
                 )) {
                     is HubClient.Result.Ok -> Log.i(TAG, "passive fix reported")
                     is HubClient.Result.Err -> Log.w(TAG, "passive fix failed: ${r.message}")

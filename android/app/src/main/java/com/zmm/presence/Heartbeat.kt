@@ -6,10 +6,13 @@ import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -81,11 +84,13 @@ class HeartbeatWorker(
             loc.latitude, loc.longitude,
             if (loc.hasAccuracy()) loc.accuracy else null,
             loc.time / 1000.0,
+            kind = "heartbeat",
         )
 
         return when (val r = HubClient.postRaw(prefs, payload)) {
             is HubClient.Result.Ok -> {
                 Log.i(TAG, "heartbeat reported")
+                cancelRetries(applicationContext)
                 Result.success()
             }
             is HubClient.Result.Err -> {
@@ -102,6 +107,10 @@ class HeartbeatWorker(
                 } catch (e: Exception) {
                     Log.w(TAG, "spool write failed", e)
                 }
+                // A hub restart (an upgrade) must not cost a whole interval of
+                // silence. Not Result.retry(), which displaces the periodic run:
+                // a separate one-off run of this same worker, a few minutes out.
+                scheduleRetry(applicationContext, inputData.getInt(KEY_RETRY, 0))
                 Result.success()
             }
         }
@@ -188,6 +197,10 @@ class HeartbeatWorker(
     companion object {
         private const val TAG = "ZmmHub"
         private const val WORK_NAME = "zmm_heartbeat"
+        private const val RETRY_TAG = "zmm_heartbeat_retry"
+        private const val KEY_RETRY = "retry_attempt"
+        // ~10 minutes in total: covers an upgrade's restart, then the periodic run takes over.
+        private val RETRY_DELAYS_S = longArrayOf(90, 180, 360)
 
         /**
          * (Re)schedule the heartbeat at the mode's interval.
@@ -239,7 +252,38 @@ class HeartbeatWorker(
             Log.i(TAG, "heartbeat scheduled every ${interval}s")
         }
 
+        /**
+         * One-off re-run after a failed report, at [RETRY_DELAYS_S] then giving up
+         * until the next periodic run. It drains the spool and then posts a fresh
+         * fix, exactly like a periodic run, so the newest position still lands last.
+         * One unique name per attempt: a run scheduling its successor under its own
+         * name would replace (cancel) itself.
+         */
+        fun scheduleRetry(ctx: Context, attempt: Int) {
+            if (attempt >= RETRY_DELAYS_S.size) {
+                Log.i(TAG, "heartbeat retries exhausted — next periodic run will report")
+                return
+            }
+            val req = OneTimeWorkRequestBuilder<HeartbeatWorker>()
+                .setInitialDelay(RETRY_DELAYS_S[attempt], TimeUnit.SECONDS)
+                .setConstraints(
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+                )
+                .setInputData(workDataOf(KEY_RETRY to attempt + 1))
+                .addTag(RETRY_TAG)
+                .build()
+            WorkManager.getInstance(ctx).enqueueUniqueWork(
+                "$RETRY_TAG$attempt", ExistingWorkPolicy.KEEP, req,
+            )
+            Log.i(TAG, "heartbeat retry ${attempt + 1} in ${RETRY_DELAYS_S[attempt]}s")
+        }
+
+        fun cancelRetries(ctx: Context) {
+            WorkManager.getInstance(ctx).cancelAllWorkByTag(RETRY_TAG)
+        }
+
         fun cancel(ctx: Context) {
+            cancelRetries(ctx)
             WorkManager.getInstance(ctx).cancelUniqueWork(WORK_NAME)
             Log.i(TAG, "heartbeat cancelled")
         }

@@ -1,8 +1,9 @@
 """
 Named places API.
 
-Read is available to anything holding `presence:read` — the phone needs the
-list to register its geofences, and a place is household configuration rather
+Read is available to anything holding `presence:read` or any `presence:write`
+scope — the phone needs the list to register its geofences, its token carries
+only `presence:write:<user>`, and a place is household configuration rather
 than anyone's personal location. Writes are admin-only: a place defines where
 automations fire, so moving one silently changes behaviour for everybody.
 """
@@ -12,10 +13,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from modules.auth_middleware import require_scope
+from modules.auth_middleware import Principal, require_scope
 from modules.places import (
     DEFAULT_PLACE_RADIUS_M, MAX_PLACES, get_place_manager,
 )
@@ -33,6 +34,18 @@ class PlaceUpsert(BaseModel):
     icon: str = "map-marker-alt"
 
 
+def require_places_read(request: Request) -> Principal:
+    """presence:read, or a phone's presence:write:<user> (it arms geofences from the list)."""
+    from modules.auth import scope_matches
+    p: Optional[Principal] = getattr(request.state, "principal", None)
+    if p is None:
+        raise HTTPException(401, "Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if scope_matches("presence:read", p.scopes) or any(
+            s == "presence:write" or s.startswith("presence:write:") for s in p.scopes):
+        return p
+    raise HTTPException(403, "Token lacks scope: presence:read or presence:write")
+
+
 def register_place_routes(app: FastAPI) -> None:
 
     def _mgr():
@@ -42,7 +55,7 @@ def register_place_routes(app: FastAPI) -> None:
         return m
 
     @app.get("/api/places")
-    async def list_places(_=Depends(require_scope("presence:read"))):
+    async def list_places(_=Depends(require_places_read)):
         return {"places": _mgr().list(), "max": MAX_PLACES}
 
     @app.post("/api/places")

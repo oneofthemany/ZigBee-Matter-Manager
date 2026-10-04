@@ -69,7 +69,8 @@
             lat: coords.latitude,
             lon: coords.longitude,
             accuracy: coords.accuracy,
-            timestamp: Math.floor(now / 1000)
+            timestamp: Math.floor(now / 1000),
+            kind: 'foreground'      // the page only reports while open; the hub logs which path reported
         };
 
         try {

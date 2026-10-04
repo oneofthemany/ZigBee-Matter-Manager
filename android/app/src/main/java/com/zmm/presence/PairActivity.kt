@@ -558,6 +558,7 @@ class PairActivity : AppCompatActivity() {
                     prefs, loc.latitude, loc.longitude,
                     if (loc.hasAccuracy()) loc.accuracy else null,
                     loc.time / 1000.0,
+                    kind = "foreground",
                 )
                 status(when (r) {
                     is HubClient.Result.Ok ->

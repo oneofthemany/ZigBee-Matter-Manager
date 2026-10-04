@@ -96,6 +96,8 @@ class FixReport(BaseModel):
     # GNSS altitude, metres. Below sea level is real (Dead Sea, road tunnels);
     # the upper bound is simply higher than any road.
     altitude: Optional[float] = Field(None, ge=-500.0, le=9000.0)
+    # What made the phone report, so the log can say which path went quiet.
+    kind: Optional[str] = Field(None, pattern=r"^(heartbeat|geofence|passive|activity|drive|foreground)$")
     # How the car was driven over the interval ending at this fix. The phone
     # caps its own event list per window; the bound here is what stops a
     # client that does not.
@@ -361,6 +363,7 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             lon=fix.lon,
             accuracy=fix.accuracy,
             timestamp=fix.timestamp,
+            kind=fix.kind,
         )
 
         # Gated on the opt-in, and only on fixes that passed presence's accuracy

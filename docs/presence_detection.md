@@ -404,3 +404,31 @@ The fix endpoint is the hot path, called by the companion app every few minutes
 or on geofence transitions. To minimise attack surface, mobile tokens are issued
 with **only** `presence:write:<user_id>` and nothing else, so a leaked phone
 token can update one person's location and nothing more.
+
+One read rides on that token: `GET /api/places`, which the app needs to arm its
+wake-up geofences. Places are household configuration, not anyone's position,
+so the list is readable with `presence:read` or any `presence:write` scope. The
+path table marks it authenticated-only and `routes/place_routes.py` makes the
+check; adding or changing a place stays admin-only.
+
+## Reports and gaps
+
+Every fix the app posts says what sent it, in `kind`: `heartbeat`, `geofence`,
+`passive`, `activity`, `drive` or `foreground` (the app open, or the web page,
+which only reports while visible). Older app versions send none and are logged
+as `unspecified`. The kind is kept as `report_kind` in the user's state; `source`
+is unchanged.
+
+The hub logs accepted reports — at most one info line per user every 10 minutes,
+but always when one arrives more than 1.5 heartbeats after the last, with the
+gap: `[presence:sean] heartbeat report: home, 11 m from home — after 52 min
+without one`. A stretch of "unknown" then shows which path went quiet. Reports
+too inaccurate to move the badge still count as contact and say so.
+
+A heartbeat the hub doesn't accept (it's restarting for an upgrade, the phone is
+between networks) is spooled as before, and the app now re-runs the heartbeat
+once off the periodic schedule — after 90 s, 3 min and 6 min, then gives up to
+the next periodic run. It is not `Result.retry()`: on periodic work a retry
+replaces the next scheduled run and backs off up to five hours. Each re-run
+drains the spool and then posts a fresh fix, so the newest position still lands
+last.

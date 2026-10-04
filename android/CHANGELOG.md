@@ -14,6 +14,22 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.7.1 (12)
+
+Presence stays current across hub restarts.
+
+- A heartbeat the hub doesn't accept — it's restarting for an upgrade, the phone
+  is between networks — is re-run after 90 s, 3 min and 6 min instead of waiting
+  a whole interval. The periodic schedule isn't touched, and each re-run sends a
+  fresh fix after the spooled ones, so the newest position still lands last. One
+  unlucky miss during an upgrade used to leave the user "unknown" for an hour.
+- Every report says what sent it (heartbeat, geofence, passive, drive,
+  foreground), and the hub logs it — including how long it had been since the
+  last one when there was a gap — so a quiet path shows up in the hub's log.
+- Places load again. The hub was refusing the phone's token for the places list,
+  so only the home geofence was ever armed. (Fixed on the hub; this build just
+  benefits.)
+
 ## 1.6.0 (10)
 
 The car screen follows whatever region the hub is set to, instead of assuming

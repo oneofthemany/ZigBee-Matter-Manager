@@ -170,9 +170,10 @@ object HubClient {
         motion: MotionSampler.Window? = null,
         events: List<MotionSampler.Event> = emptyList(),
         activity: String? = null,
+        kind: String? = null,
     ): Result<Unit> = postRaw(prefs, fixPayload(
         lat, lon, accuracy, timestampSec, speedMps, bearingDeg, tripId,
-        altitudeM, motion, events, activity,
+        altitudeM, motion, events, activity, kind,
     ))
 
     /**
@@ -196,6 +197,9 @@ object HubClient {
         motion: MotionSampler.Window? = null,
         events: List<MotionSampler.Event> = emptyList(),
         activity: String? = null,
+        // What made the phone report (heartbeat, geofence, passive, drive,
+        // foreground) — the hub logs it, so a quiet path shows up there.
+        kind: String? = null,
     ): String = JSONObject().apply {
         put("lat", lat)
         put("lon", lon)
@@ -209,6 +213,7 @@ object HubClient {
         // activity as "no opinion" and counts the fix, which is the right
         // default for every phone that cannot report one.
         if (activity != null) put("activity", activity)
+        if (kind != null) put("kind", kind)
         // Motion rides only on a tagged drive: without a trip there is
         // nothing on the hub for it to belong to.
         if (tripId != null) {

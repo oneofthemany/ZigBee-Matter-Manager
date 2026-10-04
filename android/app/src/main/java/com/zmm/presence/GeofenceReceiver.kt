@@ -62,7 +62,7 @@ class GeofenceReceiver : BroadcastReceiver() {
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                when (val r = HubClient.postFix(prefs, lat, lon, accuracy, ts)) {
+                when (val r = HubClient.postFix(prefs, lat, lon, accuracy, ts, kind = KIND_GEOFENCE)) {
                     is HubClient.Result.Ok ->
                         Log.i(TAG, "reported ${if (entering) "ENTER" else "EXIT"} @ $lat,$lon")
                     is HubClient.Result.Err ->
@@ -78,5 +78,6 @@ class GeofenceReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "ZmmGeofenceRx"
+        private const val KIND_GEOFENCE = "geofence"
     }
 }

@@ -64,6 +64,10 @@ DEFAULT_PRESENCE_MODE = "balanced"
 # since one missed report is routine (doze, no signal, a dead spot).
 STALE_HEARTBEAT_FACTOR = 2.5
 
+# Accepted reports are logged at info at most this often per user — except when
+# one arrives after a gap, which is the line that explains a stretch of "unknown".
+CONTACT_LOG_EVERY_S = 600
+
 
 def mode_params(mode: Optional[str]) -> Dict[str, Any]:
     """
@@ -324,6 +328,7 @@ class PresenceUserDevice:
         # In-memory only — never persisted
         self._last_lat: Optional[float] = None
         self._last_lon: Optional[float] = None
+        self._contact_logged_at: float = 0.0
         self.capabilities = _Capabilities()
 
     # The automation engine calls these
@@ -450,7 +455,7 @@ class PresenceUserManager:
     # no coordinates: presence/place/distance are what the UI already shows.
 
     _STATE_KEYS = ("presence", "place", "distance_m", "accuracy_m",
-                   "source", "last_update")
+                   "source", "last_update", "report_kind")
 
     def _save_state(self) -> None:
         try:
@@ -579,6 +584,7 @@ class PresenceUserManager:
             lon: float,
             accuracy: Optional[float] = None,
             timestamp: Optional[float] = None,
+            kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Called from POST /api/presence/user/{user_id}."""
         return await self._ingest(
@@ -588,7 +594,24 @@ class PresenceUserManager:
             accuracy=accuracy,
             timestamp=timestamp,
             source="pwa",
+            kind=kind,
         )
+
+    def _note_contact(self, dev: "PresenceUserDevice", kind: Optional[str], outcome: str) -> None:
+        """Record that the phone checked in, and log it (rate-limited, gaps always)."""
+        now = time.time()
+        gap = now - dev.last_seen if dev.last_seen else None
+        heartbeat = dev.cfg.stale_after_s / STALE_HEARTBEAT_FACTOR
+        late = gap is not None and gap > heartbeat * 1.5
+        dev.last_seen = now
+        dev.state["report_kind"] = kind or "unspecified"
+        msg = (f"[presence:{dev.cfg.user_id}] {kind or 'unspecified'} report: {outcome}"
+               + (f" — after {gap / 60:.0f} min without one" if late else ""))
+        if late or now - dev._contact_logged_at >= CONTACT_LOG_EVERY_S:
+            dev._contact_logged_at = now
+            logger.info(msg)
+        else:
+            logger.debug(msg)
 
     async def _ingest(
             self,
@@ -598,6 +621,7 @@ class PresenceUserManager:
             accuracy: Optional[float],
             timestamp: Optional[float],
             source: str,
+            kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         dev = self.get_user(user_id)
         if not dev:
@@ -626,7 +650,7 @@ class PresenceUserManager:
         # position, and leave presence at its last known value — "nothing has
         # changed" is the correct reading of a phone that is still checking in.
         def _contact_only(reason: str) -> Dict[str, Any]:
-            dev.last_seen = time.time()
+            self._note_contact(dev, kind, f"contact only ({reason})")
             return {"success": False, "error": reason, "ignored": True,
                     "contact": True}
 
@@ -667,7 +691,7 @@ class PresenceUserManager:
             # `ts`, a punctual report of a 90-minute-old fix marked the user
             # unknown while they were sitting at home. How old the position is
             # remains recorded, as `last_update` below.
-            dev.last_seen = time.time()
+            self._note_contact(dev, kind, f"{new_state}, {distance:.0f} m from home")
 
             # Resolved here, not on the phone, so one implementation decides and a
             # new or widened place applies immediately. "home" wins over any place

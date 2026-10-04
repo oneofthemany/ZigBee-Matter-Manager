@@ -123,7 +123,9 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     # prefix cannot express. They are the gate; one added without its own
     # check is open to any principal.
     ("/api/presence/users",    {"*": AUTHENTICATED}),
-    ("/api/places",            {"GET": "presence:read", "*": "admin"}),
+    # GET checks its own scope: presence:read, or the phone's presence:write:<user>,
+    # which needs the list to arm its geofences (routes/place_routes.py).
+    ("/api/places",            {"GET": AUTHENTICATED, "*": "admin"}),
     ("/api/journeys",          {"GET": "presence:read", "*": "admin"}),
 
     # Ambient read-only data.
