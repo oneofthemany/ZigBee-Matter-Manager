@@ -109,6 +109,13 @@ STREAM_TRIM_SETTLE_S = 3.0
 STREAM_ACQUIRE_MAX_S = 15.0      # never hold the group silent longer than this
 START_DEDUPE_S = 30.0
 STREAM_FADE_IN_S = 0.4
+# A speaker rejoining a zone that is already playing is held silent until it
+# is on the zone's target (open-zone.md §7.5): a seat the delay line cannot
+# reach puts it seconds early, and playing through the step that fixes it is
+# an echo in that room. Never longer than this — a probe, a step and the
+# step's cooldown fit inside it; a device that still is not on target is one
+# the ladder is failing on, and silence there is no better than sound.
+STREAM_JOIN_HOLD_MAX_S = 60.0
 # An interruption leaves the receiver's buffer intact, so it resumes exactly as
 # far behind as it was held — an offset larger than the reader can step away.
 # Read off player_state rather than inferred from silence (§7.1).
@@ -172,10 +179,10 @@ PREROLL_SETTLE_S = 0.100     # spread that reads as "the buffer has stopped
 PREROLL_QUORUM_S = 8.0       # after this, start on the devices that answered
 PREROLL_MAX_S = 20.0         # never hold content longer than this
 # A probe reading this many times the device's learned pipeline describes how
-# slowly it started, not what it is (open-zone.md §7.3). The two are the same
-# arithmetic — a constant difference that settles — so only the model tells
-# them apart. Loose enough to pass a genuinely deep pipeline re-measuring
-# itself: the widest real session-to-session spread observed is under 3x.
+# slowly it started, not what it is (open-zone.md §7.3). It still seats the
+# load — a late start is never made up — but it is not learned. Loose enough
+# to pass a genuinely deep pipeline re-measuring itself: the widest real
+# session-to-session spread observed is under 3x.
 PROBE_MODEL_FACTOR = 3.0
 # ...and only once the reading is large in absolute terms. Below this a bad
 # probe cannot drag the group far enough to be worth second-guessing.
@@ -405,6 +412,10 @@ class _Stream:
         self.moved_s: float = 0.0
         self.err_hist: List[float] = []   # last 3 poll errors (median filter)
         self.acquired: bool = False
+        # Rejoining under silence (_join_gain): when the hold began, and
+        # when its fade-in did.
+        self.join_hold: Optional[float] = None
+        self.join_fade: Optional[float] = None
         self.inject: Optional[tuple] = None   # (timeline sample, wave)
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
         self.fit_lost_at: float = 0.0
@@ -472,6 +483,7 @@ class OpenZone:
         # (host, mode) -> bool: the per-poll reading and the record of the
         # mode a box reports while a zone plays on it (_check_input).
         self._input_reader = None
+        self._input_claimer = None
         self._input_learner = None
         self.http_port = int(cfg.get("http_port", 8010))
         self.app_id = (cfg.get("app_id") or "").strip()
@@ -493,6 +505,9 @@ class OpenZone:
         self._policies: Dict[str, dict] = self._read_json(self._policy_file)
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
+        # What each zone last played, for a play that names no source.
+        self._last_file = cfg.get("last_file", "./data/cast_sync_last.json")
+        self._last: Dict[str, dict] = self._read_json(self._last_file)
         self._active_group: str = ""               # gid of the running session
         self._session_media: Optional[dict] = None  # media of the running session
         self._conn_watch: Dict[str, _ConnWatch] = {}
@@ -669,6 +684,11 @@ class OpenZone:
         reports while the zone is audibly playing on it."""
         self._input_reader = reader
         self._input_learner = learner
+
+    def set_input_claimer(self, fn) -> None:
+        """Supply ``async (host) -> input taken from | "" | None`` that puts a
+        box on its network input (_claim_input)."""
+        self._input_claimer = fn
 
     def set_provider_resolver(self, resolver) -> None:
         """Supply ``(player_id) -> PlayerProvider`` so model identity, and the
@@ -886,6 +906,24 @@ class OpenZone:
             snap["remaining_s"] = max(0, int(self._duration_s - elapsed))
         return snap
 
+    def _remember_last(self) -> None:
+        """Keep what a zone was playing when it stopped, queue position
+        included, so playing it again without naming a source carries on."""
+        gid = self._active_group
+        media = self.session_snapshot().get("media") if gid else None
+        if not media:
+            return
+        media = dict(media)
+        if media.get("station_uuid"):
+            media.pop("url", None)     # directory URLs move; resolved at start
+        if self._last.get(gid) != media:
+            self._last[gid] = media
+            self._write_json(self._last_file, self._last)
+
+    def last_media(self, group_id: str) -> Optional[dict]:
+        """The media block this zone last played, or None."""
+        return self._last.get(group_id) or None
+
     async def resume_session(self, rec: dict, age_s: float) -> bool:
         """Re-launch a session that a restart interrupted."""
         if self.running or not rec:
@@ -1080,27 +1118,45 @@ class OpenZone:
         return st.name if st is not None else sid
 
     def _sane_probe(self, st: _Stream, measured: float) -> Tuple[float, bool]:
-        """One probe reading, or the learned one when this start was slow.
+        """What to seat this load from, and whether it may be learned
+        (open-zone.md §7.3).
 
-        ``latency = (now - opened_at) - reported media time`` cannot separate a
-        deep pipeline from a device that took seconds to *begin* playing: both
-        show a constant difference, so both settle and both look like an
-        answer. Only the model tells them apart — a pipeline is a property of
-        the hardware and barely moves between sessions.
+        ``latency = (now - opened_at) - reported media time`` reads a deep
+        pipeline and a device that took seconds to begin playing as the same
+        number, and for seating they *are* the same: the stream is paced to
+        real time, so a late start is never made up and the device stays that
+        far behind for the life of the load. The reading is therefore the
+        seat, whichever it was.
 
-        Returns ``(latency, trusted)``; an untrusted reading must not be fed
-        back into the model, or a few slow starts pull it up to meet them.
+        The model is a different question — what this hardware does when it
+        starts cleanly — and a slow start is not that. So a reading several
+        times the learned floor seats this load and is kept out of the model.
+
+        The one reading not seated from is one the delay line could not serve
+        the rest of the zone against: that device is seated from the model and
+        left to the ladder, rather than setting everyone's geometry.
+
+        Returns ``(latency, learn)``.
         """
         m = self._model.get(st.player_id, {})
         learned = m.get("probe_floor_s", m.get("probe_s"))
         if (learned is None or measured <= PROBE_MODEL_MIN_S
                 or measured <= learned * PROBE_MODEL_FACTOR):
             return measured, True
-        logger.warning(
+        reach = (self._target_lag_cap() - self._source.delay_s
+                 - STREAM_LAG_MARGIN_S)
+        if measured > reach:
+            logger.warning(
+                f"OpenZone {st.name} probed {measured * 1000:.0f} ms, past the "
+                f"{reach * 1000:.0f} ms this delay line can hold the zone back "
+                f"for — seating from the learned {learned * 1000:.0f} ms and "
+                f"leaving it to the correction ladder")
+            return learned, False
+        logger.info(
             f"OpenZone {st.name} probed {measured * 1000:.0f} ms against a "
-            f"learned {learned * 1000:.0f} ms — that is how slowly it started, "
-            f"not its pipeline; seating from the model and leaving it unlearned")
-        return learned, False
+            f"learned {learned * 1000:.0f} ms — a slow start: seated where it "
+            f"measured, not learned")
+        return measured, False
 
     def _slew_cooldown_s(self, st: _Stream) -> float:
         """How long a fast slew needs before its effect can be read back
@@ -1327,6 +1383,7 @@ class OpenZone:
             return await self._stop_session_locked()
 
     async def _stop_session_locked(self) -> dict:
+        self._remember_last()
         self.running = False
         # Cleared before the task is cancelled so _end_preroll, which runs in
         # its finally, sees a session that is already over and touches nothing.
@@ -1766,6 +1823,11 @@ class OpenZone:
             })
         return {"success": True, "groups": groups}
 
+    def fed_players(self) -> List[str]:
+        """Players the running session is streaming to — not parked or yielded."""
+        return [st.player_id for st in self._streams.values()
+                if st.connected and st.parked_since is None]
+
     @property
     def active_group(self) -> str:
         """Group id of the running session, "" when idle or when the session
@@ -1938,6 +2000,7 @@ class OpenZone:
             if owner is not None:
                 self._yield_stream(st, *owner)
                 return
+        await self._claim_input(player_id)
         self._consume_handback(player_id)
         host = getattr(getattr(cast, "cast_info", None), "host", None) or \
             getattr(getattr(cast, "socket_client", None), "host", "")
@@ -2700,6 +2763,28 @@ class OpenZone:
         ramp = (t0 + np.arange(frames) / RATE) / STREAM_FADE_IN_S
         return np.clip(ramp, 0.0, 1.0).astype(np.float32)
 
+    def _join_gain(self, st: _Stream, frames: int):
+        """Output gain for a rejoining device: silent until it is on target,
+        then faded in. None means unity."""
+        if st.join_hold is None:
+            return None
+        now = time.monotonic()
+        if st.join_fade is None:
+            held = now - st.join_hold
+            if not st.acquired and held <= STREAM_JOIN_HOLD_MAX_S:
+                return np.zeros(frames, dtype=np.float32)
+            st.join_fade = now
+            logger.info(
+                f"Sync stream {st.name} on target after {held:.1f}s held "
+                f"silent — fading in"
+                f"{'' if st.acquired else ' (not acquired; hold timed out)'}")
+        t0 = now - st.join_fade
+        if t0 >= STREAM_FADE_IN_S:
+            st.join_hold = None
+            return None
+        ramp = (t0 + np.arange(frames) / RATE) / STREAM_FADE_IN_S
+        return np.clip(ramp, 0.0, 1.0).astype(np.float32)
+
     async def _preroll_probe(self) -> None:
         """Measure every device's latency while the delay line fills
         (open-zone.md §7.3).
@@ -2800,8 +2885,8 @@ class OpenZone:
             st.interrupt_held = 0.0
         if lats:
             # Vetted before anything is derived from them: the slowest reading
-            # sets every other device's pre-compensation, so one slow start
-            # admitted here is the whole zone's geometry (_sane_probe).
+            # sets every other device's pre-compensation, so one the delay
+            # line cannot serve must not be admitted (_sane_probe).
             trusted = {}
             for sid in list(lats):
                 st = self._streams.get(sid)
@@ -2922,10 +3007,8 @@ class OpenZone:
         if not st.probing:
             return
         if measured is not None:
-            # A reload's probe is the same arithmetic as the pre-roll's, so it
-            # mistakes a slow restart for a pipeline the same way. It is never
-            # learned here either way (§7.5); this only keeps a bad reading
-            # from choosing the seat.
+            # Never learned here either way (§7.5); this only keeps a reading
+            # the delay line cannot serve from choosing the seat.
             measured, _ = self._sane_probe(st, measured)
         precomp = (self._precomp_for_target(measured)
                    if measured is not None else None)
@@ -3263,6 +3346,28 @@ class OpenZone:
             logger.debug(f"Sync cast owner read failed: {e}")
         return None
 
+    async def _claim_input(self, player_id: str) -> None:
+        """Put a box the zone is entitled to take on its network input, ahead
+        of the LOAD (open-zone.md §7.1): ``reclaim``, or a lock just lifted.
+
+        The LOAD makes the same switch on a box that is awake to take it; said
+        to the box itself, it does not depend on Cast having noticed."""
+        pol = self.policy(player_id)
+        if self._input_claimer is None or not (
+                pol["mode"] == "reclaim" or pol["handback"]):
+            return
+        host = self._device_key(player_id)
+        if not host:
+            return
+        try:
+            took = await self._input_claimer(host)
+        except Exception as e:
+            logger.debug(f"Sync input claim failed for {player_id}: {e}")
+            return
+        if took:
+            logger.info(f"Sync stream {self._player_name(player_id)} switched "
+                        f"to its network input — taken from {took}")
+
     async def _foreign_owner(self, st: _Stream, cast=None,
                              cast_apps: bool = True,
                              input_owner=None) -> Optional[tuple]:
@@ -3493,9 +3598,21 @@ class OpenZone:
             st.input_strikes = 0
             verdict = await self._foreign_owner(st, cast_apps=False,
                                                 input_owner=owner)
-            if verdict is not None and self._streams.get(st.sid) is st \
-                    and st.parked_since is None:
+            if self._streams.get(st.sid) is not st \
+                    or st.parked_since is not None:
+                return
+            if verdict is not None:
                 self._yield_stream(st, *verdict)
+                return
+            now = time.monotonic()
+            if (self.policy(st.player_id)["mode"] == "reclaim"
+                    and (st.last_reload is None or now - st.last_reload
+                         > STREAM_RELOAD_MIN_INTERVAL_S)):
+                # Nothing steps aside, so the box is taken back: Cast goes on
+                # reporting PLAYING from an input, and no other rung sees it.
+                st.last_reload = now
+                logger.warning(f"Sync stream reclaiming {st.name} from {owner}")
+                asyncio.create_task(self._reload_stream(st, rejoin=True))
         finally:
             st.input_checking = False
 
@@ -3801,6 +3918,8 @@ class OpenZone:
         st.slew_ppm = 0.0
         st.slew_hold_until = 0.0
         st.acquired = False          # re-acquiring: step small offsets away
+        if rejoin:
+            st.join_hold, st.join_fade = time.monotonic(), None
         st.futile_steps = 0          # a fresh LOAD is a fresh relationship
         st.last_step_error = None
         # A reload's own re-acquisition is silence the sweep must not charge
@@ -3923,6 +4042,9 @@ class OpenZone:
                 st.shift += used - block
                 st.moved_s += (used - block) / RATE   # decompensate drift fit
                 gain = self._acquire_gain(block)
+                if gain is not None:
+                    out = out * gain[:, None]
+                gain = self._join_gain(st, block)
                 if gain is not None:
                     out = out * gain[:, None]
                 yield _encode_s16(out)

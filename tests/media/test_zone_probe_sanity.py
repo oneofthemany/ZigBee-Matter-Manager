@@ -73,11 +73,42 @@ def run() -> Checker:
         z._model[pt.player_id] = {"probe_floor_s": 6.605}   # genuinely this deep
 
         lat, ok = z._sane_probe(kr, 7.913)
-        c.check("a 7.9 s reading on a 0.75 s speaker is rejected", not ok)
-        c.check("and the model is used in its place", lat == 0.454, lat)
+        c.check("a 7.9 s reading on a 0.75 s speaker is not learned", not ok)
+        c.check("but it is where that load is, so it is the seat",
+                lat == 7.913, lat)
+        lat, ok = z._sane_probe(kr, 16.0)
+        c.check("a reading the delay line cannot hold the zone back for "
+                "falls to the model", lat == 0.454 and not ok, lat)
         lat, ok = z._sane_probe(pt, 6.660)
         c.check("the Pixel Tablet's real 6.6 s pipeline is kept", ok, lat)
         c.check("at the value it measured", lat == 6.660, lat)
+
+        c.section("a mixed start lands every device on one lag")
+        # One real session: two speakers started slow, the rest did not.
+        # lag = delay + precomp + latency; seating the slow pair from their
+        # 0.5 s model left them 7.4 s behind three devices that were on time.
+        zz = _zone(tmp)
+        probed = {"Kitchen Right": 0.650, "Master Display": 0.360,
+                  "Elena": 7.856, "Kitchen Left": 7.843, "Pixel Tablet": 6.584}
+        floor = {"Kitchen Right": 0.553, "Master Display": 0.360,
+                 "Elena": 0.507, "Kitchen Left": 0.466}
+        zz._preroll = True
+        for i, (name, lat) in enumerate(probed.items()):
+            st = _stream(zz, f"s{i}", name)
+            st.probe_hist = [lat] * cs.PREROLL_MIN_READS
+            if name in floor:
+                zz._model[st.player_id] = {"probe_floor_s": floor[name]}
+        zz._end_preroll()
+        lags = {st.name: round(4.0 + st.precomp_s + probed[st.name], 3)
+                for st in zz._streams.values()}
+        c.check("no device is seconds from the others",
+                max(lags.values()) - min(lags.values()) < 0.01, lags)
+        c.check("and the zone sits well inside the delay line",
+                max(lags.values()) + cs.STREAM_LAG_MARGIN_S
+                < zz._target_lag_cap() - 5.0, lags)
+        c.check("the slow starts were not written to the model",
+                zz._model["cast:s2"].get("probe_floor_s") == 0.507,
+                zz._model["cast:s2"])
 
         c.section("every honest reading in the fixture survives")
         for name, sid in (("Kitchen Right", "kr"), ("Elena", "el"),

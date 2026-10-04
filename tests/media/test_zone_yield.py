@@ -218,6 +218,31 @@ def _reload_yields(c: Checker, tmp: str) -> None:
         c.check("free for the settle window: rejoins with one LOAD",
                 len(loaded) == 1 and st.parked_since is None
                 and not st.yield_kind, loaded)
+
+        # It comes back seated wherever the delay line allowed, not on target.
+        block = 441
+        g = z._join_gain(st, block)
+        c.check("a rejoiner is silent until it is on the zone's target",
+                g is not None and not g.any())
+        st.acquired = True
+        g = z._join_gain(st, block)
+        c.check("on target: it fades in rather than cutting in",
+                g is not None and g[0] < 0.05 and g[-1] > g[0], g[:2])
+        st.join_fade -= cast_sync.STREAM_FADE_IN_S
+        c.check("and is then at unity", z._join_gain(st, block) is None
+                and st.join_hold is None)
+
+        st.acquired = False
+        await z._reload_stream(st)
+        c.check("an ordinary reload is not held — only a join is",
+                z._join_gain(st, block) is None)
+
+        st.last_reload = None
+        await z._reload_stream(st, rejoin=True)
+        st.join_hold -= cast_sync.STREAM_JOIN_HOLD_MAX_S + 1
+        g = z._join_gain(st, block)
+        c.check("a rejoiner the ladder never lands is let in anyway",
+                g is not None and st.join_fade is not None)
     asyncio.run(go())
 
 

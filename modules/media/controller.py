@@ -68,8 +68,13 @@ class MediaController:
 
     def _playback_snapshot(self) -> dict:
         out = {}
+        zoned = self._zoned()
         for pid, st in self._cache.items():
             if st.state not in _ACTIVE:
+                continue
+            # Playing the zone's stream, not its own queue: resuming that queue
+            # would start a stale item under the zone's own resume.
+            if pid in zoned:
                 continue
             # A self-advancing provider snapshots and resumes its own session
             # (MediaService._resume_playback); two resume paths would fight.
@@ -88,6 +93,12 @@ class MediaController:
                 "proxied": bool(eq and eq.wants(pid, cur.item.media_type)),
             }
         return out
+
+    def _zoned(self) -> set:
+        """Members of every zone that is playing."""
+        return {m for s in self._cache.values()
+                if zone_id(s.player_id) and s.state in _ACTIVE
+                for m in s.group_members}
 
     def restore_sessions(self, data: dict) -> int:
         """Restore queues saved before a restart so next/prev + the Tidal source
@@ -221,8 +232,31 @@ class MediaController:
             snapshot.extend(res)
         for s in snapshot:
             self._attach_queue(s)
+        self._follow_zones(snapshot)
         self._cache = {s.player_id: s for s in snapshot}
         return snapshot
+
+    def _follow_zones(self, snapshot: List[PlayerState]) -> None:
+        """Paint a playing zone's current item onto the members it is feeding.
+
+        Their own displays carry the session label and cannot be revised
+        (open-zone.md §10.7), so the item is the zone's to say. Position and
+        duration stay the device's: a finite length on a member would arm
+        ``_transition_ended`` against its own queue when the zone stops."""
+        fed = getattr(self._players.get("zone"), "fed_members", None)
+        if fed is None:
+            return
+        by_id = {s.player_id: s for s in snapshot}
+        for z in snapshot:
+            if not zone_id(z.player_id) or z.state not in _ACTIVE or not z.title:
+                continue
+            for pid in fed(z.player_id):
+                s = by_id.get(pid)
+                if s is None:
+                    continue
+                s.title, s.artist = z.title, z.artist
+                s.artwork_url = z.artwork_url or s.artwork_url
+                s.media_type, s.now_playing_id = z.media_type, z.now_playing_id
 
     async def live_state(self, player_id: str) -> Optional[PlayerState]:
         """Fresh, on-demand state for ONE player (forces a live device read where

@@ -192,6 +192,9 @@ class MediaService:
                 self.cast_sync.set_input_resolver(self.linkplay.owner_for_host)
                 self.cast_sync.set_input_reader(self.linkplay.read_host,
                                                 self.linkplay.learn_cast_mode)
+                # ...and take it back onto the network input where the zone
+                # is entitled to (reclaim, or a lock just lifted).
+                self.cast_sync.set_input_claimer(self.linkplay.claim_host)
                 # Lets a sync group carry the same server-side EQ a single
                 # Cast player gets, keyed "syncgroup:<gid>".
                 self.cast_sync.set_eq_engine(self.eq_stream)
@@ -642,6 +645,12 @@ class MediaService:
                 f"(limit {self._resume_max_age_s / 60:.0f} min)")
             return
         await self.controller.refresh()          # live state before deciding
+        # The zone's resume takes its own members; resuming their queues first
+        # plays a stale item on each until it does.
+        zoned = set(sync_rec.get("player_ids") or [])
+        if sync_rec.get("group_id") and self.cast_sync is not None:
+            zoned.update(await self.zone_members(sync_rec["group_id"]))
+        rec = {pid: v for pid, v in rec.items() if pid not in zoned}
         if rec:
             n = await self.controller.resume_players(rec.keys())
             if n:

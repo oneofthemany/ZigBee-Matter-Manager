@@ -51,8 +51,6 @@ class ZonePlayerProvider(PlayerProvider):
         # MediaService.start_zone — one validation + saved-window path for
         # every caller (Media page, automation, resume).
         self._start_zone = start_zone
-        # What a paused zone was playing, so resume has something to re-issue.
-        self._paused: Dict[str, dict] = {}
 
     # Discovery / state
     def _groups(self) -> List[dict]:
@@ -97,6 +95,12 @@ class ZonePlayerProvider(PlayerProvider):
             st.position_ms = int(np.get("position_ms") or 0)
             st.duration_ms = int(np.get("duration_ms") or 0)
         return st
+
+    def fed_members(self, player_id: str) -> List[str]:
+        """Members this zone is streaming to right now — not parked or yielded."""
+        if self._sync.active_group != zone_id(player_id):
+            return []
+        return self._sync.fed_players()
 
     async def _member_volume(self, members: List[str]) -> tuple:
         """Mean member volume, and muted only when every member is."""
@@ -169,28 +173,25 @@ class ZonePlayerProvider(PlayerProvider):
         # length, and truncating an album at 5 minutes is not what play means.
         # Crossfade still comes from the zone's own config.
         gid = self._require(player_id)
-        self._paused.pop(gid, None)
         res = await self._start_zone(gid, media=media, duration_s=0,
                                      use_saved=True)
         if not res.get("success"):
             raise RuntimeError(res.get("error") or "Zone would not start")
 
     async def pause(self, player_id: str) -> None:
-        """A shared timeline has no pause — stop it, and remember enough that
-        resume can re-issue the same queue at the same item."""
+        """A shared timeline has no pause — stop it; the engine keeps what it
+        was on, so resume re-issues the same queue at the same item."""
         gid = self._require(player_id)
-        if self._sync.active_group != gid:
-            return
-        media = self._sync.session_snapshot().get("media")
-        await self._sync.stop_session()
-        if media:
-            self._paused[gid] = media
+        if self._sync.active_group == gid:
+            await self._sync.stop_session()
 
     async def resume(self, player_id: str) -> None:
         gid = self._require(player_id)
         if self._sync.active_group == gid:
             return
-        media = self._paused.pop(gid, None)
+        # What it last played, pause or stop alike — the zone's saved source
+        # is only the answer for one that has never played anything.
+        media = self._sync.last_media(gid)
         res = await self._start_zone(gid, media=media, duration_s=0,
                                      use_saved=True)
         if not res.get("success"):
@@ -198,7 +199,6 @@ class ZonePlayerProvider(PlayerProvider):
 
     async def stop_playback(self, player_id: str) -> None:
         gid = self._require(player_id)
-        self._paused.pop(gid, None)
         if self._sync.active_group == gid:
             await self._sync.stop_session()
 

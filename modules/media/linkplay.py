@@ -212,6 +212,23 @@ class LinkPlayDirectory:
             return data if isinstance(data, dict) else None
         return None
 
+    async def _send(self, ip: str, command: str,
+                    timeout: float = MODE_TIMEOUT_S) -> bool:
+        """Issue a command whose reply is the bare word ``OK``."""
+        schemes = [self._scheme[ip]] if ip in self._scheme else ["https", "http"]
+        for scheme in schemes:
+            try:
+                resp = await self._http().get(
+                    f"{scheme}://{ip}/httpapi.asp",
+                    params={"command": command}, timeout=timeout)
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                logger.debug(f"LinkPlay {ip} {scheme} '{command}': {e}")
+                continue
+            self._scheme[ip] = scheme
+            return resp.text.strip().upper() == "OK"
+        return False
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
@@ -315,6 +332,26 @@ class LinkPlayDirectory:
         return {"mode": mode, "owner": owner, "input": is_input(mode),
                 "stale": stale}
 
+    async def claim_network(self, ip: str) -> Optional[str]:
+        """Switch a box off a physical input and onto the network one.
+
+        Returns the input it was taken from, "" when there was nothing to
+        take (already on the network, or a protocol stream the LOAD itself
+        ends), None when the box is not known or did not answer — a reading
+        from memory is not grounds to switch anything."""
+        got = await self.read(ip)
+        if got is None or got.get("stale"):
+            return None
+        if not got.get("input"):
+            return ""
+        if not await self._send(
+                ip, f"setPlayerCmd:switchmode:{NETWORK_INPUT[0]}"):
+            return None
+        # The remembered mode answers for an unreachable box, and it is no
+        # longer true.
+        self._last_mode.pop(ip, None)
+        return got.get("owner") or f"input {got.get('mode')}"
+
     def learn_cast_mode(self, ip: str, mode: int) -> bool:
         """Record ``mode`` as what this box reports while a zone plays on it.
         Refused for a physical input: that reading beside a PLAYING Cast
@@ -359,3 +396,9 @@ class LinkPlayDirectory:
         if host not in self._devices:
             await self.discover([host])
         return await self.read(host)
+
+    async def claim_host(self, host: str) -> Optional[str]:
+        """``claim_network`` for a Cast host, identifying it first if needed."""
+        if host not in self._devices:
+            await self.discover([host])
+        return await self.claim_network(host)

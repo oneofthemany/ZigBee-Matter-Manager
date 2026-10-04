@@ -187,6 +187,60 @@ def _policies(c: Checker, tmp: str) -> None:
     asyncio.run(go())
 
 
+def _claim(c: Checker, tmp: str) -> None:
+    c.section("reclaim puts the box itself back on the network input")
+
+    async def go():
+        z = _zone(tmp, _fake_cast())
+        loaded = _loads(z)
+        modes = {"mode": 49}
+        d = _directory(tmp, modes)
+        sent = []
+
+        async def send(ip, command, timeout=0):
+            sent.append(command)
+            modes["mode"] = 10
+            return True
+        d._send = send
+        _wire(z, d)
+        z.set_input_claimer(d.claim_host)
+        st = _stream(z)
+
+        for _ in range(3):
+            await _poll(z, st)
+        c.check("auto: a box on HDMI-ARC is never switched", sent == [], sent)
+
+        await z.set_policy("cast:a", mode="reclaim")
+        st.parked_since, st.yield_kind = None, ""
+        modes["mode"] = 49
+        for _ in range(2):
+            await _poll(z, st)
+        await asyncio.sleep(0.05)
+        c.check("a box that left for HDMI-ARC mid-session is told to switch",
+                sent == ["setPlayerCmd:switchmode:wifi"], sent)
+        c.check("and is re-LOADed into the zone", len(loaded) == 1, len(loaded))
+        c.check("without a strike against it — it was taken, not failing",
+                st.reloads_since_align == 0, st.reloads_since_align)
+
+        modes["mode"] = 49
+        for _ in range(2):
+            await _poll(z, st)
+        await asyncio.sleep(0.05)
+        c.check("a box that flips straight back is not re-LOADed in a loop",
+                len(loaded) == 1, len(loaded))
+
+        del sent[:]
+        modes["mode"] = 10
+        await z._claim_input("cast:a")
+        c.check("a box already on the network is sent nothing", sent == [], sent)
+        modes["mode"] = None
+        d._last_mode[HOST] = (time.monotonic(), 49)
+        await z._claim_input("cast:a")
+        c.check("nor is one that did not answer, on a remembered reading",
+                sent == [], sent)
+    asyncio.run(go())
+
+
 def _cadence(c: Checker, tmp: str) -> None:
     c.section("cadence")
 
@@ -223,7 +277,7 @@ def run() -> Checker:
     c = Checker("zone_input")
     import tempfile
     for fn in (_dir_learning, _switch, _glitch, _learn, _stale, _policies,
-               _cadence):
+               _claim, _cadence):
         with tempfile.TemporaryDirectory() as tmp:
             fn(c, tmp)
     return c

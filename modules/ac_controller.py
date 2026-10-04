@@ -78,6 +78,19 @@ class ACError(Exception):
     """Raised for user-visible AC failures (bad config, offline, no lib)."""
 
 
+async def _preload(*modules: str) -> None:
+    """Import off the loop — cold, a vendor library and its crypto take
+    seconds, and the lazy ``from`` that follows is then a cache hit."""
+    import importlib
+    import sys
+    for name in modules:
+        if name not in sys.modules:
+            try:
+                await asyncio.to_thread(importlib.import_module, name)
+            except ImportError:
+                pass    # the caller's own import reports it
+
+
 # Gree adapter
 
 class GreeAdapter:
@@ -99,6 +112,7 @@ class GreeAdapter:
     async def _ensure(self):
         if self._device is not None:
             return self._device
+        await _preload("greeclimate.device")
         try:
             from greeclimate.device import Device, DeviceInfo
         except ImportError as e:
@@ -146,6 +160,7 @@ class GreeAdapter:
         return device
 
     async def status(self) -> Dict[str, Any]:
+        await _preload("greeclimate.device")
         from greeclimate.device import Mode, FanSpeed
         d = await self._ensure()
         await d.update_state()
@@ -194,6 +209,7 @@ class GreeAdapter:
         }
 
     async def control(self, changes: Dict[str, Any]) -> None:
+        await _preload("greeclimate.device")
         from greeclimate.device import (Mode, FanSpeed, HorizontalSwing,
                                         VerticalSwing)
         d = await self._ensure()
@@ -623,6 +639,7 @@ class ACController:
         """Scan the LAN for both protocols; returns candidates, not config."""
         found: Dict[str, List[Dict[str, Any]]] = {"gree": [], "midea": []}
 
+        await _preload("greeclimate.discovery", "midealocal.discover")
         try:
             from greeclimate.discovery import Discovery
             infos = await Discovery().scan(wait_for=wait_for)
@@ -667,6 +684,7 @@ class ACController:
         Fetch token/key for a Midea V3 unit. Uses the library's preset
         anonymous account unless the caller supplies their own.
         """
+        await _preload("midealocal.cloud")
         try:
             import aiohttp
             from midealocal.cloud import get_midea_cloud, get_preset_account_cloud
