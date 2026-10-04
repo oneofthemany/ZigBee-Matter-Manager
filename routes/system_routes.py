@@ -385,6 +385,30 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
             return {"error": str(e)}
 
 
+    @app.get("/api/system/manager")
+    async def manager_info():
+        """Whether the ZMM Manager answers on this host, and its LAN address.
+
+        Checked from here because the app shares the host network with it: a
+        browser on the tunnel or behind a proxy can't tell "down" from
+        "unreachable from where I am"."""
+        import httpx
+        from modules.media.device_http import lan_ip
+        port = int(os.environ.get("ZMM_MANAGER_PORT", "8001"))
+        scheme = None
+        async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
+            for candidate in ("https", "http"):     # it serves HTTPS only when the app's cert exists
+                try:
+                    r = await client.get(f"{candidate}://127.0.0.1:{port}/healthz")
+                    if r.status_code == 200:
+                        scheme = candidate
+                        break
+                except httpx.HTTPError:
+                    continue
+        ip = await asyncio.to_thread(lan_ip)
+        return {"port": port, "up": scheme is not None, "scheme": scheme,
+                "lan_url": f"{scheme or 'https'}://{ip}:{port}/" if ip else None}
+
     @app.get("/api/system/health")
     async def health_check():
         """

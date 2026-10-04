@@ -6,6 +6,7 @@
  */
 
 import { state } from './state.js';
+import './manager-link.js';      // data-zmm-manager links
 import { updateLastSeenTimes, whileVisible } from './utils.js';
 import { initWS } from './websocket.js';
 import { fetchAllDevices, filterByStatus } from './devices.js';

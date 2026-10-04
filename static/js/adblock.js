@@ -317,13 +317,7 @@
       if (docsTab && typeof bootstrap !== 'undefined') new bootstrap.Tab(docsTab).show();
     });
 
-    var mgrLink = $('bkManagerLink');
-    if (mgrLink) mgrLink.addEventListener('click', function (e) {
-      e.preventDefault();
-      // The manager sidecar publishes on :8001 on the same host, same scheme.
-      var port = window.ZMM_MANAGER_PORT || 8001;
-      window.open(window.location.protocol + '//' + window.location.hostname + ':' + port + '/', '_blank');
-    });
+    // #bkManagerLink carries data-zmm-manager; manager-link.js handles the click.
   }
 
   async function addRule(kind) {
