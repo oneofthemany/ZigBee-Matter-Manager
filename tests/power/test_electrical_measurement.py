@@ -13,6 +13,8 @@ import asyncio
 
 from harness import Checker
 
+import modules.app_alerts as app_alerts
+from handlers import power
 from handlers.power import ElectricalMeasurementHandler
 
 
@@ -107,9 +109,51 @@ def run() -> Checker:
     c.check("socket 1 carries the device voltage and current",
             (polled.get("voltage"), polled.get("current")) == (242.0, 0.501), polled)
     h.cluster.read_attributes = _reads({h.ATTR_RMS_VOLTAGE: 1012})
-    polled = asyncio.run(h.poll())
+    real = app_alerts.raise_alert       # a fault raises an alert: keep it out of ./data
+    app_alerts.raise_alert = lambda *a, **k: None
+    try:
+        polled = asyncio.run(h.poll())
+    finally:
+        app_alerts.raise_alert = real
     c.check("an impossible voltage is blanked, not shown",
             polled.get("voltage_1") is None, polled)
+
+    c.section("a power report prompts a voltage and current read")
+    clock = [1000.0]
+    real_clock = power.time.monotonic
+    power.time.monotonic = lambda: clock[0]
+
+    async def _reports(model, *steps):
+        """Feed power reports, advancing the clock by each step first."""
+        hr, clr, devr = _handler(model)
+        reads = []
+
+        async def read_attributes(attrs, **_):
+            reads.append(list(attrs))
+            return [{hr.ATTR_RMS_VOLTAGE: 242, hr.ATTR_RMS_CURRENT: 501}, {}]
+        hr.cluster.read_attributes = read_attributes
+        for step in steps:
+            clock[0] += step
+            hr.attribute_updated(hr.ATTR_ACTIVE_POWER, 69)
+            await asyncio.sleep(0.01)
+        return reads, devr
+
+    try:
+        reads, devr = asyncio.run(_reports("DoubleSocket50AU", 0))
+        c.check("voltage and current are read, not power again",
+                reads == [[h.ATTR_RMS_VOLTAGE, h.ATTR_RMS_CURRENT]], reads)
+        c.check("and land in state",
+                (devr.state.get("voltage_1"), devr.state.get("current_1")) == (242.0, 0.501),
+                devr.state)
+        reads, _ = asyncio.run(_reports("DoubleSocket50AU", 0, 6, 6, 6))
+        c.check("reports six seconds apart share one read", len(reads) == 1, reads)
+        reads, _ = asyncio.run(_reports("DoubleSocket50AU", 0, 29, 1))
+        c.check("the next read comes at 30 seconds", len(reads) == 2, reads)
+        reads, _ = asyncio.run(_reports("SmartPlug51AU", 0))
+        c.check("a meter that reports them itself is not read", reads == [], reads)
+    finally:
+        power.time.monotonic = real_clock
+
     h2, _, dev2 = _handler("DoubleSocket50AU", ep=2)
     h2.attribute_updated(h2.ATTR_ACTIVE_POWER, 12)
     c.check("the right socket reports as power_2", dev2.state.get("power_2") == 12.0,

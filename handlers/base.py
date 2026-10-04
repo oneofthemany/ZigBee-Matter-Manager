@@ -86,6 +86,10 @@ def register_handler(cluster_id: int):
     return decorator
 
 
+#: ZCL status a device gives a reporting config whose data type it rejects.
+INVALID_DATA_TYPE = 0x8D
+
+
 class ClusterHandler:
     """
     Base class for handling a specific Zigbee Cluster.
@@ -390,6 +394,12 @@ class ClusterHandler:
                                     attr_name, min_int, max_int, change
                                 )
                             status = next((getattr(r, "status", None) for r in rsp or []), 0)
+                            if status == INVALID_DATA_TYPE:
+                                async with asyncio.timeout(4.0):
+                                    rsp = await self._report_with_flipped_sign(
+                                        attr_name, min_int, max_int, change)
+                                status = next((getattr(r, "status", None) for r in rsp or []),
+                                              status)
                             if status not in (0, None):
                                 logger.info(
                                     f"[{self.device.ieee}] Reporting for {attr_name} refused: "
@@ -420,6 +430,22 @@ class ClusterHandler:
             # traceback.print_exc() # Less spam
             return False
 
+
+    async def _report_with_flipped_sign(self, attr_name, min_int, max_int, change):
+        """Resend a reporting config with the integer type's signedness
+        flipped. A device that declares an attribute unsigned where the ZCL has
+        it signed refuses the spec type; None if the type is not an integer."""
+        from zigpy.zcl import ReportingConfig, foundation
+        attr_def = self.cluster.find_attribute(attr_name)
+        zcl_type = attr_def.zcl_type
+        if zcl_type is None:
+            zcl_type = foundation.DataType.from_python_type(attr_def.type).type_id
+        if not 0x20 <= int(zcl_type) <= 0x2F:      # uint8..uint64, int8..int64
+            return None
+        flipped = foundation.DataTypeId(int(zcl_type) ^ 0x08)
+        logger.info(f"[{self.device.ieee}] {attr_name}: type refused, retrying as {flipped.name}")
+        return await self.cluster.configure_reporting_multiple(
+            {attr_def.replace(zcl_type=flipped): ReportingConfig(min_int, max_int, change)})
 
     def ep_label(self) -> Optional[str]:
         """The user's or the ZMM entry's name for this endpoint, if any."""

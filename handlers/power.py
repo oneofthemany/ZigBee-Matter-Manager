@@ -2,7 +2,9 @@
 Power cluster handlers.
 Handles: Electrical Measurement (0x0B04), Metering (0x0702)
 """
+import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from .base import ClusterHandler, register_handler
@@ -14,6 +16,9 @@ logger = logging.getLogger("handlers.power")
 #: arrives in the device's own reports; voltage and current answer a read but
 #: are unreportable (0x8C), so they come from the poll. No scaling attributes.
 BIND_ONLY_MODELS = frozenset({"DoubleSocket50AU"})
+
+#: Least seconds between the voltage/current reads a power report prompts.
+REPORT_READ_INTERVAL = 30.0
 
 # ELECTRICAL MEASUREMENT CLUSTER (0x0B04)
 @register_handler(0x0B04)
@@ -39,6 +44,8 @@ class ElectricalMeasurementHandler(ClusterHandler):
         self._voltage_divisor    = 1
         self._current_multiplier = 1
         self._current_divisor    = 1000
+        self._last_report_read   = float("-inf")
+        self._report_read_task   = None      # held so the task is not collected
         self._resolve_scaling()
 
     # measurement -> (multiplier field, divisor field, multiplier attr, divisor attr)
@@ -179,6 +186,8 @@ class ElectricalMeasurementHandler(ClusterHandler):
         updates = {}
 
         if attrid == self.ATTR_ACTIVE_POWER:
+            if self._bind_only():
+                self._read_on_report()
             val = round(float(value) * self._power_multiplier / self._power_divisor, 1)
             key = self._power_key()
             held = self._held_back("active_power", val, key)
@@ -224,6 +233,33 @@ class ElectricalMeasurementHandler(ClusterHandler):
 
         if updates:
             self.device.update_state(updates)
+
+    def _read_on_report(self) -> None:
+        """Read voltage and current alongside a power report: a bind-only
+        model will not report them. At most once per REPORT_READ_INTERVAL."""
+        now = time.monotonic()
+        if now - self._last_report_read < REPORT_READ_INTERVAL:
+            return
+        attrs = [a for a in self._measured() if a != self.ATTR_ACTIVE_POWER]
+        if not attrs:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._last_report_read = now
+        self._report_read_task = loop.create_task(self._read_measurements(attrs))
+
+    async def _read_measurements(self, attrs: List[int]) -> None:
+        try:
+            async with asyncio.timeout(5.0):
+                result = await self.cluster.read_attributes(attrs)
+        except Exception as e:
+            logger.debug(f"[{self.device.ieee}] EM read on power report failed: {e}")
+            return
+        for attr, value in ((result[0] if result else None) or {}).items():
+            if attr in attrs:
+                self.attribute_updated(attr, getattr(value, "value", value))
 
     def parse_value(self, attr_id: int, value: Any) -> Any:
         if attr_id == self.ATTR_ACTIVE_POWER:
@@ -366,7 +402,7 @@ class ElectricalMeasurementHandler(ClusterHandler):
 @register_handler(0x0702)
 class MeteringHandler(ClusterHandler):
     CLUSTER_ID = 0x0702
-    REPORT_CONFIG = [("instantaneous_demand", 30, 300, 10), ("current_summation_delivered", 300, 3600, 100)]
+    REPORT_CONFIG = [("instantaneous_demand", 30, 300, 10), ("current_summ_delivered", 300, 3600, 100)]
 
     ATTR_CURRENT_SUMMATION_DELIVERED = 0x0000
     ATTR_INSTANTANEOUS_DEMAND = 0x0400
