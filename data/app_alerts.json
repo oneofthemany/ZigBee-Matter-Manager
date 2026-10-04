@@ -3,14 +3,14 @@
   {
    "id": "444eafefc642",
    "ts": 1790515861.1266658,
-   "last_seen": 1790515861.1266658,
-   "last_pushed": 1790515861.1266658,
+   "last_seen": 1791117429.6496882,
+   "last_pushed": 1791117429.6496882,
    "severity": "warning",
    "source": "devices",
    "title": "00:15:8d:00:02:56:f8:bf needs a power cycle",
-   "message": "00:15:8d:00:02:56:f8:bf is reporting readings it cannot physically produce: EP1 rms voltage 2400 V is above 300 V (mains voltage). They are kept out of its state and history. Power-cycle the device; this clears when it reports sensibly again.",
-   "count": 1,
-   "dismissed": false,
+   "message": "00:15:8d:00:02:56:f8:bf is reporting readings it cannot physically produce: EP1 rms voltage 1012 V is above 300 V (mains voltage). They are kept out of its state and history. Power-cycle the device; this clears when it reports sensibly again.",
+   "count": 2,
+   "dismissed": true,
    "dedupe_key": "implausible_readings:00:15:8d:00:02:56:f8:bf",
    "data": {
     "ieee": "00:15:8d:00:02:56:f8:bf"

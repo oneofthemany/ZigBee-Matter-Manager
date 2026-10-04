@@ -10,10 +10,10 @@ from modules import measurement_sanity
 
 logger = logging.getLogger("handlers.power")
 
-#: Meter active power only, from the device's own reports after bind. Z2M
-#: binds these without configuring reporting (aurora_lighting.ts), and they
-#: measure neither voltage nor current.
-POWER_ONLY_BIND_ONLY_MODELS = frozenset({"DoubleSocket50AU"})
+#: Bound without a reporting config, as Z2M does (aurora_lighting.ts). Power
+#: arrives in the device's own reports; voltage and current answer a read but
+#: are unreportable (0x8C), so they come from the poll. No scaling attributes.
+BIND_ONLY_MODELS = frozenset({"DoubleSocket50AU"})
 
 # ELECTRICAL MEASUREMENT CLUSTER (0x0B04)
 @register_handler(0x0B04)
@@ -80,8 +80,8 @@ class ElectricalMeasurementHandler(ClusterHandler):
                 setattr(self, mf, z.get("multiplier") or 1)
                 setattr(self, df, z.get("divisor") or 1)
                 source, reason = "zmm", f"ZMM entry {entry.get('id')}"
-            elif self._power_only():
-                source, reason = "default", "power-only model reports whole watts"
+            elif self._bind_only():
+                source, reason = "default", "bind-only model has no scaling attributes"
             else:
                 m, d = self._device_scaling(ma, answered), self._device_scaling(da, answered)
                 if m or d:
@@ -166,17 +166,14 @@ class ElectricalMeasurementHandler(ClusterHandler):
                 continue
         return round(total, 1)
 
-    def _power_only(self) -> bool:
+    def _bind_only(self) -> bool:
         # Read per call: the model may not be known when the handler attaches.
         model = getattr(self.device, "model", None) or \
             getattr(getattr(self.device, "zigpy_dev", None), "model", None)
-        return str(model or "") in POWER_ONLY_BIND_ONLY_MODELS
+        return str(model or "") in BIND_ONLY_MODELS
 
     def attribute_updated(self, attrid: int, value: Any, timestamp=None):
         if value is None:
-            return
-        if self._power_only() and attrid in (self.ATTR_RMS_VOLTAGE,
-                                             self.ATTR_RMS_CURRENT):
             return
         ep_id = self.endpoint.endpoint_id
         updates = {}
@@ -238,12 +235,12 @@ class ElectricalMeasurementHandler(ClusterHandler):
         return value
 
     async def configure(self):
-        if self._power_only():
+        if self._bind_only():
             # Instance attribute shadows the class list: bind, write nothing.
             self.REPORT_CONFIG = []
             await super().configure()
             logger.info(f"[{self.device.ieee}] {self.device.model}: bound 0x0B04 "
-                        f"without reporting config (power-only model)")
+                        f"without reporting config (bind-only model)")
             return
         try:
             # Reading first lets zigpy record which measurements the device
@@ -273,12 +270,11 @@ class ElectricalMeasurementHandler(ClusterHandler):
             logger.warning(f"[{self.device.ieee}] Failed to read EM scaling attrs: {e}", exc_info=True)
 
     def _measured(self) -> List[int]:
-        """Measurements this EP has: none of voltage/current on power-only
-        models, and nothing zigpy recorded the device refusing."""
+        """Measurements this EP has: nothing its entry marks absent or zigpy
+        recorded the device refusing."""
         if (self._scope() or (None,))[0] == "none":
             return []
-        attrs = [self.ATTR_ACTIVE_POWER] if self._power_only() else \
-            [self.ATTR_ACTIVE_POWER, self.ATTR_RMS_VOLTAGE, self.ATTR_RMS_CURRENT]
+        attrs = [self.ATTR_ACTIVE_POWER, self.ATTR_RMS_VOLTAGE, self.ATTR_RMS_CURRENT]
         absent = {self.MEASUREMENT_ATTRS[n] for n, m in self._entry_measurements().items()
                   if m is None and n in self.MEASUREMENT_ATTRS}
         return [a for a in attrs if a not in absent and self.attribute_supported(a)]

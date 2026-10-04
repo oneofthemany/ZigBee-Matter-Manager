@@ -104,7 +104,7 @@ def run() -> Checker:
 
         aurora = _device("DoubleSocket50AU")
         ha = _em(aurora, 1, cache={"ac_power_divisor": 10})
-        c.check("a power-only model keeps whole watts, whatever zigpy cached",
+        c.check("a bind-only model keeps whole watts, whatever zigpy cached",
                 ha._power_divisor == 1, ha._power_divisor)
 
         c.section("an unanswered divisor keeps its default")

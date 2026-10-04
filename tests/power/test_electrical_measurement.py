@@ -2,8 +2,9 @@
 The Aurora double socket is bound and left alone; every other meter is not.
 
 Z2M binds DoubleSocket50AU's metering cluster without writing a reporting
-config and exposes power only. What matters is what reaches the device, so
-the fake cluster records every bind, reporting write and read.
+config. The socket reports power itself and answers reads for voltage and
+current, which it will not report. What matters is what reaches the device,
+so the fake cluster records every bind, reporting write and read.
 """
 
 from __future__ import annotations
@@ -83,19 +84,32 @@ def run() -> Checker:
     c.check("the class default is untouched for other devices",
             ElectricalMeasurementHandler.REPORT_CONFIG != [])
 
-    c.section("it shows power only")
-    c.check("only active power is polled",
-            h.get_pollable_attributes() == {h.ATTR_ACTIVE_POWER: "power_1"},
+    c.section("voltage and current come from the poll")
+    # Unreportable (0x8C) on this socket, so the poll is their only source.
+    c.check("power, voltage and current are polled",
+            h.get_pollable_attributes() == {h.ATTR_ACTIVE_POWER: "power_1",
+                                            h.ATTR_RMS_VOLTAGE: "voltage_1",
+                                            h.ATTR_RMS_CURRENT: "current_1"},
             h.get_pollable_attributes())
     ids = [d["object_id"] for d in h.get_discovery_configs()]
-    c.check("only a power sensor is published", ids == ["power_1"], ids)
+    c.check("all three sensors are published",
+            ids == ["power_1", "voltage_1", "current_1"], ids)
+    c.check("none is retracted", h.get_retired_discovery_configs() == [],
+            h.get_retired_discovery_configs())
     h.attribute_updated(h.ATTR_ACTIVE_POWER, 45)
-    h.attribute_updated(h.ATTR_RMS_VOLTAGE, 1012)
-    h.attribute_updated(h.ATTR_RMS_CURRENT, 7072)
     c.check("a power report is recorded per socket", dev.state.get("power_1") == 45.0,
             dev.state)
-    c.check("voltage and current reports are ignored",
-            "voltage_1" not in dev.state and "current_1" not in dev.state, dev.state)
+    h.cluster.read_attributes = _reads({h.ATTR_ACTIVE_POWER: 69, h.ATTR_RMS_VOLTAGE: 242,
+                                        h.ATTR_RMS_CURRENT: 501})
+    polled = asyncio.run(h.poll())
+    c.check("a poll reads volts as sent", polled.get("voltage_1") == 242.0, polled)
+    c.check("and milliamps as amps", polled.get("current_1") == 0.501, polled)
+    c.check("socket 1 carries the device voltage and current",
+            (polled.get("voltage"), polled.get("current")) == (242.0, 0.501), polled)
+    h.cluster.read_attributes = _reads({h.ATTR_RMS_VOLTAGE: 1012})
+    polled = asyncio.run(h.poll())
+    c.check("an impossible voltage is blanked, not shown",
+            polled.get("voltage_1") is None, polled)
     h2, _, dev2 = _handler("DoubleSocket50AU", ep=2)
     h2.attribute_updated(h2.ATTR_ACTIVE_POWER, 12)
     c.check("the right socket reports as power_2", dev2.state.get("power_2") == 12.0,
