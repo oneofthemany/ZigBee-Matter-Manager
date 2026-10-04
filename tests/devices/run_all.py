@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-PY_MODULES = ["test_endpoint_kind", "test_quirk_corpus", "test_coordinator_quirk", "test_aqara_attributes", "test_cluster_discovery", "test_device_facts", "test_device_decisions", "test_device_identity", "test_probe_lite", "test_zmm_entries", "test_zmm_settings", "test_entry_rules", "test_reporting_heal", "test_learning_ops", "test_device_learning", "test_learning_write", "test_nuki_names", "test_cache_warm"]
+PY_MODULES = ["test_endpoint_kind", "test_quirk_corpus", "test_coordinator_quirk", "test_aqara_attributes", "test_cluster_discovery", "test_device_facts", "test_device_decisions", "test_device_identity", "test_probe_lite", "test_zmm_entries", "test_zmm_settings", "test_entry_rules", "test_reporting_heal", "test_learning_ops", "test_device_learning", "test_learning_write", "test_nuki_names", "test_cache_warm", "test_groups_delete"]
 
 # The entry editor's form logic, run from the shipped .js.
 JS_TESTS = ["test_quirk_editor.js"]

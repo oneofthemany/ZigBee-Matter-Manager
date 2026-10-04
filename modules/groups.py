@@ -84,6 +84,10 @@ class GroupManager:
         self.service = zigbee_service
         self.groups: Dict[int, Dict] = {}  # group_id -> group_info
         self.next_group_id = 1
+        # Groups the user deleted. The startup resync never re-adopts these from
+        # zigpy, and new groups never reuse the ids: a device that was offline
+        # when the group was removed may still answer to it.
+        self.deleted_ids: Set[int] = set()
 
         # Device type compatibility matrix
         self.compatible_types = {
@@ -122,6 +126,7 @@ class GroupManager:
                     data = json.load(f)
                     self.groups = {int(k): v for k, v in data.get('groups', {}).items()}
                     self.next_group_id = data.get('next_id', 1)
+                    self.deleted_ids = {int(i) for i in data.get('deleted_ids', [])}
                     logger.info(f"Loaded {len(self.groups)} groups from storage")
 
         except Exception as e:
@@ -140,10 +145,11 @@ class GroupManager:
         zigpy_groups = getattr(app, 'groups', None)
         if not zigpy_groups:
             return 0
+        coordinator = self._coordinator_ieee()
 
         added = 0
         for group_id, zgroup in list(zigpy_groups.items()):
-            if group_id in self.groups:
+            if group_id in self.groups or group_id in self.deleted_ids:
                 continue
             members = []
             for ep in zgroup.values():
@@ -151,8 +157,14 @@ class GroupManager:
                     ieee = str(ep.device.ieee)
                 except Exception:
                     continue
-                if ieee not in members:
+                if ieee not in members and ieee != coordinator:
                     members.append(ieee)
+            # Coordinator-only groups are the radio listening for remotes (the
+            # LightLink handler joins it to bulbs' touchlink groups), not
+            # something the user made — adopting them filled the list with
+            # "Group N" entries that came back after every delete.
+            if not members:
+                continue
             self.groups[group_id] = {
                 "id": group_id,
                 "name": getattr(zgroup, 'name', None) or f"Group {group_id}",
@@ -165,7 +177,8 @@ class GroupManager:
             added += 1
 
         if added:
-            self.next_group_id = max(self.groups) + 1
+            self.next_group_id = max(self.next_group_id, max(self.groups) + 1,
+                                     max(self.deleted_ids, default=0) + 1)
             self.save_groups()
             recovered_ids = sorted(g for g in self.groups if self.groups[g].get('recovered'))
             logger.info(
@@ -178,11 +191,14 @@ class GroupManager:
         """Save groups to persistent storage"""
         try:
             GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(GROUPS_FILE, 'w') as f:
+            tmp = GROUPS_FILE.with_suffix(".tmp")
+            with open(tmp, 'w') as f:
                 json.dump({
                     'groups': self.groups,
-                    'next_id': self.next_group_id
+                    'next_id': self.next_group_id,
+                    'deleted_ids': sorted(self.deleted_ids),
                 }, f, indent=2)
+            tmp.replace(GROUPS_FILE)
             logger.info(f"Saved {len(self.groups)} groups to storage")
         except Exception as e:
             logger.error(f"Failed to save groups: {e}")
@@ -572,7 +588,9 @@ class GroupManager:
         group_type = self._determine_group_type(capabilities, devices)
 
         group_id = self.next_group_id
-        self.next_group_id += 1
+        while group_id in self.groups or group_id in self.deleted_ids:
+            group_id += 1
+        self.next_group_id = group_id + 1
 
         group_info = {
             "id": group_id,
@@ -665,24 +683,51 @@ class GroupManager:
                 # Better to log and continue so partial groups can be fixed later
                 pass
 
+    def _coordinator_ieee(self) -> Optional[str]:
+        try:
+            return str(self.service.app.state.node_info.ieee)
+        except Exception:
+            return None
+
     async def remove_group(self, group_id: int) -> Dict:
-        """Remove a group and clean up"""
+        """Remove a group from the devices, from zigpy's database and from the registry.
+
+        zigpy's copy matters most: it persists in the coordinator database, and
+        resync_from_zigbee() re-adopted any group left there on the next start."""
         if group_id not in self.groups:
             return {"error": "Group not found"}
 
         group = self.groups[group_id]
+        app = getattr(self.service, 'app', None)
+        zgroup = app.groups.get(group_id) if app is not None and hasattr(app, 'groups') else None
+        coordinator = self._coordinator_ieee()
 
-        # Remove devices from Zigbee group
+        # zigpy's view first: it includes members the registry lost track of
+        # (removed devices, ones that were never in groups.json).
+        tasks, done = [], set()
+        for ep in list(zgroup.values()) if zgroup else []:
+            ieee = str(ep.device.ieee)
+            done.add(ieee)
+            if ieee != coordinator:
+                tasks.append(self._remove_endpoint_from_group(ep, group_id))
         for ieee in group['members']:
             device = self.service.devices.get(ieee)
-            if device:
-                try:
-                    await self._remove_device_from_zigbee_group(group_id, device)
-                except Exception as e:
-                    logger.error(f"Failed to remove {ieee} from group: {e}")
+            if device and ieee not in done:
+                tasks.append(self._remove_device_from_zigbee_group(group_id, device))
+        # In parallel, each bounded: an offline sleepy device shouldn't hold up the rest.
+        results = await asyncio.gather(*(asyncio.wait_for(t, 10) for t in tasks), return_exceptions=True)
+        unreached = sum(isinstance(r, Exception) for r in results)
+        if unreached:
+            logger.warning(f"Group {group_id}: {unreached} member(s) didn't confirm removal "
+                           "(offline?) — removed from zigpy and the registry regardless")
+
+        # Then zigpy's record itself, which also drops the coordinator's membership.
+        if app is not None and group_id in getattr(app, 'groups', {}):
+            app.groups.pop(group_id)
 
         # Remove from storage
         del self.groups[group_id]
+        self.deleted_ids.add(group_id)
         self.save_groups()
 
         # Remove from Home Assistant
@@ -690,6 +735,12 @@ class GroupManager:
 
         logger.info(f"Removed group {group_id}")
         return {"success": True}
+
+    async def _remove_endpoint_from_group(self, ep, group_id: int):
+        """zigpy's own removal: sends Groups.remove and updates zigpy's membership."""
+        status = await ep.remove_from_group(group_id)
+        if int(status) not in (0x00, 0x8B):      # SUCCESS, NOT_FOUND
+            raise RuntimeError(f"{ep.device.ieee} ep{ep.endpoint_id}: {status}")
 
     async def _remove_device_from_zigbee_group(self, group_id: int, device):
         """Remove device from Zigbee group"""
