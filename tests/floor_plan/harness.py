@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+
+# App modules default their data dir to ./data; a test must never touch it.
+if "ZMM_DATA_DIR" not in os.environ:
+    os.environ["ZMM_DATA_DIR"] = tempfile.mkdtemp(prefix="zmm_test_data_")
+    atexit.register(shutil.rmtree, os.environ["ZMM_DATA_DIR"], True)
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:

@@ -9,12 +9,13 @@ them from reports, so the divisor stayed 1: the Aqara outlet's 34 (Wh, divisor
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace as NS
 
-from harness import Checker
+from harness import REPO, Checker
 
 import modules.device_profiles as device_profiles
-from handlers.power import MeteringHandler
+from handlers.power import ElectricalMeasurementHandler, MeteringHandler
 
 IEEE = "54:ef:44:10:01:5a:14:eb"
 
@@ -79,6 +80,24 @@ def run() -> Checker:
         h, dev = _handler(cache={"divisor": 1})
         h.attribute_updated(h.ATTR_CURRENT_SUMMATION_DELIVERED, 34)
         c.check("the entry's /1000 applies over a wrong cached value", dev.state.get("energy_1") == 0.034)
+        device_profiles._store = _Store()
+
+        c.section("the shipped H2 entry keeps the counter in watt-hours")
+        shipped = json.loads((REPO / "zmm_quirks" / "lumi.plug.aeu002.json").read_text())
+        device_profiles._store = _Store(shipped)
+        h, dev = _handler(cache={"multiplier": 1, "divisor": 1000})
+        h.attribute_updated(h.ATTR_CURRENT_SUMMATION_DELIVERED, 16373)
+        c.check("16373 counts are 16.373 kWh", dev.state.get("energy_1") == 16.373, dev.state)
+
+        c.section("and reads power in whole watts")
+        # The outlet answers /10, but a 235 W charger at full rate reads 241
+        # and the counter climbs by the raw figure in Wh each hour.
+        em = ElectricalMeasurementHandler(dev, NS(cluster_id=0x0B04, endpoint=NS(endpoint_id=1),
+                                                  add_listener=lambda _l: None,
+                                                  get=lambda a: {"ac_power_divisor": 10}.get(a)))
+        em.attribute_updated(em.ATTR_ACTIVE_POWER, 241)
+        c.check("241 is 241 W, whatever divisor the device answers",
+                dev.state.get("power") == 241.0, dev.state)
         device_profiles._store = _Store()
 
         c.section("polled totals are scaled too")

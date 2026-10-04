@@ -9,12 +9,19 @@ Nothing touches the real system — a reboot or rebase is a line in calls.log.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# App modules default their data dir to ./data; a test must never touch it.
+if "ZMM_DATA_DIR" not in os.environ:
+    os.environ["ZMM_DATA_DIR"] = tempfile.mkdtemp(prefix="zmm_test_data_")
+    atexit.register(shutil.rmtree, os.environ["ZMM_DATA_DIR"], True)
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO / "scripts"

@@ -11,6 +11,7 @@ See docs/debugging.md.
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -19,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("modules.app_alerts")
 
-ALERTS_FILE = Path("./data/app_alerts.json")
+ALERTS_FILE = Path(os.environ.get("ZMM_DATA_DIR", "./data")) / "app_alerts.json"
 MAX_ALERTS = 200
 # Long enough that a loop-stall stack dump (innermost first) keeps ~10 frames —
 # the culprit plus its call path — while keeping the persisted JSON bounded.

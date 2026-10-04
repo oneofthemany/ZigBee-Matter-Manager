@@ -1771,9 +1771,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             # Fallback to zigbee_service
             if not devices and get_zigbee_service:
                 try:
-                    zs = get_zigbee_service()
-                    if zs and hasattr(zs, "get_all_devices_json"):
-                        devices = zs.get_all_devices_json() or {}
+                    # _find_thermostats reads the service's device objects directly.
+                    devices = getattr(get_zigbee_service(), "devices", None) or {}
                 except Exception as e:
                     logger.debug(f"zigbee_service fallback failed: {e}")
 

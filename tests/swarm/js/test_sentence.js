@@ -11,15 +11,25 @@ const humanize = fs.readFileSync(path.join(REPO, 'static/js/automation-humanize.
 
 // automation-humanize.js supplies DEVICE_ICON and deviceType; pull them in the
 // same way so the phrasing is exercised against the real device typing.
+// A re-export (`export { escapeHtml as esc };`) becomes a plain alias.
 function strip(text) {
-  return text.replace(/^import .*$/gm, '').replace(/^export /gm, '');
+  return text.replace(/^import .*$/gm, '')
+             .replace(/^export \{ (\w+) as (\w+) \};$/gm, 'const $2 = $1;')
+             .replace(/^export /gm, '');
 }
+
+// esc is utils.js's escapeHtml; the rest of that file needs a browser.
+const utils = fs.readFileSync(path.join(REPO, 'static/js/utils.js'), 'utf8');
+const escStart = utils.indexOf('export function escapeHtml(value) {');
+const escEnd = utils.indexOf('\n}', escStart);
+if (escStart < 0 || escEnd < 0) { console.error('could not find escapeHtml in utils.js'); process.exit(2); }
+const escapeHtmlSrc = strip(utils.slice(escStart, escEnd + 2));
 
 // deviceType() reads the shared device list off state.js for capability hints,
 // so it is stubbed with the same devices the humanizer is given.
 const m = { exports: {} };
 const STATE = { devices: [] };
-new Function('module', 'state', strip(humanize) + '\n' + strip(src) +
+new Function('module', 'state', escapeHtmlSrc + '\n' + strip(humanize) + '\n' + strip(src) +
   '\nmodule.exports = { createHumanizer, esc, deviceType };')(m, STATE);
 const { createHumanizer, esc } = m.exports;
 

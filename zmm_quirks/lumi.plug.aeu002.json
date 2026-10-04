@@ -39,7 +39,7 @@
         "cluster": "0x0B04",
         "attr": "0x050B",
         "multiplier": 1,
-        "divisor": 10
+        "divisor": 1
       },
       "rms_voltage": null,
       "rms_current": null,
@@ -64,7 +64,10 @@
         "name": "energy",
         "scale": 1
       },
-      "0x97": null
+      "0x97": {
+        "name": "voltage",
+        "scale": 1
+      }
     }
   },
   "meta": {

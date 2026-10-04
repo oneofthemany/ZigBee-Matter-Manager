@@ -120,8 +120,8 @@ def run() -> Checker:
         watts = lambda ep, raw: device_learning.capture(IEEE, 0x0104, 0x0B04, ep,
                                                         _report(0x050B, 0x21, raw.to_bytes(2, "little")))
         onoff(1, 1)
-        watts(1, 20000)
-        watts(2, 20010)                                # EP2 is socket 1's reading (+ USB)
+        watts(1, 2000)
+        watts(2, 2001)                                 # EP2 is socket 1's reading (+ USB)
         live = {r["ep"]: r for r in device_learning.state(dev)["live"]}
         c.check("while it runs, the load shows live on the socket under test",
                 live[1]["on"] is True and live[1]["power_w"] == 2000.0 and live[1]["moved"], live)
@@ -139,7 +139,7 @@ def run() -> Checker:
         c.check("the cross-talk is spelled out", "EP2 also showed the load on Socket 1" in notes, notes)
         c.check("and so is whether the reading stopped", "fell to 0 W" in notes, notes)
         c.check("and the kettle gives the scaling",
-                props["zmm.measurements.active_power"]["value"]["divisor"] == 10, props)
+                props["zmm.measurements.active_power"]["value"]["divisor"] == 1, props)
         order = [p["path"] for p in _step(st, key)["proposals"]]
         device_learning.decide(dev, key, [i for i, p in enumerate(order) if p])
         prov = _step(st, "metering_map")["proposals"]
@@ -156,8 +156,8 @@ def run() -> Checker:
             for e, _ in on_eps_values:
                 watts(e, 0)
             return asyncio.run(device_learning.finish(dev, k))
-        test(2, [(1, 15000), (3, 15000)], 1500)        # socket 2 shows on EP1 (total) and EP3
-        st = test(3, [(1, 100), (2, 100)], 10)         # USB shows on EP1 and EP2, with socket 1
+        test(2, [(1, 1500), (3, 1500)], 1500)          # socket 2 shows on EP1 (total) and EP3
+        st = test(3, [(1, 10), (2, 10)], 10)           # USB shows on EP1 and EP2, with socket 1
         m = {p["path"]: p["value"] for p in _step(st, "metering_map")["proposals"] if p["path"]}
         c.check("with every socket tested, the map is the outlet's real wiring",
                 m == {"endpoints.1.metering": "device_total", "endpoints.2.metering": "measures:1,3",

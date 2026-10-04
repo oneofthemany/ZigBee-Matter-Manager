@@ -586,8 +586,37 @@ class AqaraManufacturerCluster(ClusterHandler):
                 tags[tag] = (None, None)
             else:
                 scale = spec.get("scale", 1)
-                tags[tag] = (spec["name"], lambda v, k=scale: v * k)
+                # Blob floats are float32: 234.4 arrives as 234.4178009033203.
+                tags[tag] = (spec["name"], lambda v, k=scale:
+                             round(v * k, 2) if isinstance(v, float) else v * k)
         return tags, own
+
+    # Measurements an entry can name on a blob tag: (device class, unit).
+    _BLOB_SENSORS = {"voltage": ("voltage", "V"), "current": ("current", "A"),
+                     "power": ("power", "W"), "energy": ("energy", "kWh")}
+
+    def _blob_sensor_configs(self) -> List[Dict]:
+        """HA sensors for measurements the model's entry maps onto blob tags
+        and no standard cluster supplies. The blob is per device, so only the
+        lowest 0xFCC0 endpoint publishes them."""
+        peers = [k[0] for k in (getattr(self.device, "handlers", None) or {})
+                 if isinstance(k, tuple) and k[1] == self.CLUSTER_ID]
+        if peers and self.endpoint.endpoint_id != min(peers):
+            return []
+        tags, from_entry = self._struct_tags()
+        names = sorted({tags[t][0] for t in from_entry} & set(self._BLOB_SENSORS))
+        configs = []
+        for name in names:
+            if self._cluster_measures(name):
+                continue
+            device_class, unit = self._BLOB_SENSORS[name]
+            config = {"name": name.capitalize(), "device_class": device_class,
+                      "unit_of_measurement": unit,
+                      "value_template": f"{{{{ value_json.{name} }}}}"}
+            if name == "energy":
+                config["state_class"] = "total_increasing"
+            configs.append({"component": "sensor", "object_id": name, "config": config})
+        return configs
 
     def _forget_state(self, keys) -> None:
         """Drop keys from the device's state and its persisted cache."""
@@ -1417,10 +1446,10 @@ class AqaraManufacturerCluster(ClusterHandler):
 
     def get_discovery_configs(self) -> List[Dict]:
         """Generate Home Assistant discovery configs for Aqara features."""
-        configs = []
+        configs = self._blob_sensor_configs()
 
         # Only expose TRV features if device has HVAC capability
-        if hasattr(self.device, 'hvac') or any(h.CLUSTER_ID == 0x0201 for h in self.device.handlers.values()):
+        if hasattr(self.device, 'hvac') or any(getattr(h, 'CLUSTER_ID', None) == 0x0201 for h in self.device.handlers.values()):
 
             # READ-ONLY STATUS SENSORS
             configs.extend([

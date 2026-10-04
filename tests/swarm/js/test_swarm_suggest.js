@@ -17,9 +17,16 @@ function slice(startMark, endMark) {
   return src.slice(start, end + endMark.length);
 }
 
+// esc is utils.js's escapeHtml, imported under that name by the shipped file.
+const utils = fs.readFileSync(path.join(REPO, 'static/js/utils.js'), 'utf8');
+const escStart = utils.indexOf('export function escapeHtml(value) {');
+const escEnd = utils.indexOf('\n}', escStart);
+if (escStart < 0 || escEnd < 0) { console.error('could not find escapeHtml in utils.js'); process.exit(2); }
+
 const consts = slice('const CONFIDENCE_BADGE = {', '};')
              + '\n' + slice('const CATEGORY_ICON = {', '};')
-             + '\n' + slice('const esc = s =>', "}[c]));");
+             + '\n' + utils.slice(escStart, escEnd + 2).replace('export ', '')
+             + '\nconst esc = escapeHtml;';
 
 const fns = slice('export function sourcedBy(suggestions, ieee) {', '\n}')
                 .replace('export ', '')

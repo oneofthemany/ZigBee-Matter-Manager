@@ -845,7 +845,7 @@ function renderSocketsTable() {
           <tr>
             <td>${esc(s.name)}</td>
             <td class="text-end">${s.power_w != null ? Math.round(s.power_w) + ' W' : '<span class="text-muted">—</span>'}</td>
-            <td class="text-end">${s.kwh.toFixed(2)}</td>
+            <td class="text-end">${s.estimated ? '<span class="text-muted" title="Estimated from power readings">~</span>' : ''}${s.kwh.toFixed(2)}</td>
             ${hasCost ? `<td class="text-end">${s.cost_gbp != null ? '£' + s.cost_gbp.toFixed(2) : '—'}</td>` : ''}
           </tr>`).join('');
     return `

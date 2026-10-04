@@ -10,8 +10,9 @@ so the fake cluster records every bind, reporting write and read.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace as NS
 
-from harness import Checker
+from harness import REPO, Checker
 
 import modules.app_alerts as app_alerts
 from handlers import power
@@ -109,19 +110,20 @@ def run() -> Checker:
     c.check("socket 1 carries the device voltage and current",
             (polled.get("voltage"), polled.get("current")) == (242.0, 0.501), polled)
     h.cluster.read_attributes = _reads({h.ATTR_RMS_VOLTAGE: 1012})
-    real = app_alerts.raise_alert       # a fault raises an alert: keep it out of ./data
-    app_alerts.raise_alert = lambda *a, **k: None
-    try:
-        polled = asyncio.run(h.poll())
-    finally:
-        app_alerts.raise_alert = real
+    polled = asyncio.run(h.poll())
     c.check("an impossible voltage is blanked, not shown",
             polled.get("voltage_1") is None, polled)
+    # The fault raises a real alert; the harness's data dir must take it.
+    c.check("the alert it raises is written outside the repo's data dir",
+            app_alerts.ALERTS_FILE.exists()
+            and REPO / "data" not in app_alerts.ALERTS_FILE.resolve().parents,
+            app_alerts.ALERTS_FILE)
 
     c.section("a power report prompts a voltage and current read")
     clock = [1000.0]
-    real_clock = power.time.monotonic
-    power.time.monotonic = lambda: clock[0]
+    # Swap the handler's `time`, not time.monotonic: the event loop runs on that.
+    real_time = power.time
+    power.time = NS(monotonic=lambda: clock[0])
 
     async def _reports(model, *steps):
         """Feed power reports, advancing the clock by each step first."""
@@ -152,7 +154,7 @@ def run() -> Checker:
         reads, _ = asyncio.run(_reports("SmartPlug51AU", 0))
         c.check("a meter that reports them itself is not read", reads == [], reads)
     finally:
-        power.time.monotonic = real_clock
+        power.time = real_time
 
     h2, _, dev2 = _handler("DoubleSocket50AU", ep=2)
     h2.attribute_updated(h2.ATTR_ACTIVE_POWER, 12)

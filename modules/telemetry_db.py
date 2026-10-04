@@ -1820,6 +1820,44 @@ def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
     return [{"ieee": r[0], "day": r[1], "kwh": r[2]} for r in rows]
 
 
+#: Longest a power reading is held when integrating it to energy. State rows
+#: are written on change, so a reading stands until the next; past this the
+#: device is taken to have gone quiet rather than drawn a steady load.
+POWER_HOLD_SECONDS = 900
+
+
+def query_plug_energy_from_power_by_day(days: int = 7) -> List[Dict]:
+    """
+    Per-device daily kWh integrated from 'power' readings, for devices with
+    no 'energy' counter in the window. Same shape as query_plug_energy_by_day.
+    Runs in worker threads → per-call cursor, never the shared connection.
+    """
+    db = _get_db().cursor()
+    days = int(days)
+    rows = db.execute(f"""
+        WITH held AS (
+            SELECT ieee, ts, numeric_val AS watts,
+                   lead(ts) OVER (PARTITION BY ieee ORDER BY ts) AS until
+            FROM device_states
+            WHERE attribute = 'power' AND numeric_val IS NOT NULL
+              AND ts >= now() - INTERVAL '{days + 1} days'
+        )
+        SELECT ieee, date_trunc('day', ts) AS day,
+               sum(greatest(watts, 0)
+                   * least(epoch(coalesce(until, now()::TIMESTAMP) - ts), {POWER_HOLD_SECONDS}))
+                   / 3600000.0 AS kwh
+        FROM held
+        WHERE ts >= now() - INTERVAL '{days} days'
+          AND ieee NOT IN (
+              SELECT DISTINCT ieee FROM device_states
+              WHERE attribute = 'energy' AND numeric_val IS NOT NULL
+                AND ts >= now() - INTERVAL '{days + 1} days')
+        GROUP BY ieee, day
+        ORDER BY ieee, day ASC
+    """).fetchall()
+    return [{"ieee": r[0], "day": r[1], "kwh": r[2]} for r in rows]
+
+
 # MAINTENANCE
 
 def implausible_states(ieee: str, bounds: Dict[str, Tuple[Optional[float], Optional[float]]],

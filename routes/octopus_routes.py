@@ -42,6 +42,19 @@ def _friendly_name(dev, ieee: str) -> str:
     return getattr(dev, "friendly_name", None) or getattr(dev, "name", None) or ieee
 
 
+def _names_and_live_power(zs) -> tuple:
+    """({ieee: name}, {ieee: watts}) for every device the Zigbee service holds."""
+    names, live_power = {}, {}
+    friendly = getattr(zs, "friendly_names", None) or {}
+    for ieee, dev in (getattr(zs, "devices", None) or {}).items():
+        ieee = str(ieee)
+        names[ieee] = friendly.get(ieee) or _friendly_name(dev, ieee)
+        p = _live_power_w(dev)
+        if p is not None:
+            live_power[ieee] = p
+    return names, live_power
+
+
 def _device_state(dev) -> dict:
     """Device state dict — tolerant of dict-of-dicts and dict-of-objects."""
     state = dev.get("state") if isinstance(dev, dict) else getattr(dev, "state", None)
@@ -419,17 +432,15 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         """
         days, _ = _RANGES.get(range, _RANGES["week"])
         plug_rows = await _q(telemetry_db.query_plug_energy_by_day, days=days)
+        # Sockets with no energy counter: kWh integrated from their power history.
+        estimated_rows = await _q(telemetry_db.query_plug_energy_from_power_by_day, days=days)
+        estimated = {r["ieee"] for r in estimated_rows}
+        plug_rows = list(plug_rows) + list(estimated_rows)
 
         names, live_power = {}, {}
         if get_zigbee_service:
             try:
-                zs = get_zigbee_service()
-                devices = zs.get_all_devices_json() or {} if zs and hasattr(zs, "get_all_devices_json") else {}
-                for ieee, dev in devices.items():
-                    names[str(ieee)] = _friendly_name(dev, str(ieee))
-                    p = _live_power_w(dev)
-                    if p is not None:
-                        live_power[str(ieee)] = p
+                names, live_power = _names_and_live_power(get_zigbee_service())
             except Exception as e:
                 logger.debug(f"Device lookup failed: {e}")
 
@@ -458,15 +469,16 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         sockets = sorted(
             ({"ieee": ieee, "name": names.get(ieee, ieee),
               "kwh": round(kwh, 3), "cost_gbp": _cost(kwh),
-              "power_w": live_power.get(ieee)}
+              "power_w": live_power.get(ieee), "estimated": ieee in estimated}
              for ieee, kwh in per_device.items() if kwh > 0),
             key=lambda d: d["kwh"], reverse=True)
         # Energy-reporting sockets that show live power but no stored usage yet
+        listed = {s["ieee"] for s in sockets}
         for ieee, p in live_power.items():
-            if ieee not in per_device:
+            if ieee not in listed:
                 sockets.append({"ieee": ieee, "name": names.get(ieee, ieee),
                                 "kwh": 0.0, "cost_gbp": _cost(0.0) if rate_p is not None else None,
-                                "power_w": p})
+                                "power_w": p, "estimated": ieee in estimated})
 
         grid = await _q(telemetry_db.query_octopus_consumption_buckets,
                         "electricity", days=days, group_by="day")

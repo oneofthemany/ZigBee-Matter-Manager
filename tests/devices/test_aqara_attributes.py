@@ -165,8 +165,20 @@ def run() -> Checker:
         em = NS(_measured=lambda: [0x050B])             # power only, like its 0x0B04
         dev.handlers = {(1, 0x0B04): em, (1, 0x0702): object(), (1, 0xFCC0): h}
         h.attribute_updated(0x00F7, AEU002_F7)
-        c.check("tag 0x97 is unpublished: 234.4 reads as volts or as mA until a load test",
-                "voltage" not in dev.state and "current" not in dev.state, dev.state)
+        c.check("tag 0x97 is the mains voltage: 234.4 at 0 W cannot be a current",
+                dev.state.get("voltage") == 234.42 and "current" not in dev.state, dev.state)
+        sensors = {x["object_id"]: x["config"] for x in h.get_discovery_configs()}
+        c.check("Home Assistant gets a voltage sensor in volts",
+                sensors.get("voltage", {}).get("unit_of_measurement") == "V"
+                and sensors["voltage"]["value_template"] == "{{ value_json.voltage }}", sensors)
+        c.check("but none for energy, which the metering cluster already supplies",
+                "energy" not in sensors, sensors)
+        h3 = _handler()[0]
+        h3.device, h3.endpoint = dev, NS(endpoint_id=3)
+        dev.handlers[(3, 0xFCC0)] = h3
+        c.check("the same cluster on another endpoint does not publish it again",
+                h3.get_discovery_configs() == [], h3.get_discovery_configs())
+        del dev.handlers[(3, 0xFCC0)]
         c.check("tags the entry drops write nothing (no 281.6 Hz, no 0.1 V)",
                 "frequency" not in dev.state and "device_temperature" not in dev.state, dev.state)
         c.check("energy is left to the metering cluster", "energy" not in dev.state
