@@ -268,6 +268,13 @@ dialog h3{margin:0 0 .6rem;font-family:var(--mono);font-weight:400;
 dialog h3::before{content:"\2b21  "}
 dialog p{margin:.2rem 0 .6rem;font-size:.85rem;white-space:pre-line}
 dialog .drow{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.8rem}
+dialog.wide{max-width:46rem}
+dialog .scroll{max-height:45vh}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;font-size:.76rem;margin:.3rem 0 .6rem}
+.kv dt{color:var(--muted);font-family:var(--mono)}
+.kv dd{margin:0;overflow-wrap:anywhere}
+.btn.sm{padding:.12rem .5rem;font-size:.68rem;margin-left:auto}
+table.bk td.wrap{overflow-wrap:anywhere}
 dialog .remember{display:flex;align-items:center;gap:.4rem;margin-top:.5rem;
   font-size:.76rem;color:var(--muted)}
 dialog .remember input{accent-color:var(--honey)}
@@ -395,6 +402,13 @@ dialog .remember input{accent-color:var(--honey)}
       <button class="btn" onclick="runGC(this)">Prune old images</button>
     </div>
   </section>
+  <section class="card"><h2>Images <span class="hint">&mdash; everything on the host, and what uses it</span></h2>
+    <div id="imgSummary" class="muted">&hellip;</div>
+    <div class="scroll" id="imgScroll" hidden><table class="bk">
+      <thead><tr><th>image</th><th>size</th><th>created</th><th>used by</th></tr></thead>
+      <tbody id="imgRows"></tbody></table></div>
+    <div class="rowline" style="border:0"><button class="btn" onclick="openCleanup(this)">Clean up&hellip;</button></div>
+  </section>
   <section class="card"><h2>Logs <span class="hint">&mdash; watch the build and swap as it happens</span></h2>
     <div class="chips muted" id="logbtnsDeployment">&hellip;</div>
     <pre id="logviewDeployment" class="term"></pre>
@@ -510,6 +524,29 @@ dialog .remember input{accent-color:var(--honey)}
   </form>
 </dialog>
 
+<dialog id="dlgCleanup" class="wide">
+  <form method="dialog">
+    <h3>Clean up images</h3>
+    <p id="clIntro" class="muted"></p>
+    <div class="scroll"><table class="bk">
+      <thead><tr><th></th><th>image</th><th>size</th><th>why</th></tr></thead>
+      <tbody id="clRows"></tbody></table></div>
+    <p id="clTotal" class="muted"></p>
+    <div class="drow">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn danger" value="ok" id="clOk">Remove selected</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgDetail" class="wide">
+  <form method="dialog">
+    <h3 id="dtTitle">Container</h3>
+    <div id="dtBody" class="muted">&hellip;</div>
+    <div class="drow"><button class="btn" value="cancel">Close</button></div>
+  </form>
+</dialog>
+
 <dialog id="dlgConfirm">
   <form method="dialog">
     <h3 id="cfTitle">Confirm</h3>
@@ -523,7 +560,8 @@ dialog .remember input{accent-color:var(--honey)}
 
 <script>
 const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+ .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 let toastTimer=null;
 function toast(msg,cls){const t=$('toast');t.textContent=msg;
  t.setAttribute('role',cls==='err'?'alert':'status');
@@ -745,7 +783,8 @@ async function refresh(){
      const s=(x.state||'').toLowerCase();
      const cls=s==='running'?'s-ok':(s==='exited'||s==='dead'?'s-bad':'s-warn');
      return '<div class="rowline">'+dot(cls)+'<code>'+esc(x.name)+'</code>'+
-      '<span class="muted">'+esc(x.status||x.state||'')+'</span></div>';
+      '<span class="muted">'+esc(x.status||x.state||'')+'</span>'+
+      '<button class="btn sm" type="button" data-detail="'+esc(x.name)+'">details</button></div>';
     }).join('')||'<span class="muted">none found</span>';
   updateBeekeeper(d.beekeeper||{});
   const rec=d.recovery||{};
@@ -992,6 +1031,78 @@ async function loadHost(){
  }catch(e){}
  finally{setTimeout(loadHost,delay);}}
 loadHost();
+
+/* Images — inventory every 60s; clean-up previews the server's plan */
+const KIND={zmm:'ZMM',dangling:'untagged',other:'other'};
+function imgLabel(i){
+ return (i.tags[0]?'<code>'+esc(i.tags[0].replace(/^localhost\//,''))+'</code>'+
+   (i.tags.length>1?' <span class="muted">+'+(i.tags.length-1)+'</span>':'')
+  :'<code class="muted">'+esc(i.short_id)+'</code>')+
+  ' <span class="muted">'+KIND[i.kind]+(i.current?' · running':'')+'</span>';}
+function ageOf(t){return t?ago(Math.max(0,Math.round(Date.now()/1000-t))):'';}
+async function loadImages(){
+ try{
+  const d=await (await fetch('/images')).json();
+  if(!d.available){$('imgSummary').textContent=d.error||'unavailable';$('imgScroll').hidden=true;return;}
+  const im=d.images,total=im.reduce((a,i)=>a+i.size,0);
+  const n=k=>im.filter(i=>i.kind===k).length;
+  $('imgSummary').textContent=im.length+' images · '+fmtB(total)+' (layers are shared, so less on disk) · '+
+   n('zmm')+' ZMM, '+n('other')+' other, '+n('dangling')+' untagged';
+  $('imgScroll').hidden=!im.length;
+  $('imgRows').innerHTML=im.map(i=>'<tr><td class="wrap">'+imgLabel(i)+'</td><td class="muted">'+fmtB(i.size)+
+   '</td><td class="muted">'+ageOf(i.created)+'</td><td class="wrap">'+
+   (i.used_by.length?esc(i.used_by.join(', ')):'<span class="muted">—</span>')+'</td></tr>').join('');
+ }catch(e){}
+ finally{setTimeout(loadImages,60000);}}
+loadImages();
+
+async function openCleanup(btn){
+ btn.disabled=true;
+ let p;try{p=await (await fetch('/images/cleanup-plan')).json();}catch(e){p=null;}finally{btn.disabled=false;}
+ if(!p||!p.available){toast((p&&p.error)||'Could not build a clean-up plan','err');return;}
+ if(!p.candidates.length){toast('Nothing to clean up — every image is in use or kept','ok');return;}
+ $('clIntro').textContent='Keeps the newest '+p.retention_count+' ZMM versions, the rollback image, anything a '+
+  'container uses, and untagged layers under '+p.dangling_min_age_h+'h old. Unused non-ZMM images are listed but not ticked.';
+ $('clRows').innerHTML=p.candidates.map(c=>'<tr><td><input type="checkbox" class="clPick" value="'+esc(c.id)+
+  '" data-size="'+c.size+'"'+(c.default?' checked':'')+'></td><td class="wrap">'+imgLabel(c)+'</td><td class="muted">'+
+  fmtB(c.size)+'</td><td class="muted">'+esc(c.reason)+'</td></tr>').join('');
+ const sum=()=>{const sel=[...document.querySelectorAll('.clPick:checked')];
+  $('clTotal').textContent=sel.length+' selected · up to '+fmtB(sel.reduce((a,x)=>a+Number(x.dataset.size),0));
+  $('clOk').disabled=!sel.length;};
+ $('clRows').onchange=sum;sum();
+ const dlg=$('dlgCleanup');
+ const chosen=await new Promise(res=>{const done=()=>{dlg.removeEventListener('close',done);
+   res(dlg.returnValue==='ok'?[...document.querySelectorAll('.clPick:checked')].map(x=>x.value):null);};
+  dlg.addEventListener('close',done);dlg.showModal();});
+ if(!chosen||!chosen.length)return;
+ const r=await act('/images/cleanup',{ids:chosen},true);
+ if(!r)return;
+ toast(r.removed+' removed'+(r.failed?(', '+r.failed+' failed'):'')+' · up to '+fmtB(r.freed_bytes)+' freed',r.failed?'err':'ok');
+ loadImages();}
+
+document.addEventListener('click',e=>{const b=e.target.closest('[data-detail]');if(b)openDetail(b.dataset.detail);});
+async function openDetail(name){
+ const d=await authGet('/containers/'+encodeURIComponent(name)+'/detail');
+ if(!d)return;
+ if(d.error){toast(d.error,'err');return;}
+ const kv=rows=>'<dl class="kv">'+rows.filter(r=>r[1]!=null&&r[1]!=='').map(r=>'<dt>'+r[0]+'</dt><dd>'+r[1]+'</dd>').join('')+'</dl>';
+ const mem=d.memory_bytes!=null?fmtB(d.memory_bytes)+(d.memory_limit_bytes&&d.memory_limit_bytes<2**50?' of '+fmtB(d.memory_limit_bytes):''):null;
+ $('dtTitle').textContent=d.name;
+ $('dtBody').innerHTML=kv([
+   ['image','<code>'+esc(d.image)+'</code> <span class="muted">'+esc(d.image_id)+'</span>'],
+   ['state',esc(d.state)+(d.health?' · '+esc(d.health):'')],
+   ['started',esc((d.started_at||'').replace('T',' ').slice(0,19))],
+   ['restart',esc(d.restart_policy)+(d.restart_count?' · restarted '+d.restart_count+'×':'')],
+   ['network',esc(d.network_mode)],['ports',esc(d.ports.join(', '))],
+   ['cpu',d.cpu_percent!=null?d.cpu_percent+'%':null],['memory',mem],
+   ['command','<code>'+esc(d.command)+'</code>'],['devices',esc(d.devices.join(', '))]])+
+  (d.mounts.length?'<div class="scroll"><table class="bk"><thead><tr><th>mount</th><th>on host</th><th></th></tr></thead><tbody>'+
+   d.mounts.map(m=>'<tr><td class="wrap"><code>'+esc(m.destination)+'</code></td><td class="wrap muted">'+esc(m.source)+
+    '</td><td class="muted">'+(m.rw?'rw':'ro')+'</td></tr>').join('')+'</tbody></table></div>':'')+
+  (d.env.length?'<div class="scroll" style="margin-top:.5rem"><table class="bk"><thead><tr><th>environment</th><th></th></tr></thead><tbody>'+
+   d.env.map(v=>'<tr><td><code>'+esc(v.name)+'</code></td><td class="wrap'+(v.masked?' muted':'')+'">'+esc(v.value)+
+    '</td></tr>').join('')+'</tbody></table></div>':'');
+ $('dlgDetail').showModal();}
 
 /* AI models (Ollama) — 5s poll, 2s while a pull/update job runs */
 function fmtB(n){n=Number(n)||0;if(!n)return '0 B';

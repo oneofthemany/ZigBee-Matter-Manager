@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import (beekeeper, containers, host, logs, ollama, recovery,
+from manager import (beekeeper, containers, host, images, logs, ollama, recovery,
                      upgrade, watchdog)
 
 logging.basicConfig(level=logging.INFO,
@@ -181,6 +181,39 @@ async def upgrade_gc(authorization: str = Header(default="")):
     ok, msg = upgrade.run_gc()
     return JSONResponse({"success": ok, "message": msg},
                         status_code=200 if ok else 409)
+
+
+# Images and containers — inventory and plan reads are open like /status; deleting
+# images and container detail (environment values) need the token.
+
+@app.get("/images")
+async def images_inventory():
+    return await images.inventory()
+
+
+@app.get("/images/cleanup-plan")
+async def images_cleanup_plan():
+    return await images.cleanup_plan()
+
+
+@app.post("/images/cleanup")
+async def images_cleanup(data: dict = Body(...), authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return JSONResponse({"success": False, "error": "ids must be a list of image ids"}, status_code=400)
+    return await images.cleanup(ids)
+
+
+@app.get("/containers/{name}/detail")
+async def container_detail(name: str, authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    d = await images.container_detail(name)
+    if d is None:
+        return JSONResponse({"error": "no such container"}, status_code=404)
+    return d
 
 
 # Ollama: container status, model management, image update

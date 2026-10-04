@@ -17,7 +17,7 @@ from typing import Any, Dict
 
 import httpx
 
-from manager import containers, ollama
+from manager import beekeeper, containers, ollama
 
 logger = logging.getLogger("manager.watchdog")
 
@@ -275,6 +275,29 @@ async def _check_ollama(t: Dict[str, int]):
                     last_action="exhausted")
 
 
+async def _sync_beekeeper_image(t: Dict[str, Any]):
+    """Move a running Beekeeper sidecar onto the app's image after an upgrade.
+
+    Upgrades replace the app and manager but not the sidecar, so it kept running
+    the old image (and pinned it against GC). One attempt per app image, so a
+    failing recreate isn't retried every tick."""
+    if _upgrade_in_progress() or _test_deploy_active():
+        return
+    app_info = await containers.inspect_container(containers.APP_CONTAINER)
+    bk_info = await containers.inspect_container(beekeeper.BEEKEEPER_CONTAINER)
+    if not app_info or not bk_info or not (bk_info.get("State") or {}).get("Running"):
+        return
+    app_image = app_info.get("Image")
+    if not app_image or app_image == bk_info.get("Image") or t.get("tried") == app_image:
+        return
+    t["tried"] = app_image
+    res = await beekeeper.enable()       # recreates from the app's image when they differ
+    if res.get("success"):
+        logger.info("Beekeeper moved to the app's image %s", app_image[:19])
+    else:
+        logger.warning("Beekeeper image sync failed: %s", res.get("error"))
+
+
 async def run_loop():
     """The watchdog loop. Cancel-safe; runs for the lifetime of the manager."""
     if os.environ.get("ZMM_WATCHDOG_DISABLED"):
@@ -287,6 +310,7 @@ async def run_loop():
                 INTERVAL, STARTUP_GRACE, FAIL_THRESHOLD, MAX_RESTARTS)
     app_t = {"streak": 0, "restarts": 0}
     ollama_t = {"streak": 0, "restarts": 0}
+    beekeeper_t: Dict[str, Any] = {}
     async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
         while True:
             await asyncio.sleep(INTERVAL)
@@ -303,3 +327,9 @@ async def run_loop():
                 raise
             except Exception as e:
                 logger.warning("Watchdog ollama-check error: %s", e)
+            try:
+                await _sync_beekeeper_image(beekeeper_t)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Watchdog beekeeper-sync error: %s", e)
