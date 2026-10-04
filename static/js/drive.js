@@ -4,6 +4,9 @@
    See docs/journeys.md. */
 
 import { createChart } from './chart-utils.js';
+import { whileVisible } from './utils.js';
+import { LAYERS, layerColour, findStops, findPeaks, nearestIndex,
+         terrainOf, terrainSummary, terrainRuns } from './drive-track.js';
 
 (function () {
     'use strict';
@@ -278,6 +281,7 @@ import { createChart } from './chart-utils.js';
         bindDriverHandlers();
         bindFuelHandlers();
         bindHistoryHandlers();
+        renderLive();
 
         host.querySelectorAll('[data-drive-pane]').forEach(function (btn) {
             btn.addEventListener('shown.bs.tab', function () {
@@ -422,7 +426,7 @@ import { createChart } from './chart-utils.js';
                 '<i class="fas fa-rotate"></i></button>' +
             '</div>' +
           '</div>' +
-          '<div class="card-body">' + tiles + body + '</div>' +
+          '<div class="card-body"><div id="drive-live"></div>' + tiles + body + '</div>' +
         '</div>';
     }
 
@@ -505,6 +509,18 @@ import { createChart } from './chart-utils.js';
         '<div id="trip-map-wrap-' + escape(t.trip_id) + '" class="mt-2"></div>';
     }
 
+    // The counts are what happened; the score takes each event less the part
+    // the hill did (journeys.md §Slope weighting). Said only when they differ.
+    function slopeScored(t) {
+        var w = t.weighted_event_count;
+        if (w == null || t.harsh_event_count == null || w > t.harsh_event_count - 0.05) return '';
+        return '<br><span class="text-muted">scored as ' + w.toFixed(1) + ' after slope</span>';
+    }
+
+    function slopeForgiven(e) {
+        return e.slope_weight != null && e.slope_weight < 0.995;
+    }
+
     /**
      * The inertial half of a trip. Absent entirely when the phone had no
      * motion sensing, rather than shown as a row of dashes: a trip recorded
@@ -529,7 +545,7 @@ import { createChart } from './chart-utils.js';
         '<div class="row g-2">' +
           cell('Driving style', fmtScore(t.smoothness_score) +
                '<span class="text-muted"> / 100</span>', 'fw-bold') +
-          cell('Harsh events', counts) +
+          cell('Harsh events', counts + slopeScored(t)) +
           cell('Peak braking', fmtG(t.max_brake_mps2)) +
           cell('Peak acceleration', fmtG(t.max_accel_mps2)) +
           cell('Peak cornering', fmtG(t.max_lat_mps2)) +
@@ -612,8 +628,11 @@ import { createChart } from './chart-utils.js';
             // happened while the row was collapsed the map is sized to zero
             // and renders as grey; re-measuring on every expand is the
             // documented fix and costs nothing when the size is unchanged.
-            var existing = mapRegistry[tripId];
-            if (existing) setTimeout(function () { existing.invalidateSize(); }, 0);
+            var existing = tripViews[tripId];
+            if (existing) setTimeout(function () {
+                existing.map.invalidateSize();
+                if (existing.chart) existing.chart.resize();
+            }, 0);
             return;
         }
         host.dataset.loaded = '1';
@@ -650,7 +669,9 @@ import { createChart } from './chart-utils.js';
                      '-emphasis border border-' + k.cls + '-subtle">' +
                        '<i class="fas ' + k.icon + ' me-1"></i>' +
                        escape(k.label) + ' ' + fmtG(e.peak_mps2) +
-                       ' <span class="opacity-75">@ ' + into + ' min</span>' +
+                       ' <span class="opacity-75">@ ' + into + ' min' +
+                       (slopeForgiven(e) ? ' · counts ' + Math.round(e.slope_weight * 100) + '%' : '') +
+                       '</span>' +
                      '</span>';
           }).join('') +
           '</div>' +
@@ -698,9 +719,10 @@ import { createChart } from './chart-utils.js';
                '</div>';
     }
 
-    // Live Leaflet instances, keyed by trip. Kept so an expand can re-measure
-    // one rather than build a second on top of it.
-    var mapRegistry = {};
+    // Per-trip map state, keyed by trip: the Leaflet map, its timeline chart
+    // and what is drawn on them. Kept so an expand can re-measure one rather
+    // than build a second on top of it.
+    var tripViews = {};
 
     /**
      * Tear down every trip map before the host's innerHTML is replaced.
@@ -709,23 +731,136 @@ import { createChart } from './chart-utils.js';
      * container, so dropping the container's markup leaves those live and the
      * instance uncollectable. Every refresh, delete or sub-tab switch
      * re-renders, so leaking one map per expanded row adds up over a session.
+     * The timeline chart holds a ResizeObserver and goes the same way.
      */
     function disposeTripMaps() {
-        Object.keys(mapRegistry).forEach(function (id) {
-            try { mapRegistry[id].remove(); } catch (e) { /* already gone */ }
+        Object.keys(tripViews).forEach(function (id) {
+            var v = tripViews[id];
+            try { v.map.remove(); } catch (e) { /* already gone */ }
+            if (v.chart) v.chart.dispose();
         });
-        mapRegistry = {};
+        tripViews = {};
+    }
+
+    // What the route is coloured by. 'style' is the RAG banding above; the
+    // rest are drive-track.js LAYERS. One choice for every trip, remembered,
+    // so comparing two journeys doesn't mean re-picking it on each.
+    var mapLayerKey = 'zbm-drive-map-layer';
+    var STYLE_LAYER = { label: 'Style', icon: 'fa-car-side' };
+
+    function getMapLayer() {
+        try {
+            var v = localStorage.getItem(mapLayerKey);
+            if (v === 'style' || LAYERS[v]) return v;
+        } catch (e) {}
+        return 'style';
+    }
+
+    function minutesInto(view, ts) {
+        return Math.max(0, Math.round((ts - view.start) / 60));
+    }
+
+    // Value behind track point i on the active layer: m/s² severity for
+    // 'style', the layer's display unit otherwise. Null is "not measured".
+    function layerValue(view, i) {
+        var layer = LAYERS[view.layer];
+        if (layer) return layer.value(view.track[i]);
+        var sev = pointSeverity(view.track[i]);
+        var ev = view.evSeg[i];
+        return ev != null && (sev == null || ev > sev) ? ev : sev;
+    }
+
+    function fmtLayerValue(view, v) {
+        if (v == null) return 'No data';
+        var layer = LAYERS[view.layer];
+        return layer ? v.toFixed(layer.decimals) + ' ' + layer.unit : fmtG(v);
+    }
+
+    // Blue down, orange up — the Hills ramp's two ends, so the slope reads the
+    // same on the timeline, in the breakdown and on the map.
+    var TERRAIN = {
+        up:    { label: 'Uphill',   icon: 'fa-arrow-trend-up',   colour: LAYERS.gradient.ramp[2] },
+        level: { label: 'Level',    icon: 'fa-arrow-right-long', colour: LAYERS.gradient.ramp[1] },
+        down:  { label: 'Downhill', icon: 'fa-arrow-trend-down', colour: LAYERS.gradient.ramp[0] }
+    };
+
+    // Which way the road was going at a fix, for hover text on the other
+    // layers. Empty on Hills, where the value already says it, and wherever
+    // the gradient is unknown.
+    function slopeNote(view, p) {
+        var s = view.layer === 'gradient' ? '' : slopeText(p);
+        return s ? ' · ' + s : '';
+    }
+
+    function slopeText(p) {
+        var kind = terrainOf(p);
+        if (!kind) return '';
+        if (kind === 'level') return 'level';
+        return (kind === 'up' ? '↑ ' : '↓ ') +
+               Math.abs(p.gradient_pct).toFixed(1) + '% ' + (kind === 'up' ? 'climb' : 'descent');
+    }
+
+    // On a pin, the slope is context for the figure: braking on a descent is
+    // a different event from the same braking on the level.
+    function slopeLine(p) {
+        var s = slopeText(p);
+        return s ? '<br><span style="opacity:.75">Road: ' + s + '</span>' : '';
     }
 
     /**
-     * Draw the route, coloured green/amber/red by how it was driven, with a
-     * pin at every logged event.
+     * How the trip's speed, braking and acceleration split across uphill,
+     * level and downhill road. Absent without a barometer: three dashes would
+     * read as a flat drive.
+     */
+    function terrainBreakdown(view) {
+        var t = terrainSummary(view.track);
+        if (!t.up && !t.level && !t.down) return '';
+
+        var harsh = {};
+        (view.trip.events || []).forEach(function (e) {
+            var kind = e.ts == null ? null
+                : terrainOf(view.track[nearestIndex(view.track, e.ts)]);
+            if (kind) harsh[kind] = (harsh[kind] || 0) + 1;
+        });
+        function peaks(c, n) {
+            if (c.max_brake_mps2 == null && c.max_accel_mps2 == null && !n) return '';
+            return '<br><span class="text-nowrap"><span class="text-muted">Brake</span> ' +
+                     fmtG(c.max_brake_mps2) + '</span> ' +
+                   '<span class="text-nowrap"><span class="text-muted">Accel</span> ' +
+                     fmtG(c.max_accel_mps2) + '</span>' +
+                   (n ? '<br><span class="text-danger text-nowrap">' + n + ' harsh event' +
+                        (n === 1 ? '' : 's') + '</span>' : '');
+        }
+        var cells = ['up', 'level', 'down'].map(function (k) {
+            var c = t[k], m = TERRAIN[k];
+            return '<div class="col-4">' +
+                     '<span class="text-nowrap" style="color:' + m.colour + '">' +
+                       '<i class="fas ' + m.icon + ' me-1"></i><strong>' + m.label + '</strong></span><br>' +
+                     (c ? fmtMph(c.avg_speed_mps) + '<br><span class="text-muted">' +
+                          fmtMiles(c.distance_m) + '</span>' + peaks(c, harsh[k])
+                        : '<span class="text-muted">—</span>') +
+                   '</div>';
+        }).join('');
+        return '<div class="mt-2"><strong>By terrain</strong>' +
+                 '<div class="row g-2 mt-0">' + cells + '</div>' +
+                 (t.unknown_s >= 60
+                   ? '<div class="text-muted mt-1" style="font-size:.75rem">' +
+                     fmtDuration(t.unknown_s) + ' not classified — no gradient reading ' +
+                     '(below about 11 mph, or no barometer).</div>'
+                   : '') +
+               '</div>';
+    }
+
+    /**
+     * Draw the route with a selectable colouring — driving style, speed, road
+     * surface or gradient — pins for events, peaks and stops, and a timeline
+     * of the same quantity underneath. docs/journeys.md §Map layers.
      *
      * The track is admin-only on the API (coordinates are a tighter privacy
      * boundary than behaviour — see journey_routes.py), so a non-admin gets
      * the events and the summary and simply no map.
      */
-    function renderTripMap(tripId, trip) {
+    function renderTripMap(tripId, trip, live) {
         var wrap = document.getElementById('trip-map-wrap-' + tripId);
         if (!wrap) return;
 
@@ -739,69 +874,205 @@ import { createChart } from './chart-utils.js';
             return;
         }
 
+        var active = getMapLayer();
+        var buttons = ['style'].concat(Object.keys(LAYERS)).map(function (id) {
+            var l = LAYERS[id] || STYLE_LAYER;
+            return '<button type="button" class="btn btn-outline-secondary' +
+                     (id === active ? ' active' : '') + '" data-map-layer="' + id + '">' +
+                     '<i class="fas ' + l.icon + ' me-1"></i>' + l.label + '</button>';
+        }).join('');
+
         var mapId = 'trip-map-' + tripId;
+        // flex-wrap throughout: at phone width the picker drops under the
+        // heading and the legend under the picker rather than overflowing.
         wrap.innerHTML =
-          '<div class="d-flex justify-content-between align-items-center mb-1">' +
+          '<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">' +
             '<strong>Route</strong>' +
-            '<span class="small">' +
-              legendSwatch('green', 'Smooth') + legendSwatch('amber', 'Firm') +
-              legendSwatch('red', 'Harsh') + legendSwatch('none', 'No data') +
-            '</span>' +
+            '<div class="btn-group btn-group-sm" role="group" aria-label="Colour the route by">' +
+              buttons + '</div>' +
           '</div>' +
-          '<div id="' + mapId + '" style="height:320px" class="rounded border"></div>';
+          '<div class="small mb-1" data-map-legend></div>' +
+          '<div id="' + mapId + '" style="height:320px" class="rounded border"></div>' +
+          '<div class="d-flex flex-wrap gap-1 mt-2" data-map-toggles></div>' +
+          '<div class="mt-2 d-flex flex-wrap justify-content-between align-items-baseline gap-2">' +
+            '<strong data-map-chart-title></strong>' +
+            '<span class="small d-none" data-map-chart-key>' +
+              ['up', 'down'].map(function (k) {
+                  return '<span class="text-nowrap ms-2"><span style="display:inline-block;width:12px;' +
+                         'height:10px;opacity:.35;vertical-align:middle;background:' + TERRAIN[k].colour +
+                         '"></span> <span class="text-muted">' + TERRAIN[k].label + '</span></span>';
+              }).join('') +
+            '</span></div><div>' +
+            '<div data-map-chart style="height:130px"></div></div>' +
+          '<div data-map-terrain></div>';
 
         var map = L.map(mapId, { scrollWheelZoom: false });
-        mapRegistry[tripId] = map;
         L.tileLayer('/api/map/tiles/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" ' +
                          'target="_blank" rel="noopener">OpenStreetMap</a> contributors',
         }).addTo(map);
+        // Pins get their own pane above the route: the route is redrawn on
+        // every layer switch, and in a shared pane it would land on top.
+        map.createPane('tripPins').style.zIndex = 450;
+        // Stops are the most numerous pin and the least urgent, so they sit
+        // under events rather than in the default marker pane above them.
+        map.createPane('tripStops').style.zIndex = 440;
 
-        // One polyline per segment rather than one per trip: the colour is a
-        // property of the stretch of road, and a single line can only carry
-        // one. A drive is a few hundred segments, which Leaflet handles
-        // comfortably.
-        var bounds = [];
-        var evSeg = eventSeverityBySegment(trip, track);
-        for (var i = 1; i < track.length; i++) {
-            var a = track[i - 1], b = track[i];
-            var sev = pointSeverity(b);
-            if (evSeg[i] != null && (sev == null || evSeg[i] > sev)) sev = evSeg[i];
-            var band = ragBand(sev);
-            L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
-                color: RAG_COLOURS[band],
-                weight: band === 'green' ? 4 : 6,
-                opacity: band === 'none' ? 0.5 : 0.9,
-            }).addTo(map);
-            bounds.push([a.lat, a.lon]);
-        }
-        bounds.push([track[track.length - 1].lat, track[track.length - 1].lon]);
+        var view = tripViews[tripId] = {
+            map: map, wrap: wrap, trip: trip, track: track,
+            start: trip.started_at || track[0].ts,
+            layer: active,
+            evSeg: eventSeverityBySegment(trip, track),
+            segs: L.layerGroup().addTo(map),
+            groups: {}, hidden: {}, cursor: null, chart: null,
+            // Live only: keep the car in view until the user moves the map.
+            now: null, follow: !!live,
+        };
 
         // Start and end, so the direction of travel is never ambiguous.
         L.circleMarker([track[0].lat, track[0].lon], {
-            radius: 6, color: '#fff', weight: 2,
+            radius: 6, color: '#fff', weight: 2, pane: 'tripPins',
             fillColor: '#198754', fillOpacity: 1,
         }).addTo(map).bindPopup('Start');
         var last = track[track.length - 1];
-        L.circleMarker([last.lat, last.lon], {
-            radius: 6, color: '#fff', weight: 2,
-            fillColor: '#212529', fillOpacity: 1,
-        }).addTo(map).bindPopup('End');
+        if (live) {
+            view.now = L.circleMarker([last.lat, last.lon], {
+                radius: 9, color: '#fff', weight: 3, pane: 'tripPins',
+                fillColor: '#0d6efd', fillOpacity: 1,
+            }).addTo(map).bindPopup('Now');
+            map.on('dragstart', function () { view.follow = false; renderMarkerToggles(view); });
+        } else {
+            L.circleMarker([last.lat, last.lon], {
+                radius: 6, color: '#fff', weight: 2, pane: 'tripPins',
+                fillColor: '#212529', fillOpacity: 1,
+            }).addTo(map).bindPopup('End');
+        }
 
-        addEventMarkers(map, trip, track);
+        drawPins(view);
 
+        wrap.querySelectorAll('[data-map-layer]').forEach(function (btn) {
+            btn.onclick = function () {
+                view.layer = btn.getAttribute('data-map-layer');
+                try { localStorage.setItem(mapLayerKey, view.layer); } catch (e) {}
+                wrap.querySelectorAll('[data-map-layer]').forEach(function (b) {
+                    b.classList.toggle('active', b === btn);
+                });
+                drawTripLayer(view);
+            };
+        });
+
+        drawTripLayer(view);
+        bindChartCursor(view);
+
+        var bounds = track.map(function (p) { return [p.lat, p.lon]; });
         map.fitBounds(bounds, { padding: [20, 20] });
         // Same reason as the re-expand path: the container may still be
         // hidden when Leaflet first measures it.
         setTimeout(function () { map.invalidateSize(); map.fitBounds(bounds, { padding: [20, 20] }); }, 60);
     }
 
+    // Everything derived from the track alone. Rebuilt whole on a live update:
+    // a peak moves when a harder one is set, so appending would go stale.
+    function drawPins(view) {
+        Object.keys(view.groups).forEach(function (id) { view.map.removeLayer(view.groups[id]); });
+        view.wrap.querySelector('[data-map-terrain]').innerHTML = terrainBreakdown(view);
+        view.groups.events = eventMarkers(view);
+        view.groups.peaks = peakMarkers(view);
+        view.groups.stops = stopMarkers(view);
+        renderMarkerToggles(view);
+    }
+
+    /** Fold a newer copy of a live trip into its existing map and timeline. */
+    function updateLiveView(view, trip) {
+        var track = (trip.track || []).filter(function (p) {
+            return p.lat != null && p.lon != null;
+        });
+        if (track.length < 2) return;
+        view.trip = trip;
+        view.track = track;
+        view.evSeg = eventSeverityBySegment(trip, track);
+        drawPins(view);
+        drawTripLayer(view);
+        var last = track[track.length - 1];
+        view.now.setLatLng([last.lat, last.lon]);
+        if (view.follow) view.map.panTo([last.lat, last.lon]);
+    }
+
+    // Everything that depends on the active layer: route, legend, timeline.
+    function drawTripLayer(view) {
+        view.wrap.querySelector('[data-map-legend]').innerHTML = mapLegend(view);
+        drawSegments(view);
+        renderTripChart(view);
+    }
+
+    // One polyline per segment rather than one per trip: the colour is a
+    // property of the stretch of road, and a single line can only carry one.
+    // A drive is a few hundred segments, which Leaflet handles comfortably.
+    function drawSegments(view) {
+        var layer = LAYERS[view.layer];
+        var domain = layer && layer.domain(view.track);
+        view.segs.clearLayers();
+        for (var i = 1; i < view.track.length; i++) {
+            var a = view.track[i - 1], b = view.track[i];
+            var v = layerValue(view, i);
+            var band = layer ? null : ragBand(v);
+            L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+                color: layer ? layerColour(layer, domain, v) : RAG_COLOURS[band],
+                weight: band === 'green' ? 4 : layer ? 5 : 6,
+                opacity: v == null ? 0.5 : 0.9,
+            }).bindTooltip(fmtLayerValue(view, v) + slopeNote(view, b) + ' · ' +
+                           minutesInto(view, b.ts) + ' min in',
+                           { sticky: true })
+              .addTo(view.segs);
+        }
+    }
+
     function legendSwatch(band, label) {
-        return '<span class="ms-2 text-nowrap">' +
+        return '<span class="text-nowrap">' +
                  '<span style="display:inline-block;width:14px;height:4px;' +
                    'background:' + RAG_COLOURS[band] + ';vertical-align:middle"></span> ' +
                  '<span class="text-muted">' + label + '</span></span>';
+    }
+
+    // Swatches for the banded style layer; a gradient bar with the trip's own
+    // scale for a continuous one. "No data" is on both — grey is never a value.
+    function mapLegend(view) {
+        var layer = LAYERS[view.layer];
+        var body;
+        if (!layer) {
+            body = legendSwatch('green', 'Smooth') + legendSwatch('amber', 'Firm') +
+                   legendSwatch('red', 'Harsh');
+        } else {
+            var d = layer.domain(view.track);
+            var ticks = view.layer === 'gradient'
+                ? ['↓ ' + d[1] + '%', 'level', '↑ ' + d[1] + '%']
+                : [d[0], (d[0] + d[1]) / 2, d[1] + ' ' + layer.unit];
+            body =
+              '<span style="flex:1 1 9rem;max-width:18rem">' +
+                '<span style="display:block;height:8px;border-radius:4px;background:' +
+                  'linear-gradient(to right,' + layer.ramp.join(',') + ')"></span>' +
+                '<span class="d-flex justify-content-between text-muted" style="font-size:.75rem">' +
+                  ticks.map(function (t) { return '<span>' + t + '</span>'; }).join('') +
+                '</span>' +
+              '</span>';
+        }
+        return '<div class="d-flex flex-wrap align-items-center justify-content-end gap-3">' +
+                 body + legendSwatch('none', 'No data') + '</div>';
+    }
+
+    function pinIcon(icon, colour, size) {
+        size = size || 22;
+        return L.divIcon({
+            className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+            popupAnchor: [0, -size / 2],
+            html: '<span style="display:flex;align-items:center;justify-content:center;' +
+                    'width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:#fff;' +
+                    'border:2px solid ' + colour + ';color:' + colour + ';' +
+                    'font-size:' + size / 2 + 'px;' +
+                    'box-shadow:0 1px 3px rgba(0,0,0,.4)">' +
+                    '<i class="fas ' + icon + '"></i></span>'
+        });
     }
 
     /**
@@ -812,31 +1083,359 @@ import { createChart } from './chart-utils.js';
      * At the 10 s drive cadence that is within a few car lengths, which is
      * ample for "this junction" and is the honest resolution to claim.
      */
-    function addEventMarkers(map, trip, track) {
-        (trip.events || []).forEach(function (e) {
+    function eventMarkers(view) {
+        var group = L.layerGroup(), track = view.track;
+        (view.trip.events || []).forEach(function (e) {
             if (e.ts == null) return;
-            var best = null, bestGap = Infinity;
-            for (var i = 0; i < track.length; i++) {
-                var gap = Math.abs(track[i].ts - e.ts);
-                if (gap < bestGap) { bestGap = gap; best = track[i]; }
-            }
+            var best = track[nearestIndex(track, e.ts)];
             // Further from any fix than the gap the closer tolerates means the
             // track has a hole here and the position would be a guess.
-            if (!best || bestGap > 60) return;
+            if (!best || Math.abs(best.ts - e.ts) > 60) return;
 
             var k = eventKinds[e.kind] || eventKinds.harsh;
             var colour = e.kind === 'brake' ? RAG_COLOURS.red : RAG_COLOURS.amber;
-            var into = Math.max(0, Math.round((e.ts - (trip.started_at || e.ts)) / 60));
             L.circleMarker([best.lat, best.lon], {
-                radius: 8, color: '#fff', weight: 2,
+                radius: 8, color: '#fff', weight: 2, pane: 'tripPins',
                 fillColor: colour, fillOpacity: 1,
-            }).addTo(map).bindPopup(
+            }).addTo(group).bindPopup(
                 '<strong>' + escape(k.label) + '</strong><br>' +
                 fmtG(e.peak_mps2) + ' peak · ' +
                 (e.duration_s == null ? '' : e.duration_s.toFixed(1) + ' s · ') +
-                into + ' min into the trip'
+                minutesInto(view, e.ts) + ' min into the trip' + slopeLine(best) +
+                (slopeForgiven(e)
+                    ? '<br>Counts ' + Math.round(e.slope_weight * 100) + '% toward the score — ' +
+                      'the ' + (e.gradient_pct > 0 ? 'climb' : 'descent') + ' did the rest'
+                    : '')
             );
         });
+        return group;
+    }
+
+    // Where the trip's peak braking / acceleration / cornering figures were
+    // set. Shown however gentle they are: on a smooth drive there are no
+    // events to pin, and "where was my hardest stop" still has an answer.
+    function peakMarkers(view) {
+        var group = L.layerGroup();
+        var peaks = findPeaks(view.track);
+        [['brake', 'Peak braking', RAG_COLOURS.red],
+         ['accel', 'Peak acceleration', RAG_COLOURS.amber],
+         ['corner', 'Peak cornering', RAG_COLOURS.amber]].forEach(function (k) {
+            var pk = peaks[k[0]];
+            if (!pk) return;
+            L.marker([pk.point.lat, pk.point.lon], { icon: pinIcon(eventKinds[k[0]].icon, k[2]) })
+                .addTo(group).bindPopup(
+                    '<strong>' + k[1] + '</strong><br>' + fmtG(pk.value) + ' · ' +
+                    minutesInto(view, pk.point.ts) + ' min into the trip' + slopeLine(pk.point));
+        });
+        return group;
+    }
+
+    // fmtDuration rounds to minutes, which turns most junction waits into "0 min".
+    function fmtIdle(s) {
+        if (!s) return 'Stopped briefly';
+        return 'Idled for ' + (s < 90 ? Math.round(s) + ' s' : fmtDuration(s));
+    }
+
+    function stopMarkers(view) {
+        var group = L.layerGroup();
+        findStops(view.track).forEach(function (s) {
+            L.marker([s.lat, s.lon], { icon: pinIcon('fa-pause', '#495057', 16),
+                                       pane: 'tripStops' })
+                .addTo(group).bindPopup(
+                    '<strong>Stop</strong><br>' + fmtIdle(s.idle_s) + ' · ' +
+                    minutesInto(view, s.ts) + ' min into the trip');
+        });
+        return group;
+    }
+
+    var MARKER_GROUPS = [
+        { id: 'events', label: 'Harsh events', icon: 'fa-triangle-exclamation' },
+        { id: 'peaks', label: 'Peaks', icon: 'fa-arrow-up-wide-short' },
+        { id: 'stops', label: 'Stops', icon: 'fa-pause' },
+    ];
+
+    // A chip per non-empty pin group, all on to begin with. Nine stops and a
+    // handful of events on a short route is clutter someone has to be able
+    // to clear.
+    function renderMarkerToggles(view) {
+        var host = view.wrap.querySelector('[data-map-toggles]');
+        host.innerHTML = MARKER_GROUPS.map(function (g) {
+            var n = view.groups[g.id].getLayers().length;
+            if (!n) return '';
+            var on = !view.hidden[g.id];
+            if (on) view.groups[g.id].addTo(view.map);
+            return '<button type="button" class="btn btn-sm btn-outline-secondary' +
+                     (on ? ' active' : '') + '" ' +
+                     'aria-pressed="' + on + '" data-map-toggle="' + g.id + '">' +
+                     '<i class="fas ' + g.icon + ' me-1"></i>' + g.label +
+                     ' <span class="badge text-bg-secondary">' + n + '</span></button>';
+        }).join('') + (view.now
+            ? '<button type="button" class="btn btn-sm btn-outline-primary' +
+              (view.follow ? ' active' : '') + '" aria-pressed="' + view.follow + '" data-map-follow>' +
+              '<i class="fas fa-location-crosshairs me-1"></i>Follow</button>'
+            : '');
+        var follow = host.querySelector('[data-map-follow]');
+        if (follow) follow.onclick = function () {
+            view.follow = !view.follow;
+            if (view.follow) view.map.panTo(view.now.getLatLng());
+            renderMarkerToggles(view);
+        };
+        host.querySelectorAll('[data-map-toggle]').forEach(function (btn) {
+            btn.onclick = function () {
+                var id = btn.getAttribute('data-map-toggle');
+                var group = view.groups[id];
+                var on = !view.map.hasLayer(group);
+                view.hidden[id] = !on;
+                if (on) group.addTo(view.map); else view.map.removeLayer(group);
+                btn.classList.toggle('active', on);
+                btn.setAttribute('aria-pressed', String(on));
+            };
+        });
+    }
+
+    var G = 9.80665;
+
+    /**
+     * The active layer against time into the trip, in the map's own colours,
+     * so a stretch of line on one is recognisably the same stretch on the other.
+     */
+    function renderTripChart(view) {
+        var el = view.wrap.querySelector('[data-map-chart]');
+        if (!view.chart) view.chart = createChart(el);
+        if (!view.chart) return;
+
+        var layer = LAYERS[view.layer];
+        var domain = layer && layer.domain(view.track);
+        view.wrap.querySelector('[data-map-chart-title]').textContent = layer
+            ? layer.title + ' (' + layer.unit + ')'
+            : 'Acceleration over the journey (g)';
+
+        var data = view.track.map(function (p, i) {
+            var v = layerValue(view, i);
+            return [(p.ts - view.start) / 60, v == null || layer ? v : v / G];
+        });
+
+        // Climbs and descents shaded behind the line, so a dip in speed can be
+        // read against the hill that caused it. Redundant on Hills itself.
+        var shading = view.layer === 'gradient' ? [] : terrainRuns(view.track).map(function (r) {
+            return [{ xAxis: (r.from - view.start) / 60,
+                      itemStyle: { color: TERRAIN[r.kind].colour, opacity: 0.13 } },
+                    { xAxis: (r.to - view.start) / 60 }];
+        });
+        view.wrap.querySelector('[data-map-chart-key]').classList.toggle('d-none', !shading.length);
+
+        view.chart.setOption({
+            animation: false,
+            grid: { left: 40, right: 24, top: 10, bottom: 24 },
+            tooltip: {
+                trigger: 'axis',
+                formatter: function (params) {
+                    var d = params[0].data;
+                    var v = d[1] == null ? null : layer ? d[1] : d[1] * G;
+                    return Math.round(d[0]) + ' min · ' + fmtLayerValue(view, v) +
+                           slopeNote(view, view.track[params[0].dataIndex]);
+                },
+            },
+            xAxis: {
+                type: 'value', min: 0, max: 'dataMax',
+                axisLabel: { formatter: function (v) { return Math.round(v) + ' min'; } },
+            },
+            yAxis: layer
+                ? { type: 'value', min: domain[0], max: domain[1],
+                    interval: (domain[1] - domain[0]) / 2 }
+                : { type: 'value', min: 0, splitNumber: 2 },
+            visualMap: layer
+                ? { show: false, type: 'continuous', dimension: 1,
+                    min: domain[0], max: domain[1], inRange: { color: layer.ramp } }
+                : { show: false, type: 'piecewise', dimension: 1, pieces: [
+                      { lt: RAG_AMBER / G, color: RAG_COLOURS.green },
+                      { gte: RAG_AMBER / G, lt: RAG_RED / G, color: RAG_COLOURS.amber },
+                      { gte: RAG_RED / G, color: RAG_COLOURS.red } ] },
+            series: [{
+                type: 'line', data: data, showSymbol: false,
+                lineStyle: { width: 2 }, areaStyle: { opacity: 0.18 },
+                markArea: { silent: true, data: shading },
+            }],
+        });
+    }
+
+    /**
+     * Pointing at the timeline marks that moment on the map.
+     *
+     * Bound to the container, not the ECharts instance: chart-utils re-inits
+     * the instance on a theme change, which would drop instance listeners.
+     */
+    function bindChartCursor(view) {
+        var el = view.wrap.querySelector('[data-map-chart]');
+
+        function move(ev) {
+            if (!view.chart) return;
+            var r = el.getBoundingClientRect(), pt;
+            try {
+                pt = view.chart.instance().convertFromPixel(
+                    { gridIndex: 0 }, [ev.clientX - r.left, ev.clientY - r.top]);
+            } catch (e) { return; }
+            var p = pt && view.track[nearestIndex(view.track, view.start + pt[0] * 60)];
+            if (!p) return;
+            if (!view.cursor) {
+                view.cursor = L.circleMarker([p.lat, p.lon], {
+                    radius: 7, color: '#fff', weight: 3, pane: 'tripPins',
+                    fillColor: '#0d6efd', fillOpacity: 1, interactive: false,
+                });
+            }
+            view.cursor.setLatLng([p.lat, p.lon]).addTo(view.map);
+            if (!view.map.getBounds().contains([p.lat, p.lon])) view.map.panTo([p.lat, p.lon]);
+        }
+
+        el.addEventListener('pointermove', move);
+        el.addEventListener('pointerdown', move);
+        el.addEventListener('pointerleave', function (ev) {
+            // A finger lifting is also a leave; keep the mark so a tap sticks.
+            if (ev.pointerType === 'mouse' && view.cursor) view.map.removeLayer(view.cursor);
+        });
+    }
+
+    // Live — drives in progress
+    //
+    // Polled rather than pushed: the phone reports every ten seconds, so a
+    // poll at that cadence is as live as the data, and needs no socket to
+    // re-establish when the hub restarts mid-drive.
+    var LIVE_POLL_MS = 10000;
+    // Longer than this since the last fix and the feed, not the car, has stopped.
+    var LIVE_STALE_S = 45;
+    var live = [];
+
+    async function fetchLive() {
+        try {
+            var r = await fetch('/api/journeys/live', { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return (await r.json()).trips || [];
+        } catch (e) {
+            log.warn('live journeys fetch failed', e);
+            return null;
+        }
+    }
+
+    async function pollLive() {
+        var host = document.getElementById('drive-live');
+        // offsetParent is null while the Drive tab or the Journeys pane is hidden.
+        if (!host || host.offsetParent === null) return;
+        var next = await fetchLive();
+        // A failed poll keeps the last picture; blanking it would read as "arrived".
+        if (!next) return;
+        // A card changing which phone it follows is not a drive ending.
+        var ended = live.some(function (t) {
+            return !next.some(function (n) {
+                return n.trip_id === t.trip_id ||
+                       (n.duplicate_trip_ids || []).indexOf(t.trip_id) !== -1;
+            });
+        });
+        live = next;
+        if (ended) {
+            // The finished drive is now a closed trip; the table needs it.
+            await fetchJourneys();
+            render();
+        } else {
+            renderLive();
+        }
+    }
+
+    function userName(id) {
+        for (var i = 0; i < presenceUsers.length; i++) {
+            if (presenceUsers[i].user_id === id) return presenceUsers[i].display_name || id;
+        }
+        return id;
+    }
+
+    function liveWho(t) {
+        var others = t.also_recorded_by || [];
+        // Two phones in the car: name the occupants, not a driver. Nothing
+        // the hub can see says which of them is at the wheel.
+        if (others.length) return [t.user_id].concat(others).map(userName).join(' & ');
+        return (t.driver_id && driverName(t.driver_id)) || userName(t.user_id);
+    }
+
+    function liveTiles(t) {
+        var age = Date.now() / 1000 - t.last_fix_at;
+        var stale = age > LIVE_STALE_S
+            ? '<div class="small text-warning-emphasis mb-2">' +
+              '<i class="fas fa-signal me-1"></i>No fix for ' +
+              (age < 90 ? Math.round(age) + ' s' : fmtDuration(age)) +
+              ' — the phone may have lost signal. Showing the last known position.</div>'
+            : '';
+        var slope = slopeText(t);
+        return stale +
+          '<div class="row g-2">' +
+            statTile('Speed now', fmtMph(t.speed_mps)) +
+            // Unknown is a dash, never "level": no barometer is not a flat road.
+            statTile('Road now', slope ? slope.replace(/^./, function (c) { return c.toUpperCase(); }) : '—') +
+            statTile('Distance', fmtMiles(t.distance_m)) +
+            statTile('Time', fmtDuration(t.last_fix_at - t.started_at)) +
+          '</div>';
+    }
+
+    /**
+     * Draw a card per drive in progress above the journeys table, from `live`.
+     *
+     * Cards are kept and updated in place rather than rebuilt, so the map
+     * under each keeps its zoom, layer and pin toggles between polls.
+     */
+    function renderLive() {
+        var host = document.getElementById('drive-live');
+        if (!host) return;
+
+        Array.prototype.slice.call(host.children).forEach(function (card) {
+            var id = card.getAttribute('data-live-trip');
+            if (live.some(function (t) { return t.trip_id === id; })) return;
+            var v = tripViews[id];
+            if (v) {
+                try { v.map.remove(); } catch (e) { /* already gone */ }
+                if (v.chart) v.chart.dispose();
+                delete tripViews[id];
+            }
+            card.remove();
+        });
+
+        live.forEach(function (t) {
+            var card = host.querySelector('[data-live-trip="' + t.trip_id + '"]');
+            if (!card) {
+                card = document.createElement('div');
+                card.className = 'border border-primary-subtle rounded p-2 p-sm-3 mb-3 small';
+                card.setAttribute('data-live-trip', t.trip_id);
+                card.innerHTML =
+                  '<div class="d-flex flex-wrap align-items-center gap-2 mb-2">' +
+                    '<i class="fas fa-circle fa-beat-fade text-danger" style="font-size:.6rem"></i>' +
+                    '<strong>Driving now</strong>' +
+                    '<span data-live-who></span>' +
+                  '</div>' +
+                  '<div data-live-tiles></div>' +
+                  '<div id="trip-map-wrap-' + escape(t.trip_id) + '" class="mt-2"></div>';
+                host.appendChild(card);
+            }
+            card.querySelector('[data-live-who]').innerHTML =
+                '<span class="text-muted">' + escape(liveWho(t)) + ' · since ' +
+                new Date(t.started_at * 1000).toLocaleTimeString(undefined,
+                    { hour: '2-digit', minute: '2-digit' }) + '</span>';
+            card.querySelector('[data-live-tiles]').innerHTML = liveTiles(t);
+            loadLiveTrack(t.trip_id);
+        });
+    }
+
+    // The track is admin-only, so for anyone else this fetch carries none and
+    // the card stays at its tiles — the same boundary as a finished trip.
+    async function loadLiveTrack(tripId) {
+        var trip;
+        try {
+            var r = await fetch('/api/journeys/' + encodeURIComponent(tripId),
+                                { credentials: 'same-origin' });
+            if (!r.ok) return;
+            trip = await r.json();
+        } catch (e) { return; }
+        if (!trip.track) return;
+        var view = tripViews[tripId];
+        // A view whose markup a re-render has since replaced is not this card's.
+        if (view && view.wrap.isConnected) updateLiveView(view, trip);
+        else renderTripMap(tripId, trip, true);
     }
 
     function bindJourneyHandlers() {
@@ -1637,11 +2236,13 @@ import { createChart } from './chart-utils.js';
         if (!initialised) {
             initialised = true;
             await fetchFuelTypes();
+            setInterval(whileVisible(pollLive), LIVE_POLL_MS);
         }
         // Presence users only feed the roster's "linked phone" dropdown, so
         // they are refreshed alongside the journeys rather than cached: a user
         // added in Settings should be linkable without a reload.
-        await Promise.all([fetchJourneys(), fetchPresenceUsers()]);
+        var fetched = await Promise.all([fetchJourneys(), fetchPresenceUsers(), fetchLive()]);
+        if (fetched[2]) live = fetched[2];
         render();
     };
 })();

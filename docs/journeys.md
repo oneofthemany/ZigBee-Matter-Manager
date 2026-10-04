@@ -157,7 +157,7 @@ appear to gain height it never lost.
 
 ## Smoothness score
 
-Harsh events per 100 km, mapped to 0-100 by exponential decay. Exponential
+Slope-weighted harsh events per 100 km, mapped to 0-100 by exponential decay. Exponential
 rather than a linear penalty because the interesting difference is at the
 smooth end: linear scoring compresses "one event" and "no events" into the same
 couple of points while letting a bad enough drive go negative and need
@@ -175,6 +175,60 @@ which point the number stops distinguishing anything.
 The score is a relative indicator of how smoothly a car was driven —
 deliberately *not* an insurance-style risk rating, which would need speed
 limits, road class and time of day this hub has no access to.
+
+### Slope weighting
+
+The phone reports how the car accelerated; the score is about how it was
+driven. On a hill those differ by gravity's component along the road, `g ×
+gradient` — about 1 m/s² on a 10% slope, against an event threshold of 3.5.
+Brake on a climb with the pedal pressure that gives a gentle stop on the level
+and the hill adds its share: the car decelerates past the threshold and an
+event is logged that the driver did not make. The same holds for accelerating
+on a descent.
+
+`slope_weight` removes the hill's share. For a brake on a climb or an
+acceleration on a descent the peak less `g × gradient` is what the driver did,
+and the event counts by where that lands:
+
+| Corrected peak | Weight |
+|---|---|
+| at or above `EVENT_THRESHOLD_MPS2` (3.5) | 1 — harsh without the hill's help |
+| between | linear |
+| `SLOPE_FORGIVE_BAND_MPS2` (1.0) or more below it | 0 |
+
+The ramp rather than a cut-off at the threshold because the gradient is a
+barometric estimate: a cliff would let a fraction of a percent of sensor noise
+decide whether an event counts at all.
+
+What it deliberately does not do:
+
+- **Never weighs above 1.** Braking on a descent works against gravity, so the
+  driver did more than was measured — but the events that would matter are the
+  ones just under the threshold, which the phone never logged. Up-weighting only
+  the logged ones would penalise by what happened to be recorded.
+- **Unknown is not lenient.** No barometer, or no gradient near the event, is
+  weight 1. So is anything inside `LEVEL_BAND_PCT`, which is noise.
+- **Cornering and `"harsh"` events are untouched** — lateral acceleration has
+  no component along the slope, and an unattributed event has no known
+  direction to correct.
+
+The gradient under an event is the mean over the fixes within
+`MAX_GRADIENT_GAP_S` either side (`_EVENT_GRADIENT_SQL`), not the one fix it
+fell in. A braking event usually ends below `MIN_GRADIENT_SPEED_MPS`, where
+that fix has no gradient; and one sample is the least trustworthy form of it.
+
+Each event row keeps its `gradient_pct` and `slope_weight`; the trip keeps
+their sum as `weighted_event_count`, which is what `_score` takes. The
+`harsh_*_count` columns stay raw — they report what happened, and the
+leaderboard's events per 100 km is built from them.
+
+`_rescore_unweighted` runs at open and weighs any closed trip scored before
+this existed, so one leaderboard is not ranking two formulas. It can only reach
+trips whose events survive the track purge; older ones keep their score, which
+for a trip with no events is the same number either way.
+
+`EVENT_THRESHOLD_MPS2` mirrors the phone's `EVENT_ENTER_MPS2`, as the map's red
+band does — **change all three together.**
 
 The `"harsh"` event kind is one the phone detected before it had learned the
 car's forward axis. It counts toward the total — it was a real excursion — but
@@ -341,6 +395,115 @@ is where a habit is visible before it becomes an event.
 
 **Change these together with the phone's constant, or the two stories stop
 matching.**
+
+### Map layers
+
+The trip map colours the route by one quantity at a time, chosen from a picker
+above it and remembered across trips (`localStorage`, `zbm-drive-map-layer`):
+
+| Layer | Per-fix source | Scale |
+|---|---|---|
+| Style | `horiz_peak_mps2`, raised by any logged event | the RAG bands above |
+| Speed | `speed_mps` | 0 to the trip's maximum, rounded up to 10 mph (30 minimum) |
+| Road | `vert_rms_mps2` | 0 to 2 m/s², widened only if the trip exceeds it |
+| Hills | `gradient_pct` | symmetric about level, ±10% widened in 5% steps |
+
+The scales are fitted per trip and rounded out so that the legend has readable
+ticks and no value falls off the end. The cost is that a colour is not
+comparable between two journeys — the legend, redrawn for each, is what says
+what it means. Road is the exception: its floor of 2 m/s² keeps a smooth trip
+from being stretched across the whole ramp and reading as a rough one.
+
+A missing value is grey on every layer and never the low end of a scale: no
+speed is not a standstill, and no barometer is not a level road.
+
+Under the map, a timeline plots the same quantity against minutes into the trip
+in the same colours. Pointing at it marks that moment on the map. That listener
+is on the chart's container rather than the ECharts instance, because
+`chart-utils` re-creates the instance on a theme change.
+
+Three groups of pin, each with a toggle that appears only when the group is
+non-empty:
+
+- **Harsh events** — as logged by the phone, placed at the nearest fix in time.
+- **Peaks** — the fixes that set the trip's peak braking, acceleration and
+  cornering figures. Shown however gentle: a smooth drive has no events to pin,
+  and "where was my hardest stop" still has an answer.
+- **Stops** — one per moving→stopped transition, with the idling that followed.
+
+**Terrain.** Speed, braking and acceleration are read against the slope the
+car was on, from the same per-fix `gradient_pct`. A fix is uphill or downhill
+beyond `LEVEL_BAND_PCT` (2%) and level inside it — barometer noise alone
+reaches a percent or so, and calling that a hill would put every flat road in
+two classes at once.
+
+- **By terrain**, under the timeline: average speed, distance, peak braking,
+  peak acceleration and harsh-event count for each of uphill, level and
+  downhill. Distance is speed × interval, the horizontal measure the gradient
+  itself was derived from. Fixes with no gradient — below
+  `MIN_GRADIENT_SPEED_MPS`, or no barometer — belong to no class, and the time
+  left out is stated rather than folded into "level".
+- **Shading** on the timeline behind every layer but Hills: sustained climbs
+  and descents, so a drop in speed can be read against the hill under it. A run
+  needs two consecutive fixes, for the reason given under
+  `MAX_PLAUSIBLE_GRADIENT_PCT`: one steep sample is not a trustworthy hill.
+- **Hover text and pins** carry the slope at that fix.
+
+The figures shown are the car's own acceleration: the phone removes gravity
+before it measures them (`MotionSampler`). How much of one the driver caused is
+a separate question, answered for the score under *Slope weighting* below; an
+event forgiven there says so on its badge and its pin.
+
+The scales, stop detection and peak location live in `static/js/drive-track.js`,
+which has no DOM dependency and is tested under node
+(`tests/frontend/js/test_drive_track.mjs`). Its `STOPPED_SPEED_MPS`,
+`MAX_IDLE_SEGMENT_S` and `MAX_PLAUSIBLE_SPEED_MPS` mirror `modules/journeys.py`
+so the pin count equals the trip's `stop_count` — **change them together.**
+Standing time before the first movement has no transition and so no pin, which
+is why the pins' idling can sum to less than the trip's.
+
+### Live view
+
+A drive in progress shows above the journeys table as a **Driving now** card:
+current speed, the road under the car (climb, descent or level), distance and
+time so far — and, for an administrator, the same map, layers, pins, timeline
+and terrain breakdown as a finished trip, drawn from the track so far with a
+marker at the car and a **Follow** toggle that drops out when the map is
+dragged.
+
+`GET /api/journeys/live` lists open trips with their totals and the newest
+fix's speed. It carries no coordinates, so it sits at `presence:read` with the
+other aggregates; the track comes from `GET /api/journeys/{trip_id}`, which
+serves an open trip as readily as a closed one and keeps its admin gate. The
+"road now" gradient is the mean over the fixes of the last
+`MAX_GRADIENT_GAP_S`, as for events: the newest fix has none in slow traffic,
+and the hill has not gone because the car slowed on it. A trip under
+`MIN_TRIP_FIXES` is not listed — the closer would discard it as a blip.
+
+Polled every 10 s, not pushed: that is the phone's fix cadence, so a poll is as
+live as the data, and there is no socket to re-establish when the hub restarts
+mid-drive. Polling stops while the page or the Journeys pane is hidden. The
+view is only as current as the phone's uplink — fixes spooled through a dead
+spot arrive together when signal returns, and past 45 s without one the card
+says so rather than showing a stale position as the present one.
+
+Two phones in one car are one card, named for both occupants rather than for a
+driver — the same position [Co-presence](#co-presence) takes at close, and by
+the same test (`_same_drive`), applied to the drive so far. Two adjustments
+make it hold mid-drive. The trips are compared as they stood at the moment
+both have reached, so one phone's fixes arriving late does not read as its car
+being a mile behind; that costs the distance check, which is only known for a
+whole trip. And the phone the card follows is chosen by motion data then
+earlier start, not fix count, which would swap phones from poll to poll. A
+phone that joins far from where the other started fails the start-point test
+and stays its own card, as it would stay its own trip.
+
+Cards update in place, so the map keeps its zoom, layer and toggles between
+polls; pins and the route are rebuilt from the whole track each time, because
+a peak moves when a harder one is set. When a trip leaves the live list the
+journeys are refetched and it appears in the table as a closed trip. Nothing
+is scored while the drive is open: slope weights and the smoothness score are
+computed at close.
 
 ### Interaction details
 

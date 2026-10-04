@@ -136,6 +136,10 @@ def register_journey_routes(app: FastAPI, journey_manager_getter: Callable):
             raise HTTPException(404, "Trip not found")
         return {"success": True, "trip_id": trip_id, "driver_id": driver_id}
 
+    @app.get("/api/journeys/live")
+    async def live_journeys(_=Depends(require_scope("presence:read"))):
+        return {"trips": await _mgr().live_trips()}
+
     @app.get("/api/journeys/{trip_id}")
     async def get_journey(
             trip_id: str,

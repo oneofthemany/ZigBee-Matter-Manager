@@ -70,6 +70,17 @@ MIN_SCORE_DISTANCE_M = 2000.0
 #: Score decay constant, harsh events per 100 km. See docs/journeys.md.
 SCORE_DECAY_EVENTS_PER_100KM = 100.0
 
+#: m/s². Mirror of the phone's MotionSampler.EVENT_ENTER_MPS2.
+EVENT_THRESHOLD_MPS2 = 3.5
+
+#: m/s². A slope-corrected peak this far under the threshold counts for nothing.
+SLOPE_FORGIVE_BAND_MPS2 = 1.0
+
+#: Within this of level (%) is barometer noise, not a hill.
+LEVEL_BAND_PCT = 2.0
+
+STANDARD_GRAVITY_MPS2 = 9.80665
+
 #: Measured distance before a driver is ranked (m). Below this: listed, unranked.
 MIN_LEADERBOARD_DISTANCE_M = 40000.0
 
@@ -165,6 +176,10 @@ _MIGRATIONS = (
     ("trips", "descent_m", "DOUBLE"),
     ("trips", "smoothness_score", "DOUBLE"),
     ("trips", "motion_fix_count", "BIGINT"),
+    # Harsh events after slope weighting; what the score is computed from.
+    ("trips", "weighted_event_count", "DOUBLE"),
+    ("trip_events", "gradient_pct", "DOUBLE"),
+    ("trip_events", "slope_weight", "DOUBLE"),
     # Attribution. NULL driver_id means unclaimed, never "the phone's owner".
     ("trips", "driver_id", "TEXT"),
     ("trips", "attribution", "TEXT"),
@@ -259,6 +274,40 @@ _EVENT_COUNT_SQL = """
 SELECT kind, COUNT(*) FROM trip_events WHERE trip_id = ? GROUP BY kind
 """
 
+# Signed barometric road gradient (%) at a fix, over ts/pts, pressure_hpa/ppress
+# and speed_mps. Shared so the map and the score read the same hill.
+_GRADIENT_EXPR = f"""
+           CASE WHEN ppress IS NOT NULL AND pressure_hpa IS NOT NULL
+                     AND pts IS NOT NULL AND ts - pts > 0
+                     AND ts - pts <= {MAX_GRADIENT_GAP_S}
+                     AND speed_mps >= {MIN_GRADIENT_SPEED_MPS}
+                -- Pressure falls as the car climbs. Vertical over horizontal, %.
+                THEN 100.0 * ((ppress - pressure_hpa) * {METRES_PER_HPA})
+                     / (speed_mps * (ts - pts))
+           END"""
+
+# The road gradient under each event: the mean over the fixes either side of
+# it, since a braking event usually ends too slow to have a gradient of its own.
+_EVENT_GRADIENT_SQL = f"""
+WITH seq AS (
+    SELECT ts, speed_mps, pressure_hpa,
+           LAG(ts)           OVER w AS pts,
+           LAG(pressure_hpa) OVER w AS ppress
+    FROM trip_fixes
+    WHERE trip_id = ? AND {_VEHICLE_FILTER}
+    WINDOW w AS (ORDER BY ts)
+),
+grad AS (
+    SELECT ts, {_GRADIENT_EXPR} AS gradient_pct FROM seq
+)
+SELECT e.rowid, e.kind, e.peak_mps2,
+       (SELECT AVG(g.gradient_pct) FROM grad g
+        WHERE ABS(g.gradient_pct) <= {MAX_PLAUSIBLE_GRADIENT_PCT}
+          AND g.ts BETWEEN e.ts - {MAX_GRADIENT_GAP_S} AND e.ts + {MAX_GRADIENT_GAP_S})
+FROM trip_events e
+WHERE e.trip_id = ?
+"""
+
 # The track, with a signed barometric road gradient per fix. See docs/journeys.md.
 _TRACK_SQL = f"""
 WITH seq AS (
@@ -273,14 +322,7 @@ WITH seq AS (
 ),
 grad AS (
     SELECT *,
-           CASE WHEN ppress IS NOT NULL AND pressure_hpa IS NOT NULL
-                     AND pts IS NOT NULL AND ts - pts > 0
-                     AND ts - pts <= {MAX_GRADIENT_GAP_S}
-                     AND speed_mps >= {MIN_GRADIENT_SPEED_MPS}
-                -- Pressure falls as the car climbs. Vertical over horizontal, %.
-                THEN 100.0 * ((ppress - pressure_hpa) * {METRES_PER_HPA})
-                     / (speed_mps * (ts - pts))
-           END AS gradient_pct
+           {_GRADIENT_EXPR} AS gradient_pct
     FROM seq
 )
 SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, altitude_m,
@@ -291,6 +333,30 @@ SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, altitude_m,
 FROM grad
 ORDER BY ts
 """
+
+
+def slope_weight(kind: Optional[str], peak_mps2: Optional[float],
+                 gradient_pct: Optional[float]) -> float:
+    """
+    How much of a harsh event counts toward the score, 0-1.
+
+    Gravity along the road adds to braking on a climb and to acceleration on a
+    descent, so part of such an event is the hill's. The peak less that part is
+    what the driver did; at the phone's threshold it counts in full, and
+    SLOPE_FORGIVE_BAND_MPS2 below it not at all. Never above 1, and 1 wherever
+    the slope is unknown, level, or working against the event. docs/journeys.md
+    §Slope weighting.
+    """
+    if (kind not in ("brake", "accel") or peak_mps2 is None
+            or gradient_pct is None or abs(gradient_pct) <= LEVEL_BAND_PCT):
+        return 1.0
+    along = STANDARD_GRAVITY_MPS2 * gradient_pct / 100.0
+    assist = along if kind == "brake" else -along
+    if assist <= 0:
+        return 1.0
+    floor = EVENT_THRESHOLD_MPS2 - SLOPE_FORGIVE_BAND_MPS2
+    w = (abs(peak_mps2) - assist - floor) / SLOPE_FORGIVE_BAND_MPS2
+    return round(min(1.0, max(0.0, w)), 3)
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -348,6 +414,42 @@ class JourneyManager:
             self._con.execute(
                 f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}"
             )
+        self._rescore_unweighted()
+
+    def _rescore_unweighted(self) -> None:
+        """
+        Slope-weight trips scored before weighting existed, so one leaderboard
+        is not ranking two formulas. Only trips whose events survive the track
+        purge can be; a purged trip keeps the score it has.
+        """
+        rows = self._con.execute(
+            "SELECT t.trip_id, t.distance_m FROM trips t "
+            "WHERE t.status = 'closed' AND t.weighted_event_count IS NULL "
+            "AND t.harsh_event_count > 0 "
+            "AND EXISTS (SELECT 1 FROM trip_events e WHERE e.trip_id = t.trip_id)"
+        ).fetchall()
+        for trip_id, distance_m in rows:
+            weighted = self._weigh_events(trip_id)
+            self._con.execute(
+                "UPDATE trips SET weighted_event_count = ?, smoothness_score = ? "
+                "WHERE trip_id = ?",
+                [weighted, self._score(weighted, distance_m), trip_id],
+            )
+        if rows:
+            logger.info(f"[journeys] slope-weighted {len(rows)} existing trip score(s)")
+
+    def _weigh_events(self, trip_id: str) -> float:
+        """Store each event's gradient and slope weight; return the weights' sum."""
+        total = 0.0
+        for rowid, kind, peak, gradient in self._con.execute(
+                _EVENT_GRADIENT_SQL, [trip_id, trip_id]).fetchall():
+            w = slope_weight(kind, peak, gradient)
+            self._con.execute(
+                "UPDATE trip_events SET gradient_pct = ?, slope_weight = ? WHERE rowid = ?",
+                [gradient, w, rowid],
+            )
+            total += w
+        return round(total, 3)
 
     def _close(self) -> None:
         if self._con is not None:
@@ -478,6 +580,7 @@ class JourneyManager:
                 "max_brake_mps2 = ?, max_accel_mps2 = ?, max_lat_mps2 = ?, "
                 "roughness_mps2 = ?, idle_s = ?, stop_count = ?, climb_m = ?, "
                 "descent_m = ?, smoothness_score = ?, motion_fix_count = ?, "
+                "weighted_event_count = ?, "
                 # COALESCE: a reopened trip must not lose a manual attribution.
                 "driver_id = COALESCE(driver_id, ?), "
                 "attribution = COALESCE(attribution, ?), "
@@ -490,7 +593,7 @@ class JourneyManager:
                  b["max_brake_mps2"], b["max_accel_mps2"], b["max_lat_mps2"],
                  b["roughness_mps2"], b["idle_s"], b["stop_count"],
                  b["climb_m"], b["descent_m"], b["smoothness_score"],
-                 b["motion_fix_count"],
+                 b["motion_fix_count"], b["weighted_event_count"],
                  driver_id,
                  "sole_phone" if driver_id else None,
                  # One phone recording means one person known to be there.
@@ -578,19 +681,21 @@ class JourneyManager:
             )
         return marked
 
-    def _cluster_drives(self, rows) -> List[list]:
+    def _cluster_drives(self, rows, same=None) -> List[list]:
         """
-        Group closed trips that describe the same physical drive.
+        Group trips that describe the same physical drive, by `same` (default
+        _same_drive, for closed trips).
 
         Membership is by similarity to anything already in the group rather
         than to a fixed representative, so three phones in one car land in one
         group even where the first and last of them pair only through the
         middle one.
         """
+        same = same or self._same_drive
         groups: List[list] = []
         for row in rows:
             for g in groups:
-                if any(self._same_drive(row, other) for other in g):
+                if any(same(row, other) for other in g):
                     g.append(row)
                     break
             else:
@@ -673,6 +778,9 @@ class JourneyManager:
         # "harsh" predates the phone learning the forward axis: counts, unattributable.
         total = (sum(counts.values()) if counts else 0) if measured else None
 
+        # The counts stay raw — what happened; the score takes the weighted sum.
+        weighted = self._weigh_events(trip_id) if measured else None
+
         # MIN(long_peak) is negative or NULL; report the magnitude.
         brake_mag = abs(max_brake) if max_brake is not None and max_brake < 0 else None
         accel_mag = max_accel if max_accel is not None and max_accel > 0 else None
@@ -697,13 +805,14 @@ class JourneyManager:
             "climb_m": climb,
             "descent_m": descent,
             "motion_fix_count": motion_fixes or 0,
-            "smoothness_score": self._score(total, distance_m) if measured else None,
+            "weighted_event_count": weighted,
+            "smoothness_score": self._score(weighted, distance_m) if measured else None,
         }
 
     @staticmethod
-    def _score(events: Optional[int], distance_m: Optional[float]) -> Optional[float]:
+    def _score(events: Optional[float], distance_m: Optional[float]) -> Optional[float]:
         """
-        Harsh events per 100 km, mapped to 0-100 by exponential decay.
+        Slope-weighted harsh events per 100 km, mapped to 0-100 by exponential decay.
 
         Exponential rather than a linear penalty because the interesting
         difference is at the smooth end: linear scoring compresses "one event"
@@ -791,6 +900,7 @@ class JourneyManager:
                   "max_brake_mps2", "max_accel_mps2", "max_lat_mps2",
                   "roughness_mps2", "idle_s", "stop_count", "climb_m",
                   "descent_m", "smoothness_score", "motion_fix_count",
+                  "weighted_event_count",
                   "driver_id", "attribution", "confidence", "car_bt_address",
                   "primary_trip_id")
 
@@ -918,6 +1028,79 @@ class JourneyManager:
         )
         return True
 
+    async def live_trips(self) -> List[Dict[str, Any]]:
+        return await self._run(self._live_trips)
+
+    def _live_trips(self) -> List[Dict[str, Any]]:
+        """
+        Trips still being driven, with their totals so far and the car's
+        current speed and road gradient. No coordinates — the track is
+        get_trip's, behind its admin gate.
+
+        Two phones in one car are one entry, by the test that will collapse
+        them at close (_same_drive) applied to the drive so far.
+        """
+        found = []
+        tracks: Dict[str, list] = {}
+
+        def as_of(shape, cut):
+            # The trip as it stood at `cut`. Distance is dropped: it is not
+            # known as of a moment without re-running the finalise query.
+            at = [p for p in tracks[shape[0]] if p[0] <= cut]
+            if not at:
+                return None
+            return shape[:3] + (at[-1][0], None) + shape[5:9] + (at[-1][1], at[-1][2])
+
+        def same_so_far(a, b):
+            # Compared at the moment both have reached: one phone's fixes
+            # arriving late must not read as its car being somewhere else.
+            cut = min(a[3], b[3])
+            a, b = as_of(a, cut), as_of(b, cut)
+            return bool(a and b) and self._same_drive(a, b)
+        for trip_id, user_id, driver_id, started_at in self._con.execute(
+                "SELECT trip_id, user_id, driver_id, started_at FROM trips "
+                "WHERE status = 'open' ORDER BY started_at").fetchall():
+            fix_count, distance_m, avg_v, max_v, _, _, t0, t1 = \
+                self._con.execute(_FINALIZE_SQL, [trip_id]).fetchone()
+            # Under this the closer would discard it as a blip; not a drive yet.
+            if (fix_count or 0) < MIN_TRIP_FIXES:
+                continue
+            pts = self._con.execute(_TRACK_SQL, [trip_id]).fetchall()
+            last = pts[-1]
+            # Mean over the last few fixes, as for events: one sample is noise,
+            # and the newest fix has none at all in slow traffic.
+            recent = [p[14] for p in pts
+                      if p[14] is not None and p[0] >= last[0] - MAX_GRADIENT_GAP_S]
+            # Shaped as a _COPRESENCE_SQL row, with "now" standing in for the end.
+            shape = (trip_id, user_id, t0, t1, distance_m, fix_count,
+                     sum(1 for p in pts if p[10] is not None),
+                     pts[0][1], pts[0][2], last[1], last[2])
+            tracks[trip_id] = pts
+            found.append((shape, {
+                "trip_id": trip_id, "user_id": user_id,
+                # Not attributed until close; this is who it will default to.
+                "driver_id": driver_id or self._driver_for_user(user_id),
+                "started_at": t0 if t0 is not None else started_at,
+                "last_fix_at": t1, "fix_count": fix_count,
+                "distance_m": distance_m, "avg_speed_mps": avg_v, "max_speed_mps": max_v,
+                "speed_mps": last[3],
+                "gradient_pct": sum(recent) / len(recent) if recent else None,
+            }))
+
+        by_id = {shape[0]: entry for shape, entry in found}
+        out = []
+        for group in self._cluster_drives([shape for shape, _ in found], same_so_far):
+            # Motion data first, as at close, then the earlier start: unlike
+            # fix count that never changes mid-drive, so the card does not
+            # swap phones from one poll to the next.
+            primary = min(group, key=lambda t: (0 if t[6] else 1, t[2], t[0]))
+            entry = by_id[primary[0]]
+            others = sorted((t for t in group if t[0] != primary[0]), key=lambda t: t[1])
+            entry["also_recorded_by"] = [t[1] for t in others]
+            entry["duplicate_trip_ids"] = [t[0] for t in others]
+            out.append(entry)
+        return out
+
     async def get_trip(self, trip_id: str,
                        include_track: bool = False) -> Optional[Dict[str, Any]]:
         return await self._run(self._get_trip, trip_id, include_track)
@@ -941,12 +1124,13 @@ class JourneyManager:
 
         # Events carry no coordinates, so unlike the track they need no admin gate.
         evs = self._con.execute(
-            "SELECT ts, kind, peak_mps2, duration_s FROM trip_events "
-            "WHERE trip_id = ? ORDER BY ts",
+            "SELECT ts, kind, peak_mps2, duration_s, gradient_pct, slope_weight "
+            "FROM trip_events WHERE trip_id = ? ORDER BY ts",
             [trip_id],
         ).fetchall()
         trip["events"] = [
-            {"ts": e[0], "kind": e[1], "peak_mps2": e[2], "duration_s": e[3]}
+            {"ts": e[0], "kind": e[1], "peak_mps2": e[2], "duration_s": e[3],
+             "gradient_pct": e[4], "slope_weight": e[5]}
             for e in evs
         ]
 
