@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -128,6 +129,27 @@ def run() -> Checker:
         rig.change("bb", occupancy=True)
         rig.devices["bb"].available = False
         c.check("the bell's suppression time holds back a repeat", rig.sweep() == [])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        c.section("last fired and test sends")
+        rig = _rig(tmp)
+        r = rig.rule(cooldownMinutes=5, message="{device} saw someone")
+        c.check("a rule that hasn't fired reports nothing", rig.engine.last_fired(r["id"]) is None)
+        rig.now = 1_000_100.0
+        rig.change("aa", occupancy=True)
+        last = rig.engine.last_fired(r["id"])
+        c.check("a real firing is recorded with when, which device and what it said",
+                last == {"at": 1_000_100.0, "ieee": "aa", "device": "Hall Sensor", "body": "Hall Sensor saw someone"}, last)
+        before = len(rig.sent)
+        rig._run(lambda: asyncio.ensure_future(rig.engine.send_test(r)))
+        test = rig.sent[before:]
+        c.check("a test reaches the owner with the rule's own wording",
+                len(test) == 1 and test[0][0] == "alice" and test[0][1]["body"] == "Test device saw someone"
+                and test[0][1]["test"] is True, test)
+        c.check("a test doesn't count as a firing", rig.engine.last_fired(r["id"])["ieee"] == "aa")
+        rig.change("aa", occupancy=False)
+        rig.now += 6 * 60
+        c.check("a test doesn't start the cooldown", len(rig.change("aa", occupancy=True)) == 1)
 
     with tempfile.TemporaryDirectory() as tmp:
         c.section("robustness")

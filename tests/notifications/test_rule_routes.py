@@ -69,6 +69,14 @@ def run() -> Checker:
         sent = rig.change("aa", occupancy=True)
         c.check("motion notifies alice", [o for o, _ in sent] == ["alice"], sent)
 
+        c.section("test sends and last fired")
+        listed = api.get("/api/notification-rules", headers=alice).json()["rules"][0]
+        c.check("the list says when each rule last fired", listed["last_fired"]["device"] == "Hall", listed)
+        res = api.post(f"/api/notification-rules/{rule['id']}/test", headers=alice)
+        c.check("a test send returns what it reached", res.status_code == 200, res.text)
+        c.check("another user can't test someone else's rule",
+                api.post(f"/api/notification-rules/{rule['id']}/test", headers=bob).status_code == 404)
+
         c.section("import")
         res = api.post("/api/notification-rules/import", headers=bob,
                        json={"rules": [{"trigger": "smoke"}, {"trigger": "bogus"}]}).json()

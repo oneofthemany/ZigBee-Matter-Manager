@@ -4,7 +4,7 @@
    This module is the editor plus in-page delivery. See docs/notifications.md. */
 
 import { state } from './state.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, timeAgo } from './utils.js';
 
 const log = zmmLog('notifications');
 
@@ -176,7 +176,7 @@ function renderRulesList() {
         return `
             <div class="card notif-rule-card mb-2 ${enabled ? '' : 'opacity-50'}" data-rule-id="${escapeHtml(rule.id)}">
                 <div class="card-body py-2 px-3">
-                    <div class="d-flex align-items-center gap-2">
+                    <div class="d-flex flex-wrap flex-sm-nowrap align-items-center gap-2">
                         <i class="fas ${icon} fa-fw text-primary"></i>
                         <div class="flex-grow-1 min-w-0">
                             <div class="fw-semibold text-truncate">${escapeHtml(rule.title || triggerLabel)}</div>
@@ -184,16 +184,22 @@ function renderRulesList() {
                                 ${escapeHtml(triggerLabel)} · ${escapeHtml(scopeText)}
                             </div>
                             <div class="mt-1">${extras}</div>
+                            ${lastFiredLine(rule.last_fired)}
                         </div>
+                        <div class="notif-rule-actions d-flex align-items-center gap-2">
                         <div class="form-check form-switch m-0">
-                            <input class="form-check-input" type="checkbox" data-action="toggle" ${enabled ? 'checked' : ''}>
+                            <input class="form-check-input" type="checkbox" data-action="toggle" ${enabled ? 'checked' : ''} aria-label="Rule enabled">
                         </div>
-                        <button class="btn btn-sm btn-outline-secondary" data-action="edit" title="Edit">
+                        <button class="btn btn-sm btn-outline-primary" data-action="test" title="Send test" aria-label="Send a test notification">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" data-action="edit" title="Edit" aria-label="Edit rule">
                             <i class="fas fa-pen"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete">
+                        <button class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete" aria-label="Delete rule">
                             <i class="fas fa-trash"></i>
                         </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -214,6 +220,7 @@ function renderRulesList() {
             }
             renderRulesList();
         });
+        card.querySelector('[data-action="test"]').addEventListener('click', ev => sendTest(id, ev.currentTarget));
         card.querySelector('[data-action="edit"]').addEventListener('click', () => openRuleEditor(id));
         card.querySelector('[data-action="delete"]').addEventListener('click', async () => {
             if (!await window.zbmConfirm({
@@ -231,6 +238,43 @@ function renderRulesList() {
             renderRulesList();
         });
     });
+}
+
+// Last fired / test
+
+function lastFiredLine(last) {
+    if (!last) return '<div class="small text-muted mt-1">Hasn\'t fired since the hub last started.</div>';
+    const at = last.at * 1000;
+    return `<div class="small text-muted mt-1" title="${escapeHtml(new Date(at).toLocaleString())}">
+        <i class="fas fa-clock-rotate-left me-1"></i>Last fired ${escapeHtml(timeAgo(at))} — ${escapeHtml(last.body)}</div>`;
+}
+
+/** Say where a test went, so a missing phone notification has an explanation. */
+function testOutcome(r) {
+    const n = (count, what) => `${count} ${what}${count === 1 ? '' : 's'}`;
+    if (!('sent' in r) && !r.no_subscriptions) return ['info', 'Test sent.'];
+    if (r.no_subscriptions) {
+        return ['warning', 'Test sent, but no phone or browser has push enabled for your account, so it only shows on open ZMM pages. '
+            + 'Enable push under "Delivery on this device".'];
+    }
+    if (r.sent) {
+        const failed = r.failed ? ` (${n(r.failed, 'device')} failed)` : '';
+        return ['success', `Test pushed to ${n(r.sent, 'device')}${failed}.`];
+    }
+    return ['error', `Test push failed on ${n(r.failed || 0, 'device')}. Check "Delivery on this device".`];
+}
+
+async function sendTest(id, btn) {
+    btn.disabled = true;
+    try {
+        const r = await api('POST', `/api/notification-rules/${encodeURIComponent(id)}/test`);
+        const [kind, text] = testOutcome(r);
+        window.toast?.[kind](text);
+    } catch (e) {
+        window.toast?.error(`Couldn't send test: ${e.message}`);
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // Rule editor modal

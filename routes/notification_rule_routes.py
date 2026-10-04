@@ -37,7 +37,9 @@ def register_notification_rule_routes(app: FastAPI) -> None:
 
     @app.get("/api/notification-rules")
     async def list_rules(request: HttpRequest, _=Depends(require_authenticated)):
-        return {"rules": _store().for_owner(_owner(request))}
+        engine = get_rule_engine()
+        rules = _store().for_owner(_owner(request))
+        return {"rules": [{**r, "last_fired": engine.last_fired(r["id"])} for r in rules]}
 
     @app.post("/api/notification-rules")
     async def create_rule(body: Dict[str, Any], request: HttpRequest,
@@ -78,6 +80,14 @@ def register_notification_rule_routes(app: FastAPI) -> None:
         if not _store().delete(_owner(request), rule_id):
             raise HTTPException(404, "No such rule")
         return {"success": True}
+
+    @app.post("/api/notification-rules/{rule_id}/test")
+    async def test_rule(rule_id: str, request: HttpRequest, _=Depends(require_authenticated)):
+        """Send this rule's notification now, to prove delivery without waiting for the event."""
+        rule = _store().rules.get(rule_id)
+        if not rule or rule["owner"] != _owner(request):
+            raise HTTPException(404, "No such rule")
+        return await get_rule_engine().send_test(rule)
 
     @app.post("/api/notification-rules/import")
     async def import_rules(body: ImportBody, request: HttpRequest,

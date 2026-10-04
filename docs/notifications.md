@@ -241,6 +241,9 @@ browser had ZMM open, which is the one time an alert is least needed.
   device after a restart still fires: keys it didn't just change are taken as
   its previous values. A button reporting the same action twice fires twice.
 - **Cooldowns** are per rule and device, held in memory, and so reset on restart.
+- **Last fired and tests.** The engine keeps each rule's latest firing in memory for the
+  rule list. A test send goes through the real delivery path but neither counts as a
+  firing nor starts a cooldown, and reports where it went so a silent phone has a reason.
 - **Time windows** use the hub's local time (the container mounts the host's
   `/etc/localtime`) and may wrap midnight.
 
@@ -292,11 +295,12 @@ failed upload keeps the local copy and retries on the next load.
 
 | | |
 |---|---|
-| `GET /api/notification-rules` | your rules |
+| `GET /api/notification-rules` | your rules, each with `last_fired` (latest firing since the hub started, or null) |
 | `POST /api/notification-rules` | create one |
 | `PUT /api/notification-rules/{id}` | replace one of yours |
 | `DELETE /api/notification-rules/{id}` | delete one of yours |
 | `POST /api/notification-rules/import` | adopt a browser's local rules (`{"rules": [...]}`) |
+| `POST /api/notification-rules/{id}/test` | send that rule's notification now; returns pages reached and push `sent`/`failed`/`no_subscriptions` |
 
 The trigger catalogue exists twice: matching in `modules/notification_rules.py`,
 labels and icons for the editor in `static/js/notifications.js`.

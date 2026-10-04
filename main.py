@@ -1374,11 +1374,12 @@ from routes.notification_rule_routes import register_notification_rule_routes
 
 async def _deliver_rule_notification(owner: str, payload: dict):
     """The owner's open pages over the websocket, the owner's phones over push."""
+    pages = 0
     try:
-        await manager.send_to_user(owner, {"type": "notification_rule_fired", "payload": payload})
+        pages = await manager.send_to_user(owner, {"type": "notification_rule_fired", "payload": payload})
     except Exception as e:
         logger.debug(f"[notification_rules] websocket send failed: {e}")
-    await push_manager.send_to_user(owner, {
+    push = await push_manager.send_to_user(owner, {
         "title": payload["title"],
         "body": payload["body"],
         "tag": payload["tag"],
@@ -1386,6 +1387,7 @@ async def _deliver_rule_notification(owner: str, payload: dict):
         "requireInteraction": payload["persistent"],
         "data": {"ieee": payload["ieee"]},
     })
+    return {"pages": pages, **push}
 
 
 _notification_rule_store = NotificationRuleStore()

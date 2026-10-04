@@ -332,7 +332,8 @@ class NotificationRuleStore:
         return self.bell_settings(owner)
 
 
-Deliver = Callable[[str, Dict[str, Any]], Awaitable[None]]
+# Returns what reached the owner (pages / push counts) for a test to report; None is fine.
+Deliver = Callable[[str, Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]
 
 
 class NotificationRuleEngine:
@@ -354,6 +355,7 @@ class NotificationRuleEngine:
         self._local_now = local_now
         self._prev: Dict[str, Dict[str, Any]] = {}       # ieee -> last state seen, with "available"
         self._fired_at: Dict[str, float] = {}           # "rule|ieee" -> epoch s
+        self._last: Dict[str, Dict[str, Any]] = {}      # rule id -> latest firing, for the rule list
         self._tasks: set = set()
 
     # inputs
@@ -418,6 +420,7 @@ class NotificationRuleEngine:
                 logger.debug("[notification_rules] %s on %s: %s", rule["id"], ieee, e)
                 continue
             self._fired_at[f"{rule['id']}|{ieee}"] = self._clock()
+            self._last[rule["id"]] = {"at": self._clock(), "ieee": ieee, "device": name, "body": body}
             out.append((rule["owner"], {
                 "rule_id": rule["id"], "ieee": ieee,
                 "title": rule.get("title") or trigger.label, "body": body,
@@ -426,6 +429,23 @@ class NotificationRuleEngine:
                 "persistent": trigger.persistent,
             }))
         return out
+
+    def last_fired(self, rule_id: str) -> Optional[Dict[str, Any]]:
+        """Latest real firing since the hub started; tests don't count."""
+        return self._last.get(rule_id)
+
+    async def send_test(self, rule: Dict[str, Any]) -> Dict[str, Any]:
+        """Deliver the rule's notification now, through the real channels, without touching cooldowns."""
+        trigger = TRIGGERS[rule["trigger"]]
+        sample = "Test device"
+        body = (rule["message"].replace("{device}", sample) if rule.get("message")
+                else f"Test of “{trigger.label}” — this is what it will look like")
+        result = await self._deliver(rule["owner"], {
+            "rule_id": rule["id"], "ieee": None,
+            "title": rule.get("title") or trigger.label, "body": body,
+            "tag": f"zmm-rule-{rule['id']}-test", "persistent": False, "test": True,
+        })
+        return result or {}
 
     # helpers
 

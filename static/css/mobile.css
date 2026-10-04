@@ -1401,3 +1401,12 @@ body.controlling {
         padding: 0.4rem !important;
     }
 }
+
+
+/* Notification rule cards: controls take their own row so the title keeps its width */
+@media (max-width: 575.98px) {
+    .notif-rule-card .notif-rule-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
