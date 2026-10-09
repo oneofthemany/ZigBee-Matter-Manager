@@ -66,8 +66,9 @@ BACKUP_MANIFEST = [
     "data/homekit_pairings.json",
 ]
 
-# Restored owner-only: they hold private keys.
-RESTORE_PRIVATE = {"data/homekit_pairings.json"}
+# Restored owner-only, matching how the app writes them: password hashes, API
+# tokens and MFA secrets; HomeKit controller private keys.
+RESTORE_PRIVATE = {"data/auth.yaml", "data/homekit_pairings.json"}
 
 # Directories included recursively (each contained file is backed up and
 # restorable — see _entry_allowed()).

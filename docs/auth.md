@@ -307,6 +307,7 @@ back to `enforce=True` once you're confident.
 `auth.yaml` is included in ZMM backups by default. Restoring a backup
 restores users, groups, and tokens — but invalidates all session cookies
 since the file's inode changes. Existing bearer tokens continue to work.
+The restored file is owner-only (`0600`), as the app writes it.
 ## Model
 
 | Concept | Meaning |
