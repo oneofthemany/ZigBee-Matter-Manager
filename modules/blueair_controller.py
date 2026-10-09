@@ -271,10 +271,13 @@ class BlueairController:
                 devices[str(d.uuid)] = (d, "aws")
         except blueair_api.LoginError as e:
             # Accounts are per region, so a correct password on the wrong
-            # region fails exactly like a wrong password.
+            # region fails exactly like a wrong password. A Google/Apple
+            # sign-in account has no password at all and fails the same way.
             raise BlueairError(f"Blueair login failed ({self.region} region): {e} — "
                                f"check the password and that the region matches "
-                               f"where the account was created") from e
+                               f"where the account was created. Accounts that sign "
+                               f"in with Google or Apple need a password set first "
+                               f"(Blueair app → Forgot password, same email)") from e
         except Exception as e:                            # noqa: BLE001
             errors.append(f"current devices: {e}")
 

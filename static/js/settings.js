@@ -1549,6 +1549,7 @@ function renderBlueairSection() {
       <div class="col-md-3">
         <label class="form-label small fw-semibold">Password</label>
         <input type="password" class="form-control" id="cfg_blueair_password" autocomplete="new-password">
+        <small class="text-muted">Google/Apple sign-in? Set a password via Forgot password in the Blueair app.</small>
       </div>
       <div class="col-md-2">
         <label class="form-label small fw-semibold">Poll (s)</label>
