@@ -19,6 +19,9 @@ Credentials never live in config.yaml (it is tracked in git): the environment
 (ZMM_BLUEAIR_USERNAME / ZMM_BLUEAIR_PASSWORD) wins, then config/secrets.yaml
 under `blueair`. config.yaml holds only `blueair: {enabled, region,
 poll_interval_seconds}`.
+
+Account pitfalls (Google/Apple sign-in, region, Gigya pending registration):
+docs/external-apis.md §Blueair.
 """
 
 from __future__ import annotations
