@@ -209,6 +209,10 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "blueair": {
                         "enabled": bool((cfg.get("blueair") or {}).get("enabled", False)),
                     },
+                    # Read-only likewise: saves through /api/homekit/config.
+                    "homekit": {
+                        "enabled": bool((cfg.get("homekit") or {}).get("enabled", False)),
+                    },
                     # Integrations are default-filled so every supported API
                     # always reaches the frontend with its full shape — the
                     # Settings → APIs tab must never depend on config.yaml

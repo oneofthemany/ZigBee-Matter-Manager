@@ -38,6 +38,7 @@ redistributed in this repository.
 
 | Package | License |
 |---|---|
+| aiohomekit | Apache-2.0 |
 | aiohttp | Apache-2.0 |
 | aiomqtt | BSD-3-Clause |
 | bellows | GPL-3.0 |

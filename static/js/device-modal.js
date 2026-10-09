@@ -50,6 +50,11 @@ export async function openDeviceModal(d) {
         const { openBlueairModal } = await import('./modal/blueair-modal.js');
         return openBlueairModal(d.blueair_device_id);
     }
+    // HomeKit TVs (local HAP pairing)
+    if (d?.homekit_device_id) {
+        const { openHomekitModal } = await import('./modal/homekit-modal.js');
+        return openHomekitModal(d.homekit_device_id);
+    }
     // Nuki bridge locks likewise (matter-commissioned locks fall through
     // to the standard modal, whose Control tab has lock/unlock/unlatch)
     if (d?.nuki_lock_id) {

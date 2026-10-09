@@ -28,6 +28,7 @@ zmm_eq/target/
 /config/secrets.yaml
 /data/auth.yaml
 /data/vapid.json
+/data/homekit_pairings.json
 /docs/plans/daylight-lighting-and-home-floor-plan.md
 /docs/plans/fuel_prices_region.md
 /docs/plans/swarm-intelligence.md

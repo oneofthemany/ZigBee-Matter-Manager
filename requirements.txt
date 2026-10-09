@@ -24,6 +24,9 @@ zeroconf>=0.131,<1.0
 tidalapi~=0.8
 greeclimate
 blueair_api~=1.56.3
+# Exact pin: aiohomekit 4.x needs cryptography/zeroconf newer than the
+# python-matter-server 7.x pins, the same squeeze as pyatv above.
+aiohomekit==3.2.20
 midea-local
 numpy
 # Room-overlap validation on floor-plan saves (docs/floor-plan.md § Rooms sit on the walls).

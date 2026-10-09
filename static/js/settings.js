@@ -721,6 +721,16 @@ const API_PROVIDERS = [
         isConfigured: c => !!c.blueair?.enabled,
     },
     {
+        id: 'homekit', label: 'HomeKit', icon: 'fa-tv',
+        render: () => renderHomekitSection(),
+        onShow: () => loadHomekitConfig(),
+        // Own endpoints: pairing keys never ride along with the main Save.
+        collect: () => ({}),
+        disablePatch: null,
+        onRemove: () => _blueairPost('/api/homekit/config', { enabled: false }),
+        isConfigured: c => !!c.homekit?.enabled,
+    },
+    {
         id: 'fuel', label: 'Fuel', icon: 'fa-gas-pump',
         render: () => renderFuelRegionSection() + renderFuelFinderSection(),
         onShow: () => { loadFuelRegion(); loadFuelFinderConfig(); },
@@ -1668,6 +1678,189 @@ window.testBlueair = async function () {
             <i class="fas fa-check-circle me-1"></i> Logged in — ${names}. Save to use this account.</div>`;
     } catch (e) {
         if (out) out.innerHTML = `<div class="text-danger small">${w_escape(e.message)}</div>`;
+    }
+};
+
+// HOMEKIT SECTION — lives in the External APIs tab
+//
+// This hub pairs as a HomeKit controller with accessories on the LAN (TVs).
+// Pairing is two calls: start makes the TV show its code, finish sends it.
+
+function renderHomekitSection() {
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-tv me-1"></i> HomeKit</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_homekit_enabled"
+               onchange="window.saveHomekitEnabled(this.checked)">
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-3">
+      Controls HomeKit TVs (e.g. Sky Glass) directly over your network — no Apple account involved.
+      A TV pairs with one home: if it's in the Apple Home app, remove it there first.
+    </p>
+    <div id="homekitStatus" class="mb-2"></div>
+    <div class="fw-semibold small mb-1">Paired</div>
+    <div id="homekitPaired" class="small text-muted mb-3"></div>
+    <div class="d-flex gap-2 mb-2">
+      <button class="btn btn-outline-secondary btn-sm" onclick="window.scanHomekit()">
+        <i class="fas fa-search me-1"></i> Scan network</button>
+    </div>
+    <div id="homekitFound" class="small"></div>
+    `;
+}
+
+async function loadHomekitConfig() {
+    const status = document.getElementById('homekitStatus');
+    try {
+        const res = await fetch('/api/homekit/config', { credentials: 'same-origin' });
+        const cfg = await res.json();
+        if (!res.ok) throw new Error(cfg.detail || ('HTTP ' + res.status));
+        const en = document.getElementById('cfg_homekit_enabled');
+        if (en) en.checked = !!cfg.enabled;
+        if (status) status.innerHTML = cfg.last_error
+            ? `<div class="text-danger small">Last error: ${w_escape(cfg.last_error)}</div>` : '';
+        if (cfg.enabled) loadHomekitPaired();
+        else {
+            const el = document.getElementById('homekitPaired');
+            if (el) el.textContent = 'Enable to see paired TVs.';
+        }
+    } catch (e) {
+        if (status) status.innerHTML = `<div class="text-danger small">Could not load: ${w_escape(e.message)}</div>`;
+    }
+}
+
+async function loadHomekitPaired() {
+    const el = document.getElementById('homekitPaired');
+    if (!el) return;
+    el.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Loading…';
+    try {
+        const res = await fetch('/api/homekit/devices').then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'failed');
+        const devices = res.devices || [];
+        if (!devices.length) { el.textContent = 'Nothing paired yet — scan to find your TV.'; return; }
+        el.innerHTML = `<ul class="list-unstyled mb-0">${devices.map(d => `
+          <li class="py-1 d-flex flex-wrap align-items-center gap-1">
+            <span class="badge ${d.online === false ? 'bg-warning text-dark' : 'bg-success'}">${d.online === false ? 'unreachable' : 'online'}</span>
+            <span class="text-body">${w_escape(d.name)}</span>
+            ${d.model ? `<span class="text-muted">· ${w_escape(d.model)}</span>` : ''}
+            <button class="btn btn-link btn-sm text-danger p-0 ms-auto" data-hk-unpair="${w_escape(d.id)}">Unpair</button>
+          </li>`).join('')}</ul>
+          <div class="fst-italic mt-1">Control them from the Devices tab — Manage button.</div>`;
+        el.querySelectorAll('[data-hk-unpair]').forEach(b =>
+            b.addEventListener('click', () => window.unpairHomekit(b.dataset.hkUnpair)));
+    } catch (e) {
+        el.innerHTML = `<span class="text-danger">${w_escape(e.message)}</span>`;
+    }
+}
+
+window.saveHomekitEnabled = async function (enabled) {
+    try {
+        await _blueairPost('/api/homekit/config', { enabled });
+        loadHomekitConfig();
+    } catch (e) {
+        window.toast?.error?.(`HomeKit: ${e.message}`);
+    }
+};
+
+window.scanHomekit = async function () {
+    const out = document.getElementById('homekitFound');
+    if (!out) return;
+    out.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Listening for HomeKit accessories…</span>';
+    try {
+        const res = await fetch('/api/homekit/discover', { credentials: 'same-origin' }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'scan failed');
+        const tvs = (res.accessories || []).filter(a => a.television);
+        if (!tvs.length) {
+            out.innerHTML = '<span class="text-muted">No HomeKit TVs found. Check the TV is on and on the same network as this hub.</span>';
+            return;
+        }
+        out.innerHTML = tvs.map(a => `
+          <div class="border rounded p-2 mb-2" data-hk-row="${w_escape(a.id)}">
+            <div class="d-flex flex-wrap align-items-center gap-1">
+              <i class="fas fa-tv text-info"></i>
+              <span class="text-body fw-semibold">${w_escape(a.name)}</span>
+              <span class="text-muted">· ${w_escape(a.model)} · ${w_escape(a.address)}</span>
+              <span class="ms-auto">${a.paired_here
+                ? '<span class="badge bg-success">Paired here</span>'
+                : a.available
+                  ? `<button class="btn btn-primary btn-sm" data-hk-pair="${w_escape(a.id)}">Pair</button>`
+                  : '<span class="badge bg-secondary" title="Remove it from Apple Home (or reset its HomeKit pairing) first">Paired elsewhere</span>'}</span>
+            </div>
+            <div class="hk-pin mt-2" hidden>
+              <label class="form-label small mb-1">Enter the 8-digit code shown on the TV</label>
+              <div class="d-flex flex-wrap gap-2">
+                <input type="text" class="form-control form-control-sm" style="max-width:10rem"
+                       inputmode="numeric" autocomplete="one-time-code" placeholder="123-45-678">
+                <button class="btn btn-success btn-sm" data-hk-finish="${w_escape(a.id)}">Confirm</button>
+              </div>
+            </div>
+            <div class="hk-msg small mt-1"></div>
+          </div>`).join('');
+        out.querySelectorAll('[data-hk-pair]').forEach(b =>
+            b.addEventListener('click', () => _homekitStartPair(b.dataset.hkPair)));
+        out.querySelectorAll('[data-hk-finish]').forEach(b =>
+            b.addEventListener('click', () => _homekitFinishPair(b.dataset.hkFinish)));
+    } catch (e) {
+        out.innerHTML = `<span class="text-danger">${w_escape(e.message)}</span>`;
+    }
+};
+
+function _homekitRow(id) {
+    return document.querySelector(`[data-hk-row="${CSS.escape(id)}"]`);
+}
+
+async function _homekitStartPair(id) {
+    const row = _homekitRow(id);
+    const msg = row?.querySelector('.hk-msg');
+    if (msg) msg.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Asking the TV for a code…</span>';
+    try {
+        const res = await _blueairPost('/api/homekit/pair/start', { id });
+        if (!res.success) throw new Error(res.error || 'pairing failed');
+        const pin = row?.querySelector('.hk-pin');
+        if (pin) { pin.hidden = false; pin.querySelector('input')?.focus(); }
+        if (msg) msg.innerHTML = '<span class="text-muted">The code should now be on the TV screen.</span>';
+    } catch (e) {
+        if (msg) msg.innerHTML = `<span class="text-danger">${w_escape(e.message)}</span>`;
+    }
+}
+
+async function _homekitFinishPair(id) {
+    const row = _homekitRow(id);
+    const msg = row?.querySelector('.hk-msg');
+    const pin = (row?.querySelector('.hk-pin input')?.value || '').trim();
+    if (msg) msg.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Pairing…</span>';
+    try {
+        const res = await _blueairPost('/api/homekit/pair/finish', { id, pin });
+        if (!res.success) throw new Error(res.error || 'pairing failed');
+        if (msg) msg.innerHTML = `<span class="text-success"><i class="fas fa-check-circle me-1"></i> Paired with ${w_escape(res.status?.name || id)}.</span>`;
+        row?.querySelector('.hk-pin')?.setAttribute('hidden', '');
+        loadHomekitPaired();
+    } catch (e) {
+        if (msg) msg.innerHTML = `<span class="text-danger">${w_escape(e.message)}</span>`;
+    }
+}
+
+window.unpairHomekit = async function (id) {
+    if (!await confirmDialog({
+        title: 'Unpair TV',
+        message: 'Unpair this TV from the hub?',
+        detail: 'It can be paired again afterwards with the code it shows on screen.',
+        confirmText: 'Unpair',
+        variant: 'danger',
+    })) return;
+    try {
+        const res = await fetch(`/api/homekit/devices/${encodeURIComponent(id)}`, {
+            method: 'DELETE', credentials: 'same-origin',
+        }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'unpair failed');
+        if (!res.accessory_confirmed) {
+            window.toast?.warning?.('HomeKit: forgotten here, but the TV did not confirm — reset its HomeKit pairing before pairing again.');
+        }
+        loadHomekitPaired();
+    } catch (e) {
+        window.toast?.error?.(`HomeKit: ${e.message}`);
     }
 };
 

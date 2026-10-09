@@ -2,10 +2,16 @@
 #    uv pip compile requirements.txt --python-version 3.12 --python-platform x86_64-manylinux_2_31 -o requirements.lock
 aenum==3.1.17
     # via home-assistant-chip-clusters
+aiocoap==0.4.17
+    # via aiohomekit
 aiofiles==25.1.0
     # via midea-local
 aiohappyeyeballs==2.6.2
-    # via aiohttp
+    # via
+    #   aiohomekit
+    #   aiohttp
+aiohomekit==3.2.20
+    # via -r requirements.txt
 aiohttp==3.11.11
     # via
     #   -r requirements.txt
@@ -17,6 +23,8 @@ aiohttp==3.11.11
     #   zigpy
 aiomqtt==2.5.1
     # via -r requirements.txt
+aiooui==0.1.11
+    # via bluetooth-adapters
 aiorun==2024.8.1
     # via python-matter-server
 aiosignal==1.4.0
@@ -36,6 +44,8 @@ appdirs==1.4.4
     # via soco
 asttokens==3.0.1
     # via stack-data
+async-interrupt==1.2.2
+    # via aiohomekit
 async-timeout==5.0.1
     # via
     #   pyatv
@@ -55,8 +65,17 @@ babel==2.18.0
     # via csvw
 bellows==0.49.0
     # via -r requirements.txt
+bleak==3.0.2
+    # via
+    #   aiohomekit
+    #   bleak-retry-connector
+    #   bluetooth-adapters
+bleak-retry-connector==4.7.1
+    # via aiohomekit
 blueair-api==1.56.3
     # via -r requirements.txt
+bluetooth-adapters==2.4.0
+    # via bleak-retry-connector
 casttube==0.2.1
     # via pychromecast
 certifi==2026.6.17
@@ -69,8 +88,12 @@ cffi==2.0.0
     #   cryptography
     #   miniaudio
     #   sounddevice
+chacha20poly1305==0.0.3
+    # via aiohomekit
 chacha20poly1305-reuseable==0.13.2
-    # via pyatv
+    # via
+    #   aiohomekit
+    #   pyatv
 charset-normalizer==3.4.7
     # via requests
 click==8.4.2
@@ -89,6 +112,8 @@ colorlog==6.10.1
     # via
     #   kokoro-onnx
     #   midea-local
+commentjson==0.9.0
+    # via aiohomekit
 commonregex==1.5.4
     # via midea-local
 construct==2.10.70
@@ -98,6 +123,7 @@ crccheck==1.3.1
 cryptography==44.0.0
     # via
     #   -r requirements.txt
+    #   aiohomekit
     #   chacha20poly1305-reuseable
     #   home-assistant-chip-core
     #   pyatv
@@ -109,6 +135,11 @@ dacite==1.9.2
     # via
     #   home-assistant-chip-clusters
     #   home-assistant-chip-core
+dbus-fast==5.2.0
+    # via
+    #   bleak
+    #   bleak-retry-connector
+    #   bluetooth-adapters
 decorator==5.3.1
     # via
     #   ipdb
@@ -194,6 +225,8 @@ kokoro-onnx==0.4.7
     # via -r requirements.txt
 language-tags==1.3.1
     # via csvw
+lark-parser==0.7.8
+    # via commentjson
 lxml==6.1.3
     # via soco
 markdown-it-py==4.2.0
@@ -226,7 +259,9 @@ numpy==2.4.6
 onnxruntime==1.27.0
     # via kokoro-onnx
 orjson==3.10.13
-    # via python-matter-server
+    # via
+    #   aiohomekit
+    #   python-matter-server
 packaging==26.2
     # via
     #   deprecation
@@ -383,12 +418,16 @@ typing-inspection==0.4.2
     #   pydantic
 tzdata==2026.3
     # via -r requirements.txt
+uart-devices==0.1.1
+    # via bluetooth-adapters
 uk-fuel-prices-api==0.0.5
     # via -r requirements.txt
 uritemplate==4.2.0
     # via csvw
 urllib3==2.7.0
     # via requests
+usb-devices==0.5.1
+    # via bluetooth-adapters
 uvicorn==0.49.0
     # via -r requirements.txt
 uvloop==0.22.1
@@ -413,6 +452,7 @@ yarl==1.24.2
 zeroconf==0.136.2
     # via
     #   -r requirements.txt
+    #   aiohomekit
     #   pyatv
     #   pychromecast
     #   python-matter-server

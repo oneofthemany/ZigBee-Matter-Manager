@@ -1075,6 +1075,9 @@ async def lifespan(app: FastAPI):
     geocoder = getattr(app.state, "geocoder", None)
     if geocoder:
         await geocoder.stop()
+    homekit_stop = getattr(app.state, "homekit_stop", None)
+    if homekit_stop:
+        await homekit_stop()
     # Lazy singleton — only exists if someone searched for fuel this run.
     from modules.fuel import history as _fuel_history
     if _fuel_history._manager is not None:
@@ -1275,6 +1278,8 @@ register_frame_routes(app, get_zigbee_service)
 register_ac_routes(app)
 from routes import register_blueair_routes
 register_blueair_routes(app)
+from routes import register_homekit_routes
+register_homekit_routes(app)
 register_adblock_routes(app)
 register_worker_routes(app, lambda: zigbee_service.automation)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)

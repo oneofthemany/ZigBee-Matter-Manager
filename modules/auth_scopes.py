@@ -72,6 +72,7 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/permit_join",       {"GET": "device:read", "*": "device:write"}),
     ("/api/touchlink",         {"*": "device:write"}),
     ("/api/blueair",           {"GET": "device:read", "*": "device:write"}),
+    ("/api/homekit",           {"GET": "device:read", "*": "device:write"}),
     ("/api/tabs",              {"GET": "device:read", "*": "device:write"}),
     ("/api/chambers",          {"GET": "device:read", "*": "device:write"}),
     ("/api/frames",            {"GET": "device:read", "*": "device:write"}),

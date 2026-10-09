@@ -43,6 +43,13 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 devices.extend(await blueair_entries())
             except Exception as e:
                 logger.warning(f"Blueair device-list merge failed: {e}")
+        # HomeKit TVs — provider registered by homekit_routes
+        homekit_entries = getattr(app.state, "homekit_device_entries", None)
+        if homekit_entries is not None:
+            try:
+                devices.extend(await homekit_entries())
+            except Exception as e:
+                logger.warning(f"HomeKit device-list merge failed: {e}")
         # Nuki bridge locks — provider registered by security_routes
         # (Matter-commissioned locks already arrive via the matter bridge)
         nuki_entries = getattr(app.state, "nuki_device_entries", None)

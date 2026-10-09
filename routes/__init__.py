@@ -42,6 +42,7 @@ from routes.octopus_routes import register_octopus_routes
 from routes.journey_routes import register_journey_routes
 from routes.fuel_routes import register_fuel_routes
 from routes.blueair_routes import register_blueair_routes
+from routes.homekit_routes import register_homekit_routes
 from routes.adblock_routes import register_adblock_routes
 from routes.worker_routes import register_worker_routes
 
@@ -76,6 +77,7 @@ __all__ = [
     'register_journey_routes',
     'register_fuel_routes',
     'register_blueair_routes',
+    'register_homekit_routes',
     'register_remote_access_routes',
     'register_sun_routes',
     'register_floor_plan_routes',
