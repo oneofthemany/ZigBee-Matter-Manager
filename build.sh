@@ -472,15 +472,20 @@ write_containerfile() {
 #   OTBR_COMMIT  openthread/ot-br-posix commit (submodules follow the commit)
 #   CPCD_TAG     SiLabs cpc-daemon source tag OTBR links its CPC bus against
 # ─────────────────────────────────────────────────────────────────────────────
+# Base images are pinned by digest: the layer cache keys on the base image ID,
+# so a floating tag re-pulled after its local copy is lost brings a newer image
+# and every stage rebuilds, OTBR included. A pinned re-pull is the same image.
+# Bump deliberately, like the source pins below (docs/upgrades.md).
 # The app image and the Rust wheel stages must share one Python: the wheels are
 # compiled against its ABI.
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+ARG PYTHON_IMAGE=docker.io/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+ARG STAGE_IMAGE=docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 ARG SISDK_TAG=v2025.6.3
 ARG OTBR_COMMIT=5b5dffa775466e65c74913e36e561c70dbd405f6
 ARG CPCD_TAG=v4.7.1
 
 # ── Stage: SiLabs packages ──
-FROM debian:bookworm-slim AS silabs
+FROM ${STAGE_IMAGE} AS silabs
 ARG SISDK_TAG
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -496,7 +501,7 @@ RUN curl -fsSL "https://github.com/SiliconLabs/simplicity_sdk/releases/download/
     && rm -rf /tmp/silabs /tmp/debian-bookworm.zip
 
 # ── Stage: OpenThread Border Router with SiLabs CPC MultiPAN support ──
-FROM debian:bookworm-slim AS otbr
+FROM ${STAGE_IMAGE} AS otbr
 ARG SISDK_TAG
 ARG OTBR_COMMIT
 ARG CPCD_TAG
@@ -797,20 +802,21 @@ DOCKERIGNORE
 # =============================================================================
 # BUILD IMAGE
 # =============================================================================
-BASE_IMAGE="python:3.12-slim-bookworm"
-# The Thread toolchain stages (silabs, otbr) build on plain Debian.
-STAGE_BASE_IMAGE="debian:bookworm-slim"
+# The pinned base images, read back from the Containerfile's ARG defaults so
+# the pins live in one place (the upgrade watcher builds from that file alone).
+containerfile_arg() {
+    sed -nE "s/^ARG $1=(.+)$/\1/p" "$CLONE_DIR/Containerfile" | head -n1
+}
 
 image_present() {
-    local n
-    for n in "$1" "docker.io/library/$1" "docker.io/$1"; do
-        "$RUNTIME" image inspect "$n" >/dev/null 2>&1 && return 0
-    done
-    return 1
+    "$RUNTIME" image inspect "$1" >/dev/null 2>&1
 }
 
 base_image_present() {
-    image_present "$BASE_IMAGE" && image_present "$STAGE_BASE_IMAGE"
+    BASE_IMAGE=$(containerfile_arg PYTHON_IMAGE)
+    STAGE_BASE_IMAGE=$(containerfile_arg STAGE_IMAGE)
+    [[ -n "$BASE_IMAGE" && -n "$STAGE_BASE_IMAGE" ]] \
+        && image_present "$BASE_IMAGE" && image_present "$STAGE_BASE_IMAGE"
 }
 
 # Build-stage images (Thread toolchain, Rust wheels) finish untagged, which the upgrade GC's
