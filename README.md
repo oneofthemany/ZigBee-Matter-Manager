@@ -455,8 +455,10 @@ See **[docs/presence_detection.md](docs/presence_detection.md)** and **[docs/pla
 
 - **Smart locks** — Nuki over the LAN bridge HTTP API (hashed-token auth by default, since the plain form leaks the token to anything watching LAN traffic), plus bridge-less Nuki locks over Matter. Providers come from a registry so the Security tab builds itself.
 - **Air conditioning** — local-LAN control of **Gree**-protocol units (EcoAir and clones) and **Midea**-protocol units (Comfee and clones), spoken directly on the LAN with no Home Assistant bridge. Both libraries are optional; the module reports "library not installed" rather than breaking the app.
+- **Air purifiers** — **Blueair** purifiers and humidifiers through Blueair's cloud account API (Blueair has no local protocol). Both device generations share one control modal. Reads are cached against Blueair's rate limits, and the last good reading is served when the cloud is unreachable. Accounts that sign in with Google or Apple need a password set first.
+- **Televisions** — **HomeKit** TVs such as Sky Glass, with the hub pairing as the HomeKit controller (the role an iPhone plays): power, input, remote keys, volume and mute, all local, with no Apple account. Pairing uses the code the TV shows on screen, and the keys stay on the hub.
 
-See **[docs/security.md](docs/security.md)** and **[docs/air-conditioning.md](docs/air-conditioning.md)**.
+See **[docs/security.md](docs/security.md)**, **[docs/air-conditioning.md](docs/air-conditioning.md)** and **[docs/external-apis.md](docs/external-apis.md)**.
 
 ### 🔔 Notifications, Messages & Web Push
 
@@ -711,7 +713,7 @@ Access at **http://YOUR_IP:8000**. All tabs update in real time over the WebSock
 |:---|:---|
 | **Configuration** | Zigbee Radio, MQTT, Home Assistant, Web (incl. HTTPS/SSL), OTA and Backup — form-based, writes `config.yaml`, no manual YAML required |
 | **Notifications** | Alert rules, web-push subscriptions and delivery preferences |
-| **API** | External integrations — Weather (Open-Meteo, free, no key), Octopus Energy, Fuel Finder credentials |
+| **API** | External integrations, one sub-tab each — Weather (Open-Meteo, free, no key), media providers, Air Con, Octopus Energy, Blueair, HomeKit TVs, Fuel and smart locks ([docs/external-apis.md](docs/external-apis.md)) |
 | **Audio** | Media players, OpenZone groups, chirp calibration and the Sync Lab |
 | **Network** | Thread border router, Spectrum Analysis and Zigbee Security credentials (PAN ID, Extended PAN ID, network key, with per-field regenerate) |
 | **User Accounts** | My Account, admin user/group/token management, and per-user presence settings |
@@ -803,6 +805,8 @@ Configuration is managed through the **Settings** tab, which provides structured
 | `ai` | Provider, model, base URL, temperature, max tokens |
 | `zigbee` | Serial port, radio type, channel, PAN ID, network key |
 | `fuel` | Fuel Finder base URL and refresh interval (credentials live in `secrets.yaml`) |
+| `blueair` | Enable flag, account region and poll interval (the account lives in `secrets.yaml`) |
+| `homekit` | Enable flag (pairing keys live in `data/homekit_pairings.json`) |
 
 ```yaml
 zigbee:
@@ -1045,6 +1049,7 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/remote_access.md](docs/remote_access.md) | Managed Cloudflare Tunnel |
 | [docs/notifications.md](docs/notifications.md) | Notifications, requests, messages and web push |
 | [docs/air-conditioning.md](docs/air-conditioning.md) | Gree and Midea local-LAN AC control |
+| [docs/external-apis.md](docs/external-apis.md) | Settings → APIs — every integration at a glance; Blueair and HomeKit TVs in full |
 | [docs/telemetry_database.md](docs/telemetry_database.md) | DuckDB stores — resilience, repair and recovery |
 | [docs/upgrades.md](docs/upgrades.md) | In-app upgrades, editor safety and local LLM containers |
 | [docs/mqtt-explorer.md](docs/mqtt-explorer.md) | MQTT Explorer — usage, filtering, architecture |
