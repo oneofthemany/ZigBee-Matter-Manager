@@ -61,7 +61,13 @@ BACKUP_MANIFEST = [
     "data/media_prefs.json",
     "data/media_sessions.json",
     "data/radio_favourites.json",
+    # HomeKit controller keys: without them a restored hub cannot reach a TV
+    # that still counts itself paired, and it will not accept a new pairing.
+    "data/homekit_pairings.json",
 ]
+
+# Restored owner-only: they hold private keys.
+RESTORE_PRIVATE = {"data/homekit_pairings.json"}
 
 # Directories included recursively (each contained file is backed up and
 # restorable — see _entry_allowed()).
@@ -288,8 +294,12 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                     try:
                         os.makedirs(os.path.dirname(target), exist_ok=True)
                         data = zf.read(entry)
-                        with open(target, "wb") as f:
+                        mode = 0o600 if os.path.normpath(entry) in RESTORE_PRIVATE else 0o666
+                        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+                        with os.fdopen(fd, "wb") as f:
                             f.write(data)
+                        if mode == 0o600:
+                            os.chmod(target, mode)
                         restored.append(entry)
                         logger.info(f"Restored: {entry} ({len(data)} bytes)")
                     except Exception as e:
