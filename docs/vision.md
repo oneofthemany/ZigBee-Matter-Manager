@@ -19,6 +19,10 @@ What each signal covers: `person`; `vehicle` — car, truck, bus, motorcycle,
 bicycle; `animal` — cat, dog, bird, horse, sheep, cow, bear. There is no
 package or face detection: the model (§Models) doesn't know them.
 
+Notification rules have **Person / Vehicle / Animal seen on camera** triggers,
+and a notification about a camera can carry the detected frame — see
+[notifications.md](notifications.md) §Camera snapshots.
+
 ## Pipeline
 
 Per camera, in `vision/worker.py`:
@@ -118,8 +122,7 @@ In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 
 ## Not yet
 
-Zones within a frame, clips and recordings, snapshots attached to
-notifications, per-object counts, GPU and Hailo backends, and larger models.
+Zones within a frame, clips and recordings, per-object counts, GPU and Hailo backends, and larger models.
 
 ## Hardware
 

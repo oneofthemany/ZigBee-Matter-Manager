@@ -152,6 +152,28 @@ def run() -> Checker:
         c.check("a test doesn't start the cooldown", len(rig.change("aa", occupancy=True)) == 1)
 
     with tempfile.TemporaryDirectory() as tmp:
+        c.section("cameras")
+        from harness import FakeDevice as FD
+        rig = Rig(Path(tmp) / "cam", {"camera::front": FD("Front door", {"person": False, "motion": False}),
+                                      "aa": FD("Porch door", {"contact": True})})
+        rig.rule("alice", trigger="person_detected")
+        rig.rule("alice", trigger="contact_opened", camera="front")
+        sent = rig.change("camera::front", person=True)
+        c.check("a person appearing on a camera fires, named for the camera",
+                len(sent) == 1 and sent[0][1]["body"] == "Person seen — Front door" and sent[0][1]["ieee"] == "camera::front", sent)
+        c.check("…with no camera of its own chosen: delivery uses the one it fired on", sent[0][1]["camera"] is None)
+        c.check("still there is not a new sighting", rig.change("camera::front", person=True) == [])
+        sent = rig.change("aa", contact=False)
+        c.check("a door rule can name a camera to send a snapshot from", len(sent) == 1 and sent[0][1]["camera"] == "front", sent)
+        from modules.notification_rules import normalise_rule
+        try:
+            normalise_rule({"trigger": "contact_opened", "camera": "../etc"})
+            ok = False
+        except ValueError:
+            ok = True
+        c.check("a camera id that couldn't be one is refused", ok)
+        c.check("no camera is the default", normalise_rule({"trigger": "contact_opened"})["camera"] is None)
+
         c.section("robustness")
         rig = _rig(tmp)
         rig.rule(trigger="low_battery")

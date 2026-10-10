@@ -422,7 +422,7 @@ class AlarmPanel:
         c = self.cause or {}
         self._spawn(self._sirens(True))
         self._spawn(self._alert("ALARM", f"{c.get('name', 'A sensor')} {c.get('event', 'tripped')} "
-                                         f"while armed {self.armed_mode}.", urgent=True))
+                                         f"while armed {self.armed_mode}.", urgent=True, ieee=c.get("ieee")))
 
     async def tick(self) -> None:
         if self.deadline is None or self._clock() < self.deadline:
@@ -449,12 +449,13 @@ class AlarmPanel:
             except Exception as e:                        # noqa: BLE001
                 logger.warning("[alarm] siren %s failed: %s", ieee, e)
 
-    async def _alert(self, title: str, body: str, urgent: bool) -> None:
+    async def _alert(self, title: str, body: str, urgent: bool, ieee: Optional[str] = None) -> None:
         if not self._notify:
             return
         users = self.config["notify_users"] or self._get_users()
         try:
-            await self._notify(users, {"title": title, "body": body, "urgent": urgent})
+            # ieee: what tripped it, so a camera's alert can carry its picture.
+            await self._notify(users, {"title": title, "body": body, "urgent": urgent, "ieee": ieee})
         except Exception as e:                            # noqa: BLE001
             logger.warning("[alarm] alert failed: %s", e)
 

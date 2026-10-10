@@ -6,7 +6,8 @@ only on the LAN. See docs/notifications.md §Other channels.
 Hub settings (servers, bot/app tokens, SMTP) live in config/secrets.yaml under
 `notify_channels`, never config.yaml, which is tracked. Each user's own
 destinations live in data/notify_channels.json (0600). Unlike Web Push these
-services read the text, so chat messages go out only when the user opts in.
+services read the text, so chat messages go out only when the user opts in —
+and see the picture, so camera snapshots do too (§Camera snapshots).
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ CHANNELS = ("ntfy", "telegram", "signal", "pushover", "email")
 # What a user's channels carry unless they choose otherwise.
 KIND_DEFAULTS = {"notification_rule": True, "message_created": False, "alarm": True}
 SEND_TIMEOUT_S = 15
+# Pushover's limit is the tightest of the five.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 LINK_TTL_S = 600
 # Each code costs a message from the hub's number to a stranger's, if mistyped.
 SIGNAL_CODES_PER_WINDOW = 3
@@ -54,9 +57,10 @@ EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]+$")
 # A public ntfy.sh topic is readable by anyone who guesses it.
 MIN_PUBLIC_TOPIC = 12
 
-# (method, url, json, form, headers) -> (status, parsed body)
+# (method, url, json, form, headers[, content, files]) -> (status, parsed body)
 HttpFn = Callable[..., Awaitable[Tuple[int, Any]]]
-SmtpFn = Callable[[Dict[str, Any], str, str, str], None]
+# (hub, to, subject, body[, jpeg])
+SmtpFn = Callable[..., None]
 
 
 def _no_newlines(name: str, value: str) -> str:
@@ -169,6 +173,7 @@ def _blank_user() -> Dict[str, Any]:
         "pushover": {"enabled": False, "user_key": ""},
         "email": {"enabled": False, "address": ""},
         "kinds": dict(KIND_DEFAULTS),
+        "images": False,
     }
 
 
@@ -209,6 +214,10 @@ def normalise_user(data: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, A
         if k in kinds:
             out["kinds"][k] = bool(kinds[k])
 
+    if "images" in data:
+        out["images"] = bool(data["images"])
+    out.setdefault("images", False)
+
     # On means a destination exists to send to.
     for ch, field in (("ntfy", "topic"), ("telegram", "chat_id"), ("signal", "number"),
                       ("pushover", "user_key"), ("email", "address")):
@@ -219,17 +228,26 @@ def normalise_user(data: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, A
 
 # Senders
 
-async def _httpx(method: str, url: str, json_body=None, form=None, headers=None) -> Tuple[int, Any]:
+async def _httpx(method: str, url: str, json_body=None, form=None, headers=None,
+                 content=None, files=None) -> Tuple[int, Any]:
     import httpx
     async with httpx.AsyncClient(timeout=SEND_TIMEOUT_S) as client:
-        r = await client.request(method, url, json=json_body, data=form, headers=headers)
+        r = await client.request(method, url, json=json_body, data=form, headers=headers,
+                                 content=content, files=files)
     try:
         return r.status_code, r.json()
     except ValueError:
         return r.status_code, r.text[:300]
 
 
-def _smtplib_send(hub: Dict[str, Any], to: str, subject: str, body: str) -> None:
+def _header(text: str) -> str:
+    """Any text as an HTTP header value: RFC 2047, which ntfy decodes."""
+    import base64
+    return "=?UTF-8?B?" + base64.b64encode(text.encode()).decode() + "?="
+
+
+def _smtplib_send(hub: Dict[str, Any], to: str, subject: str, body: str,
+                  image: Optional[bytes] = None) -> None:
     import smtplib
     import ssl
     from email.message import EmailMessage
@@ -237,6 +255,8 @@ def _smtplib_send(hub: Dict[str, Any], to: str, subject: str, body: str) -> None
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = hub["smtp_from"], to, subject
     msg.set_content(body)
+    if image:
+        msg.add_attachment(image, maintype="image", subtype="jpeg", filename="snapshot.jpg")
     ctx = ssl.create_default_context()
     host, port = hub["smtp_host"], int(hub["smtp_port"])
     if hub["smtp_security"] == "ssl":
@@ -325,10 +345,21 @@ class ChannelManager:
                 text = text.replace(str(v), "***")
         return text
 
-    async def _ntfy(self, s, title, body, urgent):
+    async def _ntfy(self, s, title, body, urgent, image=None):
         headers = {}
         if self.hub.get("ntfy_token"):
             headers["Authorization"] = f"Bearer {self.hub['ntfy_token']}"
+        if image:
+            # An attachment is the request body, so the text moves to headers.
+            headers.update({"Title": _header(title), "Message": _header(body[:500] or title),
+                            "Priority": "4" if urgent else "3", "Tags": "house",
+                            "Filename": "snapshot.jpg"})
+            status, resp = await self._http(
+                "PUT", f"{self.hub['ntfy_server'].rstrip('/')}/{s['ntfy']['topic']}",
+                headers=headers, content=image)
+            if not 200 <= status < 300:
+                raise RuntimeError(f"ntfy answered {status}: {resp}")
+            return
         status, resp = await self._http(
             "POST", self.hub["ntfy_server"],
             json_body={"topic": s["ntfy"]["topic"], "title": title, "message": body,
@@ -337,44 +368,67 @@ class ChannelManager:
         if not 200 <= status < 300:
             raise RuntimeError(f"ntfy answered {status}: {resp}")
 
-    async def _telegram(self, s, title, body, urgent):
-        status, resp = await self._http(
-            "POST", f"https://api.telegram.org/bot{self.hub['telegram_bot_token']}/sendMessage",
-            json_body={"chat_id": s["telegram"]["chat_id"],
-                       "text": f"{title}\n{body}" if body else title})
+    async def _telegram(self, s, title, body, urgent, image=None):
+        base = f"https://api.telegram.org/bot{self.hub['telegram_bot_token']}"
+        text = f"{title}\n{body}" if body else title
+        if image:
+            status, resp = await self._http(
+                "POST", f"{base}/sendPhoto",
+                form={"chat_id": str(s["telegram"]["chat_id"]), "caption": text[:1024]},
+                files={"photo": ("snapshot.jpg", image, "image/jpeg")})
+        else:
+            status, resp = await self._http(
+                "POST", f"{base}/sendMessage",
+                json_body={"chat_id": s["telegram"]["chat_id"], "text": text})
         if status != 200 or not (isinstance(resp, dict) and resp.get("ok")):
             desc = resp.get("description") if isinstance(resp, dict) else resp
             raise RuntimeError(f"Telegram answered {status}: {desc}")
 
-    async def _signal_send(self, number: str, text: str) -> None:
-        status, resp = await self._http(
-            "POST", f"{self.hub['signal_api_url']}/v2/send",
-            json_body={"message": text, "number": self.hub["signal_number"],
-                       "recipients": [number]})
+    async def _signal_send(self, number: str, text: str, image: Optional[bytes] = None) -> None:
+        msg = {"message": text, "number": self.hub["signal_number"], "recipients": [number]}
+        if image:
+            import base64
+            msg["base64_attachments"] = [base64.b64encode(image).decode()]
+        status, resp = await self._http("POST", f"{self.hub['signal_api_url']}/v2/send", json_body=msg)
         if not 200 <= status < 300:
             err = resp.get("error") if isinstance(resp, dict) else resp
             raise RuntimeError(f"Signal API answered {status}: {err}")
 
-    async def _signal(self, s, title, body, urgent):
-        await self._signal_send(s["signal"]["number"], f"{title}\n{body}" if body else title)
+    async def _signal(self, s, title, body, urgent, image=None):
+        await self._signal_send(s["signal"]["number"], f"{title}\n{body}" if body else title, image)
 
-    async def _pushover(self, s, title, body, urgent):
-        status, resp = await self._http(
-            "POST", "https://api.pushover.net/1/messages.json",
-            form={"token": self.hub["pushover_app_token"], "user": s["pushover"]["user_key"],
-                  "title": title, "message": body or title, "priority": 1 if urgent else 0})
+    async def _pushover(self, s, title, body, urgent, image=None):
+        form = {"token": self.hub["pushover_app_token"], "user": s["pushover"]["user_key"],
+                "title": title, "message": body or title, "priority": 1 if urgent else 0}
+        if image:
+            import base64
+            form.update(attachment_base64=base64.b64encode(image).decode(), attachment_type="image/jpeg")
+        status, resp = await self._http("POST", "https://api.pushover.net/1/messages.json", form=form)
         if status != 200 or not (isinstance(resp, dict) and resp.get("status") == 1):
             errs = resp.get("errors") if isinstance(resp, dict) else resp
             raise RuntimeError(f"Pushover answered {status}: {errs}")
 
-    async def _email(self, s, title, body, urgent):
-        await asyncio.to_thread(self._smtp, self.hub, s["email"]["address"],
-                                _no_newlines("subject", " ".join(title.split())), body or title)
+    async def _email(self, s, title, body, urgent, image=None):
+        args = (self.hub, s["email"]["address"],
+                _no_newlines("subject", " ".join(title.split())), body or title)
+        await asyncio.to_thread(self._smtp, *args, *((image,) if image else ()))
 
-    async def _one(self, ch: str, s, title, body, urgent) -> Dict[str, Any]:
+    async def _one(self, ch: str, s, title, body, urgent, image=None) -> Dict[str, Any]:
+        if image:
+            # The words matter more than the picture: a server that won't take
+            # an attachment still gets the text.
+            with_image = await self._one_try(ch, s, title, body, urgent, image)
+            if with_image["ok"]:
+                return {"ok": True, "image": True}
+            plain = await self._one_try(ch, s, title, body, urgent, None)
+            return {**plain, "image": False, "image_error": with_image["error"]} if plain["ok"] else plain
+        return await self._one_try(ch, s, title, body, urgent, None)
+
+    async def _one_try(self, ch: str, s, title, body, urgent, image) -> Dict[str, Any]:
         try:
-            await asyncio.wait_for(getattr(self, f"_{ch}")(s, title, body, urgent),
-                                   SEND_TIMEOUT_S + 5)
+            await asyncio.wait_for(
+                getattr(self, f"_{ch}")(s, title, body, urgent, *((image,) if image else ())),
+                SEND_TIMEOUT_S + 5)
             return {"ok": True}
         except asyncio.TimeoutError:
             logger.warning("[notify_channels] %s timed out", ch)
@@ -387,7 +441,8 @@ class ChannelManager:
     async def send_to_user(self, user: str, payload: Dict[str, Any],
                            kind: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """Send on each of the user's enabled channels that carry `kind`
-        (None, for a test, means every enabled channel). Never raises."""
+        (None, for a test, means every enabled channel). `payload["image"]`
+        (JPEG bytes) goes along only if the user asked for pictures. Never raises."""
         s = self.users.get(user)
         if not s or (kind is not None and not s["kinds"].get(kind, False)):
             return {}
@@ -397,8 +452,18 @@ class ChannelManager:
         title = str(payload.get("title") or "ZMM")[:250]
         body = str(payload.get("body") or "")[:2000]
         urgent = bool(payload.get("urgent"))
-        results = await asyncio.gather(*(self._one(ch, s, title, body, urgent) for ch in chans))
+        image = payload.get("image") if s.get("images") else None
+        if not isinstance(image, (bytes, bytearray)) or not 0 < len(image) <= MAX_IMAGE_BYTES:
+            image = None
+        results = await asyncio.gather(*(self._one(ch, s, title, body, urgent, image) for ch in chans))
         return dict(zip(chans, results))
+
+    def wants_images(self, user: str, kind: str) -> bool:
+        """Whether a picture for this user would actually be sent anywhere —
+        asked before fetching one."""
+        s = self.users.get(user)
+        return bool(s and s.get("images") and s["kinds"].get(kind, False)
+                    and any(s[ch]["enabled"] for ch in available(self.hub)))
 
     # Telegram linking: the user sends the bot a one-time code, so the chat is
     # one they control.

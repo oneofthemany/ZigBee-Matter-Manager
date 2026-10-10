@@ -39,6 +39,9 @@ SCHEMES = ("rtsp", "rtsps", "http", "https")
 MAX_CAMERAS = 64
 RECONCILE_S = 60
 SNAPSHOT_CACHE_S = 2.0
+# A notification picture is for a phone screen, and some channels cap its size.
+NOTIFY_IMAGE_WIDTH = 1280
+NOTIFY_IMAGE_TIMEOUT_S = 8
 # Cameras that only ever send "motion on" are cleared after this long quiet.
 MOTION_HOLD_S = 120
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -158,6 +161,8 @@ class CameraManager:
         self._task: Optional[asyncio.Task] = None
         self.last_error: Optional[str] = None
         self.on_change: Optional[Callable[[], None]] = None
+        # cid -> JPEG of the latest detection, boxes drawn (the vision bridge).
+        self.detection_snapshot: Optional[Callable[[str], Awaitable[bytes]]] = None
         self.load()
 
     # Storage
@@ -386,6 +391,28 @@ class CameraManager:
             dev.online = True
         self._snap_cache[cid] = (self._clock(), img)
         return img
+
+    async def notification_image(self, cid: str) -> Optional[bytes]:
+        """A picture to go with a notification about this camera, or None —
+        a notification is never held up or lost for want of one. While
+        something is detected it is the frame that was detected, box drawn;
+        otherwise what the camera sees now."""
+        dev = self.devices.get(cid)
+        if dev is None or not self.cameras[cid].get("enabled", True):
+            return None
+
+        async def fetch() -> bytes:
+            if self.detection_snapshot and any(dev.state.get(g) for g in OBJECT_GROUPS):
+                try:
+                    return await self.detection_snapshot(cid)
+                except Exception as e:                    # noqa: BLE001
+                    logger.debug("[cameras] no detection frame for %s: %s", cid, e)
+            return await self.go2rtc.snapshot(STREAM_PREFIX + cid, width=NOTIFY_IMAGE_WIDTH)
+        try:
+            return await asyncio.wait_for(fetch(), NOTIFY_IMAGE_TIMEOUT_S)
+        except (Go2rtcError, asyncio.TimeoutError) as e:
+            logger.info("[cameras] no picture of %s for a notification: %s", cid, e or "timed out")
+            return None
 
     # Engine and device list
     def automation_devices(self) -> Dict[str, CameraDevice]:

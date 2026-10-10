@@ -28,6 +28,12 @@ class FakeGo2rtc:
     async def delete_stream(self, name):
         self.streams_.pop(name, None)
 
+    async def snapshot(self, name, width=None):
+        self.snaps = getattr(self, "snaps", []) + [(name, width)]
+        if getattr(self, "down", False):
+            raise C.Go2rtcError("go2rtc unreachable")
+        return b"\xff\xd8live"
+
     def stream_url(self, name):
         return f"http://zmm:apipw@127.0.0.1:1984/api/stream.mp4?src={name}"
 
@@ -152,6 +158,35 @@ def run() -> Checker:
             c.check("status for the UI: reachable, backend, per-camera health, and no stream URLs",
                     pub["reachable"] and pub["backend"] == "coral" and pub["cameras"]["front"]["online"]
                     and "apipw" not in str(pub), pub)
+
+            c.section("pictures for notifications")
+            async def boxed(cid):
+                return b"\xff\xd8boxed"
+            m.detection_snapshot = boxed
+            side.present[("front", "person")] = True
+            side.version += 1
+            await bridge.step()
+            c.check("while a person is detected, the picture is the detected frame",
+                    await m.notification_image("front") == b"\xff\xd8boxed")
+            side.present.clear()
+            side.version += 1
+            await bridge.step()
+            img = await m.notification_image("front")
+            c.check("with nothing detected it is what the camera sees now, sized for a phone",
+                    img == b"\xff\xd8live" and g.snaps[-1] == ("zmm_front", 1280), g.snaps)
+
+            async def broken(cid):
+                raise V.VisionError("nothing detected yet")
+            m.detection_snapshot = broken
+            await m.apply_objects("front", {"person": True})
+            c.check("no detection frame to be had: the live view instead",
+                    await m.notification_image("front") == b"\xff\xd8live")
+            await m.apply_objects("front", {"person": False})
+            g.down = True
+            c.check("go2rtc down: no picture, and no error for the notification to trip on",
+                    await m.notification_image("front") is None)
+            g.down = False
+            c.check("an unknown camera has none", await m.notification_image("nope") is None)
 
             c.section("sidecar down")
             side.present[("front", "person")] = True

@@ -32,6 +32,9 @@ const TRIGGERS = {
     temp_target_reached: { label: 'Heating target reached',            icon: 'fa-thermometer-half',     category: 'heating' },
     temp_above:          { label: 'Temperature rises above threshold', icon: 'fa-temperature-high',     category: 'heating', needsThreshold: true },
     temp_below:          { label: 'Temperature drops below threshold', icon: 'fa-temperature-low',      category: 'heating', needsThreshold: true },
+    person_detected:     { label: 'Person seen on camera',             icon: 'fa-person',               category: 'camera' },
+    vehicle_detected:    { label: 'Vehicle seen on camera',            icon: 'fa-car-side',             category: 'camera' },
+    animal_detected:     { label: 'Animal seen on camera',             icon: 'fa-paw',                  category: 'camera' },
     valve_alarm:         { label: 'Valve alarm (TRV)',                 icon: 'fa-exclamation-triangle', category: 'heating' },
     window_open_trv:     { label: 'Window-open detected (TRV)',        icon: 'fa-window-maximize',      category: 'heating' },
 };
@@ -321,6 +324,7 @@ async function openRuleEditor(ruleId) {
         control:     'Buttons & Controls',
         maintenance: 'Maintenance',
         heating:     'Heating',
+        camera:      'Cameras',
     };
 
     const triggerOptions = Object.entries(triggersByCategory)
@@ -349,6 +353,9 @@ async function openRuleEditor(ruleId) {
 
     let tabs = {};
     try { tabs = await api('GET', '/api/tabs'); } catch (e) { log.warn('[notifications] tabs unavailable', e); }
+    // Empty for an account that can't view cameras: the picker just isn't shown.
+    let cams = [];
+    try { cams = (await api('GET', '/api/cameras')).cameras || []; } catch (e) { /* no camera:read */ }
     const tabOptions = Object.keys(tabs).map(t =>
         `<option value="${escapeHtml(t)}" ${rule.tab === t ? 'selected' : ''}>${escapeHtml(t)}</option>`
     ).join('');
@@ -437,6 +444,17 @@ async function openRuleEditor(ruleId) {
                             <input type="text" class="form-control" id="notifRuleMessage" value="${escapeHtml(rule.message ?? '')}" placeholder="Use {device} for the device name">
                         </div>
 
+                        ${cams.length ? `<div class="mb-3">
+                            <label class="form-label fw-bold" for="notifRuleCamera">Attach a snapshot from</label>
+                            <select class="form-select" id="notifRuleCamera">
+                                <option value="">The camera it fired on, if any</option>
+                                ${cams.map(c => `<option value="${escapeHtml(c.id)}" ${c.id === rule.camera ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+                            </select>
+                            <small class="text-muted">A door opening can send the porch camera's view. Pictures go to ntfy,
+                                Telegram, Signal, Pushover and email once you turn on <strong>Camera snapshots</strong>
+                                under Other channels — not to browser push.</small>
+                        </div>` : ''}
+
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -510,6 +528,7 @@ async function openRuleEditor(ruleId) {
             cooldownMinutes: Number(document.getElementById('notifRuleCooldown').value) || 0,
             title:   document.getElementById('notifRuleTitle').value.trim()   || null,
             message: document.getElementById('notifRuleMessage').value.trim() || null,
+            camera:  document.getElementById('notifRuleCamera')?.value || null,
             threshold: trigger?.needsThreshold
                 ? document.getElementById('notifRuleThreshold').value
                 : undefined,

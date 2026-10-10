@@ -396,6 +396,38 @@ out: httpx puts the URL in its errors, and Telegram's URL contains the bot token
 - **Email** — SMTP with STARTTLS, implicit TLS or none; sent off the event loop.
   The rule title is the subject.
 
+### Camera snapshots
+
+A notification about a camera can carry a picture on these channels. Off until
+a user ticks **Camera snapshots**: the service receiving it sees the picture.
+
+Which picture:
+
+- a rule or alarm that fired **on a camera device** — that camera;
+- a rule with **Attach a snapshot from** set — that camera, whatever device
+  fired it (a door opening can send the porch camera's view).
+
+While the camera has a person, vehicle or animal detected
+([vision.md](vision.md)) the picture is the frame that was detected, box
+drawn. Otherwise it is what the camera sees now, from go2rtc, scaled to 1280
+wide.
+
+Rules: only for an owner who has `camera:read`; never fetched unless it will
+be sent; fetched once per event however many people are notified; 8 s to get
+it, after which the notification goes without. If a service refuses the
+attachment (a ntfy server with attachments off, say) the text is sent again
+without it, and the result reports `image: false` and why.
+
+How it travels: ntfy — the JPEG is the request body, the text in headers;
+Telegram — `sendPhoto` with the text as caption; Signal — `base64_attachments`;
+Pushover — `attachment_base64`; email — an attachment.
+
+Not on Web Push or the in-page bell: a push payload is 4 KB, and a URL in it
+would have to be fetched without the user's session.
+
+Notification rules also gained three camera triggers — **Person / Vehicle /
+Animal seen on camera** — which fire when that signal turns on.
+
 ### API
 
 | | |

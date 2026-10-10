@@ -29,9 +29,9 @@ class FakeHttp:
         self.replies = replies or {}
         self.fail = fail or {}
 
-    async def __call__(self, method, url, json_body=None, form=None, headers=None):
+    async def __call__(self, method, url, json_body=None, form=None, headers=None, content=None, files=None):
         self.calls.append({"method": method, "url": url, "json": json_body, "form": form,
-                           "headers": headers or {}})
+                           "headers": headers or {}, "content": content, "files": files})
         for needle, exc in self.fail.items():
             if needle in url:
                 raise exc
@@ -176,6 +176,98 @@ def run() -> Checker:
             N.SEND_TIMEOUT_S = saved
         c.check("a hung service times out instead of holding delivery",
                 not r["ntfy"]["ok"] and "no answer" in r["ntfy"]["error"], r)
+
+    c.section("camera snapshots")
+    JPEG = b"\xff\xd8" + b"x" * 2000
+    with tempfile.TemporaryDirectory() as tmp:
+        http, mail = FakeHttp(), []
+        m = N.ChannelManager(path=Path(tmp) / "nc.json", http=http, hub=dict(HUB),
+                             smtp=lambda *a: mail.append(a))
+        _all_on(m)
+        note = {"title": "Person seen", "body": "Person seen — Front döor", "urgent": True, "image": JPEG}
+        res = run_(m.send_to_user("alex", note, kind="notification_rule"))
+        c.check("pictures are off until the user asks for them: text only",
+                all("image" not in r for r in res.values()) and not any(x["content"] or x["files"] for x in http.calls)
+                and "attachment_base64" not in http.to("pushover")[0]["form"] and len(mail[0]) == 4, res)
+        c.check("…and a picture wouldn't even be fetched", not m.wants_images("alex", "notification_rule"))
+        m.update("alex", {"images": True})
+        c.check("once asked for, it is wanted for the kinds the channels carry",
+                m.wants_images("alex", "notification_rule") and not m.wants_images("alex", "message_created")
+                and not m.wants_images("nobody", "alarm"))
+        http.calls.clear(); mail.clear()
+        res = run_(m.send_to_user("alex", note, kind="notification_rule"))
+        c.check("every channel reports the picture went", all(r == {"ok": True, "image": True} for r in res.values()), res)
+        n = http.to("ntfy.example")[0]
+        import base64 as b64
+        c.check("ntfy: the JPEG is the body, the text rides in headers, non-ASCII safe",
+                n["method"] == "PUT" and n["url"] == "https://ntfy.example/zmm-abcdef123456" and n["content"] == JPEG
+                and n["headers"]["Filename"] == "snapshot.jpg" and n["headers"]["Priority"] == "4"
+                and b64.b64decode(n["headers"]["Message"][10:-2]).decode() == "Person seen — Front döor"
+                and n["headers"]["Authorization"] == "Bearer NTFYSECRET", n["headers"])
+        t = http.to("telegram")[0]
+        c.check("Telegram: sendPhoto with the text as caption",
+                t["url"].endswith("/sendPhoto") and t["files"]["photo"][1] == JPEG and t["form"]["chat_id"] == "42"
+                and t["form"]["caption"].startswith("Person seen\n"), (t["url"], t["form"]))
+        sg = http.to("signal.lan")[0]["json"]
+        c.check("Signal: a base64 attachment", b64.b64decode(sg["base64_attachments"][0]) == JPEG and "Person seen" in sg["message"])
+        po = http.to("pushover")[0]["form"]
+        c.check("Pushover: a base64 attachment typed as JPEG",
+                b64.b64decode(po["attachment_base64"]) == JPEG and po["attachment_type"] == "image/jpeg" and po["priority"] == 1)
+        c.check("email: the JPEG is handed to the mailer", len(mail) == 1 and mail[0][4] == JPEG)
+
+        http.calls.clear()
+        http.replies = {"sendPhoto": (400, {"ok": False, "description": "PHOTO_INVALID_DIMENSIONS"}),
+                        "ntfy.example/zmm": (413, "attachments not allowed")}
+        res = run_(m.send_to_user("alex", note, kind="notification_rule"))
+        c.check("a service that refuses the picture still gets the words",
+                res["telegram"]["ok"] and res["telegram"]["image"] is False and "PHOTO_INVALID" in res["telegram"]["image_error"]
+                and any(x["url"].endswith("/sendMessage") for x in http.to("telegram"))
+                and res["ntfy"]["ok"] and res["ntfy"]["image"] is False
+                and any(x["method"] == "POST" and x["json"] for x in http.to("ntfy.example")), res)
+        http.replies = {}
+        http.calls.clear()
+        run_(m.send_to_user("alex", {**note, "image": b"x" * (N.MAX_IMAGE_BYTES + 1)}, kind="notification_rule"))
+        c.check("an oversized picture is dropped, not sent", not any(x["content"] or x["files"] for x in http.calls))
+        http.calls.clear()
+        run_(m.send_to_user("alex", {**note, "image": "not bytes"}, kind="notification_rule"))
+        c.check("…as is anything that isn't bytes", not any(x["content"] or x["files"] for x in http.calls))
+        m2 = N.ChannelManager(path=Path(tmp) / "nc.json", http=FakeHttp(), hub=dict(HUB))
+        m.save(); m2.load()
+        c.check("the choice survives a restart", m2.settings("alex")["images"] is True)
+
+    import email as email_mod
+    import smtplib
+
+    class FakeSMTP:
+        sent = []
+
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def starttls(self, **k):
+            pass
+
+        def login(self, *a):
+            pass
+
+        def send_message(self, msg):
+            FakeSMTP.sent.append(msg)
+    real = smtplib.SMTP
+    smtplib.SMTP = FakeSMTP
+    try:
+        N._smtplib_send({**HUB, "smtp_port": 587, "smtp_security": "none", "smtp_username": ""},
+                        "alex@example.com", "Person seen", "body", JPEG)
+    finally:
+        smtplib.SMTP = real
+    parts = [p for p in FakeSMTP.sent[0].walk() if p.get_content_type() == "image/jpeg"]
+    c.check("the real mailer attaches it as snapshot.jpg",
+            len(parts) == 1 and parts[0].get_filename() == "snapshot.jpg" and parts[0].get_payload(decode=True) == JPEG)
 
     c.section("Telegram linking")
     with tempfile.TemporaryDirectory() as tmp:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -154,6 +155,15 @@ TRIGGERS: Dict[str, Trigger] = {
         lambda p, c, r, ch: _crossed(p, c, r, above=False),
         lambda n, c, r: f"{n} now {_fmt(_temp(c))}°C (below {r['threshold']}°C)",
         "Temperature drops below threshold", needs_threshold=True),
+    "person_detected": Trigger(
+        lambda p, c, r, ch: not p.get("person") and bool(c.get("person")),
+        lambda n, c, r: f"Person seen — {n}", "Person seen on camera"),
+    "vehicle_detected": Trigger(
+        lambda p, c, r, ch: not p.get("vehicle") and bool(c.get("vehicle")),
+        lambda n, c, r: f"Vehicle seen — {n}", "Vehicle seen on camera"),
+    "animal_detected": Trigger(
+        lambda p, c, r, ch: not p.get("animal") and bool(c.get("animal")),
+        lambda n, c, r: f"Animal seen — {n}", "Animal seen on camera"),
     "valve_alarm": Trigger(
         lambda p, c, r, ch: not p.get("valve_alarm") and bool(c.get("valve_alarm")),
         lambda n, c, r: f"Valve alarm — {n}", "Valve alarm (TRV)", persistent=True),
@@ -178,6 +188,9 @@ def _hhmm(v: Any) -> Optional[str]:
 def _text(v: Any) -> Optional[str]:
     v = (str(v).strip() if v is not None else "")[:MAX_TEXT]
     return v or None
+
+
+_CAMERA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
 def normalise_rule(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -209,9 +222,15 @@ def normalise_rule(data: Dict[str, Any]) -> Dict[str, Any]:
     time_from, time_to = _hhmm(data.get("timeFrom")), _hhmm(data.get("timeTo"))
     if bool(time_from) != bool(time_to):
         raise ValueError("set both times of the window, or neither")
+    camera = _text(data.get("camera"))
+    if camera and not _CAMERA_ID_RE.match(camera):
+        raise ValueError("unknown camera")
     return {
         "enabled": data.get("enabled", True) is not False,
         "trigger": trigger,
+        # A camera whose snapshot goes with the notification; a rule on a
+        # camera device uses that camera without being told.
+        "camera": camera,
         "scope": scope,
         "devices": devices,
         "tab": tab,
@@ -435,6 +454,7 @@ class NotificationRuleEngine:
                 # Same tag on push and in-page, so one device shows one notification.
                 "tag": f"zmm-rule-{rule['id']}-{ieee}",
                 "persistent": trigger.persistent,
+                "camera": rule.get("camera"),
             }))
         return out
 
@@ -452,6 +472,7 @@ class NotificationRuleEngine:
             "rule_id": rule["id"], "ieee": None,
             "title": rule.get("title") or trigger.label, "body": body,
             "tag": f"zmm-rule-{rule['id']}-test", "persistent": False, "test": True,
+            "camera": rule.get("camera"),
         })
         return result or {}
 

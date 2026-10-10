@@ -919,7 +919,8 @@ async def lifespan(app: FastAPI):
                         "requireInteraction": payload["urgent"]})
                 except Exception as e:
                     logger.warning(f"[alarm] push to {user} failed: {e}")
-                await channel_manager.send_to_user(user, payload, kind="alarm")
+                image = await _camera_image_for(user, "alarm", payload.get("ieee"))
+                await channel_manager.send_to_user(user, {**payload, "image": image}, kind="alarm")
 
         alarm_panel = AlarmPanel(
             get_devices=zigbee_service.automation._get_all_devices,
@@ -979,6 +980,7 @@ async def lifespan(app: FastAPI):
         from modules.vision import VisionBridge, set_vision_bridge
         vision_bridge = VisionBridge(camera_manager)
         camera_manager.on_change = vision_bridge.kick
+        camera_manager.detection_snapshot = vision_bridge.client.snapshot
         set_vision_bridge(vision_bridge)
         app.state.vision_bridge = vision_bridge
         await vision_bridge.start()
@@ -1530,6 +1532,34 @@ from modules.notification_rules import (NotificationRuleStore, NotificationRuleE
 from routes.notification_rule_routes import register_notification_rule_routes
 
 
+_notify_images: dict = {}          # camera id -> (monotonic time, jpeg or None)
+
+
+async def _camera_image_for(user: str, kind: str, ieee: Optional[str], camera: Optional[str] = None):
+    """A camera snapshot for one user's notification, or None. `camera` is a
+    rule's own choice; otherwise the device the notification is about, if it
+    is a camera. Only for a user who may view cameras and has asked for
+    pictures on a channel — they go to third-party services."""
+    from modules.auth import get_auth_manager, scope_matches
+    from modules.cameras import IEEE_PREFIX, get_camera_manager
+    cid = camera or (ieee[len(IEEE_PREFIX):] if ieee and ieee.startswith(IEEE_PREFIX) else None)
+    cams, auth = get_camera_manager(), get_auth_manager()
+    if not cid or cams is None or cid not in cams.cameras or not channel_manager.wants_images(user, kind):
+        return None
+    try:
+        if auth is None or not scope_matches("camera:read", auth.resolve_user_scopes(user)):
+            return None
+    except Exception:
+        return None
+    # One event usually notifies several people: fetch the picture once.
+    hit = _notify_images.get(cid)
+    if hit and time.monotonic() - hit[0] < 5:
+        return hit[1]
+    image = await cams.notification_image(cid)
+    _notify_images[cid] = (time.monotonic(), image)
+    return image
+
+
 async def _deliver_rule_notification(owner: str, payload: dict):
     """The owner's open pages over the websocket, the owner's phones over push."""
     pages = 0
@@ -1547,6 +1577,7 @@ async def _deliver_rule_notification(owner: str, payload: dict):
     })
     channels = await channel_manager.send_to_user(owner, {
         "title": payload["title"], "body": payload["body"], "urgent": payload["persistent"],
+        "image": await _camera_image_for(owner, "notification_rule", payload.get("ieee"), payload.get("camera")),
     }, kind="notification_rule")
     return {"pages": pages, **push, "channels": channels}
 

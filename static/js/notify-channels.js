@@ -116,6 +116,11 @@ function renderMine(el) {
                 <label class="form-check-label small" for="nc_kind_msg">Chat messages
                     <span class="text-muted">— the service can read them, unlike push</span></label>
             </div>
+            <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" id="nc_images" ${s.images ? 'checked' : ''}>
+                <label class="form-check-label small" for="nc_images">Camera snapshots
+                    <span class="text-muted">— a picture with notifications about a camera; the service sees it too</span></label>
+            </div>
         </div>
         <div class="d-flex flex-wrap gap-2">
             <button class="btn btn-primary btn-sm" type="button" id="nc_save">Save</button>
@@ -129,7 +134,7 @@ function collectMine() {
     const val = id => document.getElementById(id)?.value?.trim();
     const on = id => !!document.getElementById(id)?.checked;
     const body = { kinds: { notification_rule: on('nc_kind_rule'), message_created: on('nc_kind_msg'),
-                            alarm: on('nc_kind_alarm') } };
+                            alarm: on('nc_kind_alarm') }, images: on('nc_images') };
     for (const ch of view.available) body[ch] = { enabled: on(`nc_${ch}_on`) };
     if (body.ntfy) body.ntfy.topic = val('nc_ntfy_topic') ?? '';
     if (body.pushover) body.pushover.user_key = val('nc_pushover_key') ?? '';
