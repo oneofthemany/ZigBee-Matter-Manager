@@ -78,7 +78,7 @@ upgrade.
 
 ### Running go2rtc yourself
 
-If go2rtc already runs elsewhere (Frigate ships one), run it with a config like ZMM's — API only, credentials, `local_auth: true` — and
+If go2rtc already runs elsewhere, run it with a config like ZMM's — API only, credentials, `local_auth: true` — and
 enter its address and the API username/password under **Manage → Address**.
 ZMM only needs the API.
 
@@ -146,7 +146,8 @@ requests, so it keeps working through the tunnel, where Origin and Host differ.
 ## Not yet
 
 Recording and event clips, snapshots attached to alerts, a Frames card, PTZ,
-WebRTC, Frigate's person/vehicle events, and IAS-style camera sirens.
+WebRTC, and IAS-style camera sirens. Person, vehicle and animal detection is
+in [vision.md](vision.md).
 
 ## API
 

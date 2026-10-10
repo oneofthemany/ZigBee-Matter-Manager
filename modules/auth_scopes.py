@@ -43,6 +43,7 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     # go2rtc sidecar are admin. The stream websocket checks camera:read itself.
     ("/api/cameras",           {"GET": "camera:read", "*": "admin"}),
     ("/api/cameras/go2rtc",    {"*": "admin"}),
+    ("/api/cameras/vision",    {"*": "admin"}),
 
     # Shelly / ESPHome setup; using the devices is /api/device/* (device:*).
     ("/api/logbook",           {"GET": "system:read", "*": "admin"}),

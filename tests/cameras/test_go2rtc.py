@@ -133,6 +133,10 @@ def run() -> Checker:
             c.check("the stream websocket carries Basic auth and an encoded name",
                     url == "ws://127.0.0.1:1984/api/ws?src=zmm_front%20door"
                     and headers["Authorization"].startswith("Basic "), (url, headers))
+            shared = g.stream_url("zmm_front door")
+            c.check("another local reader is given the authenticated API stream, not RTSP",
+                    shared.startswith("http://") and "@127.0.0.1:1984/api/stream.mp4?src=zmm_front%20door" in shared
+                    and g.settings["password"] in shared, shared)
         finally:
             G.SECRETS_FILE, G.CONFIG_DIR = saved
     return c

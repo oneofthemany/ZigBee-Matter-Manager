@@ -1,9 +1,125 @@
-# Vision — object detection for cameras (in progress)
+# Vision — object detection for cameras
 
-Only the hardware probe and the Coral driver setup exist so far. The plan: a sidecar that runs detection
-on camera sub-streams and reports `person`, `car` and the like as signals on
-the camera device, so rules, notifications and alarm zones use them like any
-sensor.
+A sidecar watches the cameras you choose and reports **person**, **vehicle**
+and **animal** as signals on each camera device (`camera::<id>`), so rules,
+notification rules and alarm zones use them like any sensor. Everything runs
+on the hub; no picture leaves it.
+
+## Setting up
+
+1. ZMM Manager → Services → Cameras → **Object detection → Enable**. It uses
+   the Coral if one is ready (see §Hardware), otherwise the CPU.
+2. In the app: Cameras → Manage → edit a camera → **Detect objects on this
+   camera**, and tick what to look for.
+3. The camera device now has `person` / `vehicle` / `animal` (true or false).
+   **Last detection** in the camera list shows the frame behind the latest
+   one, with its box drawn.
+
+What each signal covers: `person`; `vehicle` — car, truck, bus, motorcycle,
+bicycle; `animal` — cat, dog, bird, horse, sheep, cow, bear. There is no
+package or face detection: the model (§Models) doesn't know them.
+
+## Pipeline
+
+Per camera, in `vision/worker.py`:
+
+1. **Frames.** ffmpeg decodes the stream to 640×360 raw frames, two a second.
+2. **Motion** (`motion.py`). Each frame is compared with the one before, in
+   8-pixel cells. Nothing moved → the detector isn't run. The whole picture
+   changing at once (exposure, IR cut, a light) is not motion.
+3. **Region.** The detector is shown a square around what moved rather than
+   the whole frame, so a distant person fills far more of its 320×320 input.
+4. **Detect** (`detector.py`). One pass; boxes are mapped back to the frame.
+5. **Presence** (`tracker.py`). A group turns on when seen in two passes
+   running, and off 12 s after it was last seen. While something is present
+   but still, its area is re-checked every 4 s — a person standing still stays
+   present without the detector running on every frame.
+
+The motion gate is also what keeps a Coral cool: on a quiet scene it does
+nothing.
+
+## One connection per camera
+
+go2rtc already holds a connection to each camera for live view. Detection
+reads the same stream from go2rtc's API (`/api/stream.mp4`), which asks for
+the API password even from the hub itself, so:
+
+- the camera is connected to once, however many viewers and whether or not
+  detection is on;
+- the camera's own login never reaches the detection sidecar.
+
+go2rtc's RTSP server stays off: it would be the obvious way to share a
+stream, but it does not ask a loopback client for a password.
+
+A camera's **low-resolution stream for detection** is optional. Set, it is a
+second go2rtc stream (`zmmd_<id>`) and a second connection to the camera, in
+exchange for much less decoding work — worth it on a small CPU with a
+high-resolution main stream. Detection needs go2rtc running either way.
+
+## Backends
+
+| | |
+|---|---|
+| Coral (M.2, Mini PCIe, USB) | TFLite with the Edge TPU delegate |
+| CPU | TFLite, two threads |
+
+If the Coral can't be opened the sidecar falls back to the CPU and says so on
+the Object detection card in the app, with the reason. Intel, AMD, NVIDIA and
+Hailo hardware is detected (§Hardware) but has no backend yet.
+
+**The Coral path has not been run against a real Coral.** Everything up to
+loading the delegate has; the CPU path is exercised end to end.
+
+## Models
+
+SSDLite MobileDet, COCO, 320×320 (Google, Apache-2.0), in CPU and Edge TPU
+builds. The models, the label list and the Edge TPU library are not in the app
+image: `vision/assets.py` downloads them on first start into
+`data/vision/models/`, each from a fixed URL and checked against a pinned
+SHA-256. The Edge TPU library is a build made for the TFLite version
+`ai-edge-litert` ships; the two pins move together.
+
+## Sidecar
+
+The container is `<app>-vision`, created by the ZMM Manager
+(`manager/vision.py`) from the app's own image running `python -m vision`, on
+host networking, sharing the app's `data` and `logs` (not `config`). It gets
+the Coral's device node when there is one. The Manager recreates it when the
+app is upgraded or the usable hardware changes, and asks the host for a
+boot-time service like the other sidecars; that unit starts after the Coral
+driver's.
+
+### Sidecar API
+
+Loopback only (`127.0.0.1:8556`), bearer token from `data/vision/token`
+(0600, made by whichever of the app and the sidecar starts first).
+
+| | |
+|---|---|
+| `GET /status[?after=<version>&wait=<s>]` | backend, per-camera health and presence; with `after`, waits for a change |
+| `PUT /config` | `{cameras: [{id, url, labels, threshold, fps?}]}` — held in memory only, since URLs carry go2rtc's password |
+| `GET /snapshot/<id>.jpg` | the latest detection's frame, boxes drawn |
+
+The app (`modules/vision.py`) long-polls `/status`, re-sends the camera list
+whenever the sidecar's config hash isn't the one it was given (a restarted
+sidecar has none), and clears every object signal if the sidecar goes away.
+
+## API
+
+| | |
+|---|---|
+| `PUT /api/cameras/{id}` | `detect: {enabled, labels, threshold, url?}` |
+| `GET /api/cameras/{id}/detection` | latest detection frame (JPEG), `camera:read` |
+| `GET /api/cameras/vision` | sidecar reachability, backend, per-camera health (admin) |
+
+In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
+`POST /vision/enable`, `/vision/disable` `{remove?}`, `/vision/restart`,
+`/vision/service` `{action}`.
+
+## Not yet
+
+Zones within a frame, clips and recordings, snapshots attached to
+notifications, per-object counts, GPU and Hailo backends, and larger models.
 
 ## Hardware
 

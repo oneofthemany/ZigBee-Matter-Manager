@@ -17,7 +17,7 @@ from typing import Any, Dict
 
 import httpx
 
-from manager import beekeeper, containers, go2rtc, ollama
+from manager import beekeeper, containers, go2rtc, ollama, vision
 
 logger = logging.getLogger("manager.watchdog")
 
@@ -335,6 +335,7 @@ async def run_loop():
     beekeeper_t: Dict[str, Any] = {}
     service_t: Dict[str, Any] = {}
     go2rtc_t: Dict[str, Any] = {}
+    vision_t: Dict[str, Any] = {}
     async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
         while True:
             await asyncio.sleep(INTERVAL)
@@ -370,3 +371,10 @@ async def run_loop():
                 raise
             except Exception as e:
                 logger.warning("Watchdog go2rtc error: %s", e)
+            try:
+                if not (_upgrade_in_progress() or _test_deploy_active()):
+                    await vision.ensure(vision_t)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Watchdog vision error: %s", e)

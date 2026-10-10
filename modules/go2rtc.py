@@ -5,7 +5,9 @@ the container (manager/go2rtc.py). Browsers never reach go2rtc — ZMM proxies
 snapshots and streams behind its own auth. See docs/cameras.md §go2rtc.
 
 The config shuts every go2rtc server but the API: its RTSP server would
-otherwise re-publish every camera, unauthenticated, on :8554.
+otherwise re-publish every camera on :8554, and it never asks a loopback
+client for the password. The object-detection sidecar reads the API's stream
+endpoint instead, which does — so a camera is still connected to only once.
 """
 
 from __future__ import annotations
@@ -208,6 +210,15 @@ class Go2rtc:
         if not isinstance(body, (bytes, bytearray)) or not body.startswith(b"\xff\xd8"):
             raise Go2rtcError("go2rtc returned no image (is the camera reachable?)")
         return bytes(body)
+
+    def stream_url(self, name: str) -> str:
+        """A stream as fMP4 over the authenticated API, credentials included:
+        what another local process is given so it shares go2rtc's connection
+        to the camera rather than opening its own."""
+        from urllib.parse import quote
+        u = urlparse(self.settings["url"])
+        auth = f"{quote(self._auth[0], safe='')}:{quote(self._auth[1], safe='')}@" if self._auth else ""
+        return f"{u.scheme}://{auth}{u.netloc}/api/stream.mp4?src={quote(name, safe='')}"
 
     def ws_target(self, name: str) -> Tuple[str, Dict[str, str]]:
         """URL and headers for go2rtc's stream websocket."""

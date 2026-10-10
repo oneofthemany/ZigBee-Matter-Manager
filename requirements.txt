@@ -39,3 +39,6 @@ cryptography
 # ESPHome native API (docs/esphome.md). Exact pin: the newest release that fits
 # the python-matter-server 7.x protobuf/zeroconf/cryptography pins.
 aioesphomeapi==29.0.0
+# TFLite runtime for the object-detection sidecar (docs/vision.md). Exact pin:
+# the Edge TPU library vision/assets.py fetches is built against its TFLite 2.19.
+ai-edge-litert==1.2.0

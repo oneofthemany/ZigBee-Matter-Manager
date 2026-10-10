@@ -6,7 +6,8 @@ The registry (data/cameras.json) never holds credentials; they live in
 config/secrets.yaml under `cameras` and are joined to the URL only when a
 stream is handed to go2rtc. A camera is an engine device, `camera::<id>`, whose
 `motion`/`occupancy` attributes feed rules, notification rules and alarm zones
-like any motion sensor.
+like any motion sensor. With detection on (docs/vision.md) it also carries
+`person`, `vehicle` and `animal`.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from modules.go2rtc import Go2rtc, Go2rtcError
+from modules.vision import OBJECT_GROUPS
 
 logger = logging.getLogger("cameras")
 
@@ -29,6 +31,9 @@ DATA_PATH = Path("./data/cameras.json")
 SECRETS_FILE = os.environ.get("ZMM_SECRETS_FILE", "./config/secrets.yaml")
 IEEE_PREFIX = "camera::"
 STREAM_PREFIX = "zmm_"
+# A camera's smaller stream, when it has one set for detection. Its own
+# prefix: a camera id may itself end in anything.
+DETECT_PREFIX = "zmmd_"
 # go2rtc also takes exec:, ffmpeg: and other sources that run commands.
 SCHEMES = ("rtsp", "rtsps", "http", "https")
 MAX_CAMERAS = 64
@@ -37,7 +42,7 @@ SNAPSHOT_CACHE_S = 2.0
 # Cameras that only ever send "motion on" are cleared after this long quiet.
 MOTION_HOLD_S = 120
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-RESERVED_IDS = ("go2rtc", "discover", "probe")      # fixed API paths under /api/cameras/
+RESERVED_IDS = ("go2rtc", "discover", "probe", "vision")      # fixed API paths under /api/cameras/
 
 
 def _slug(text: str) -> str:
@@ -116,6 +121,18 @@ class CameraDevice:
         self.state: Dict[str, Any] = {"motion": False, "occupancy": False, "available": True}
         self.online: Optional[bool] = None
         self.motion_at = 0.0
+        self.sync_objects()
+
+    def sync_objects(self) -> None:
+        """Object keys exist only for what the camera is asked to detect, so
+        rule pickers don't offer signals that can never fire."""
+        d = self.cfg.get("detect") or {}
+        want = d.get("labels", []) if d.get("enabled") else []
+        for g in OBJECT_GROUPS:
+            if g in want:
+                self.state.setdefault(g, False)
+            else:
+                self.state.pop(g, None)
 
     def is_available(self) -> bool:
         return self.online is not False
@@ -140,6 +157,7 @@ class CameraManager:
         self._watchers: Dict[str, asyncio.Task] = {}
         self._task: Optional[asyncio.Task] = None
         self.last_error: Optional[str] = None
+        self.on_change: Optional[Callable[[], None]] = None
         self.load()
 
     # Storage
@@ -172,6 +190,7 @@ class CameraManager:
                 "username": creds.get("username", ""),
                 "online": dev.online if dev else None,
                 "motion": bool(dev and dev.state["motion"]),
+                "objects": {g: dev.state[g] for g in OBJECT_GROUPS if dev and g in dev.state},
                 "ieee": IEEE_PREFIX + cam["id"]}
 
     def list(self) -> List[Dict[str, Any]]:
@@ -183,7 +202,7 @@ class CameraManager:
         if current is None:
             cid = str(data.get("id") or _slug(str(data.get("name") or ""))).lower()
             if not _ID_RE.match(cid) or cid in RESERVED_IDS:
-                raise ValueError("Id: lower-case letters, digits, '-' and '_' (not go2rtc, discover or probe)")
+                raise ValueError("Id: lower-case letters, digits, '-' and '_' (not go2rtc, discover, probe or vision)")
             if cid in self.cameras:
                 raise ValueError(f"A camera '{cid}' already exists")
             if len(self.cameras) >= MAX_CAMERAS:
@@ -214,6 +233,19 @@ class CameraManager:
             cam["enabled"] = bool(data.get("enabled", True))
         if "model" in data:
             cam["model"] = str(data.get("model") or "")[:60]
+        if "detect" in data:
+            d = data.get("detect") or {}
+            labels = [g for g in OBJECT_GROUPS if g in (d.get("labels") or OBJECT_GROUPS)]
+            try:
+                threshold = float(d.get("threshold") or 0.5)
+            except (TypeError, ValueError):
+                raise ValueError("Detection confidence must be a number")
+            if not 0.3 <= threshold <= 0.95:
+                raise ValueError("Detection confidence must be between 30% and 95%")
+            # A second, smaller stream of the same camera; it uses the same login.
+            url = split_url(str(d["url"]))["url"] if d.get("url") else ""
+            cam["detect"] = {"enabled": bool(d.get("enabled")) and bool(labels), "labels": labels,
+                             "threshold": round(threshold, 2), "url": url}
         return cam
 
     def _set_creds(self, cid: str, data: Dict[str, Any], url_creds: Dict[str, str]) -> None:
@@ -243,6 +275,7 @@ class CameraManager:
         self._save()
         await self._push(cam)
         self._restart_watcher(cam["id"])
+        self._changed()
         return self.public(cam)
 
     async def update(self, cid: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -255,9 +288,11 @@ class CameraManager:
         self.cameras[cid] = cam
         dev = self.devices[cid]
         dev.cfg, dev.friendly_name = cam, cam["name"]
+        dev.sync_objects()
         self._save()
         await self._push(cam)
         self._restart_watcher(cid)
+        self._changed()
         return self.public(cam)
 
     async def delete(self, cid: str) -> bool:
@@ -269,8 +304,10 @@ class CameraManager:
         if creds.pop(cid, None) is not None:
             _write_credentials(creds)
         self._save()
+        self._changed()
         try:
-            await self.go2rtc.delete_stream(STREAM_PREFIX + cid)
+            for prefix in (STREAM_PREFIX, DETECT_PREFIX):
+                await self.go2rtc.delete_stream(prefix + cid)
         except Go2rtcError as e:
             logger.info("[cameras] go2rtc delete of %s: %s", cid, e)
         return True
@@ -281,13 +318,26 @@ class CameraManager:
         c = self._creds().get(cid) or {}
         return join_url(cam["url"], c.get("username", ""), c.get("password", ""))
 
+    def _wanted(self, cam: Dict[str, Any]) -> Dict[str, str]:
+        """The go2rtc streams a camera should have: name -> source."""
+        if not cam.get("enabled", True):
+            return {}
+        cid = cam["id"]
+        out = {STREAM_PREFIX + cid: self.source(cid)}
+        d = cam.get("detect") or {}
+        if d.get("enabled") and d.get("url"):
+            c = self._creds().get(cid) or {}
+            out[DETECT_PREFIX + cid] = join_url(d["url"], c.get("username", ""), c.get("password", ""))
+        return out
+
     async def _push(self, cam: Dict[str, Any]) -> None:
-        name = STREAM_PREFIX + cam["id"]
+        want = self._wanted(cam)
         try:
-            if cam.get("enabled", True):
-                await self.go2rtc.put_stream(name, self.source(cam["id"]))
-            else:
-                await self.go2rtc.delete_stream(name)
+            for name in (STREAM_PREFIX + cam["id"], DETECT_PREFIX + cam["id"]):
+                if name in want:
+                    await self.go2rtc.put_stream(name, want[name])
+                else:
+                    await self.go2rtc.delete_stream(name)
             self.last_error = None
         except Go2rtcError as e:
             self.last_error = str(e)
@@ -302,12 +352,18 @@ class CameraManager:
             self.last_error = str(e)
             return
         self.last_error = None
-        for cid, cam in self.cameras.items():
-            if cam.get("enabled", True) and STREAM_PREFIX + cid not in have:
-                await self._push(cam)
+        want: Dict[str, str] = {}
+        for cam in self.cameras.values():
+            want.update(self._wanted(cam))
+        try:
+            for name, src in want.items():
+                if name not in have:
+                    await self.go2rtc.put_stream(name, src)
+        except Go2rtcError as e:
+            self.last_error = str(e)
+            logger.warning("[cameras] go2rtc: %s", e)
         for name in have:
-            if name.startswith(STREAM_PREFIX) and (name[len(STREAM_PREFIX):] not in self.cameras
-                                                   or not self.cameras[name[len(STREAM_PREFIX):]].get("enabled", True)):
+            if name.startswith((STREAM_PREFIX, DETECT_PREFIX)) and name not in want:
                 try:
                     await self.go2rtc.delete_stream(name)
                 except Go2rtcError:
@@ -344,7 +400,7 @@ class CameraManager:
                 "type": "Camera", "protocol": "wifi", "manufacturer": "Camera",
                 "model": cam.get("model") or "IP camera",
                 "available": dev.online if dev.online is not None else None,
-                "state": {"motion": dev.state["motion"], "occupancy": dev.state["occupancy"]},
+                "state": {k: v for k, v in dev.state.items() if k != "available"},
             })
         return out
 
@@ -363,6 +419,43 @@ class CameraManager:
                 await self._evaluate(dev.ieee, {"motion": on, "occupancy": on})
             except Exception as e:                        # noqa: BLE001
                 logger.warning("[cameras] evaluating %s failed: %s", dev.ieee, e)
+
+    # Object detection (docs/vision.md): the sidecar reads go2rtc's copy of
+    # the stream, so the camera is connected to once and its login never
+    # leaves ZMM and go2rtc.
+    def _changed(self) -> None:
+        if self.on_change:
+            self.on_change()
+
+    def detect_config(self) -> List[Dict[str, Any]]:
+        out = []
+        for cid, cam in sorted(self.cameras.items()):
+            d = cam.get("detect") or {}
+            if not cam.get("enabled", True) or not d.get("enabled"):
+                continue
+            name = (DETECT_PREFIX if d.get("url") else STREAM_PREFIX) + cid
+            out.append({"id": cid, "labels": list(d.get("labels") or []), "threshold": d.get("threshold", 0.5),
+                        "url": self.go2rtc.stream_url(name)})
+        return out
+
+    async def apply_objects(self, cid: str, objects: Dict[str, bool]) -> None:
+        dev = self.devices.get(cid)
+        if dev is None:
+            return
+        changed = {g: on for g, on in objects.items() if g in dev.state and dev.state[g] != on}
+        if not changed:
+            return
+        dev.state.update(changed)
+        dev.last_seen = time.time()
+        if self._evaluate:
+            try:
+                await self._evaluate(dev.ieee, changed)
+            except Exception as e:                        # noqa: BLE001
+                logger.warning("[cameras] evaluating %s failed: %s", dev.ieee, e)
+
+    async def clear_objects(self) -> None:
+        for cid in list(self.devices):
+            await self.apply_objects(cid, {g: False for g in OBJECT_GROUPS})
 
     async def clear_stale_motion(self) -> None:
         for cid, dev in list(self.devices.items()):

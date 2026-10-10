@@ -460,7 +460,7 @@ dialog .remember input{accent-color:var(--honey)}
 <div class="subtabs" id="svcTabs" role="tablist" aria-label="Services">
   <button class="btn" role="tab" data-sub="ai" aria-controls="ollamaCard" hidden><span class="sdot s-mut" id="stDotAi"></span>AI models</button>
   <button class="btn" role="tab" data-sub="bee" aria-controls="bkCard"><span class="sdot s-mut" id="stDotBee"></span>Beekeeper</button>
-  <button class="btn" role="tab" data-sub="cam" aria-controls="g2Card"><span class="sdot s-mut" id="stDotCam"></span>go2rtc</button>
+  <button class="btn" role="tab" data-sub="cam" aria-controls="g2Card"><span class="sdot s-mut" id="stDotCam"></span>Cameras</button>
 </div>
 <section id="ollamaCard" class="card" role="tabpanel" data-sub="ai" hidden>
   <h2>AI models <span class="hint">— ollama sibling container</span></h2>
@@ -548,7 +548,30 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-<section class="card" data-sub="cam" hidden><h2>Logs <span class="hint">&mdash; the go2rtc container, and its host autostart helper</span></h2>
+<!-- Object detection — the vision sidecar, run from the app's image -->
+<section id="visCard" class="card" data-sub="cam" hidden>
+  <h2>Object detection <span class="hint">&mdash; person, vehicle and animal on your cameras</span></h2>
+  <div class="rowline" style="border:0;flex-wrap:wrap">
+    <span id="visInfo" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn primary" id="visEnableBtn" onclick="enableVision(this)" hidden>Enable</button>
+    <button class="btn" id="visRestartBtn" onclick="restartVision(this)" hidden>Restart</button>
+    <button class="btn" id="visDisableBtn" onclick="disableVision(this)" hidden>Disable</button>
+  </div>
+  <div class="rowline" style="border:0;margin-top:.3rem">
+    <span id="visSvcInfo" class="muted"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="visSvcBtn" onclick="installVisionService(this)" hidden>Install autostart</button>
+  </div>
+  <div class="muted" style="font-size:.76rem;margin-top:.4rem">
+    Watches the cameras you switch it on for in the app&rsquo;s <strong>Cameras</strong> tab and reports
+    what it sees as signals on each camera. Runs from the app&rsquo;s own image, on this host only; the
+    model (about 5&nbsp;MB) is downloaded on first start. Which hardware it uses is under
+    <strong>Host OS &rarr; Detection hardware</strong>.
+  </div>
+</section>
+
+<section class="card" data-sub="cam" hidden><h2>Logs <span class="hint">&mdash; the go2rtc and detection containers, and their host autostart helpers</span></h2>
   <div class="chips muted" id="logbtnsSvcCam">&hellip;</div>
   <pre id="logviewSvcCam" class="term"></pre>
 </section>
@@ -859,6 +882,7 @@ async function refresh(){
     }).join('')||'<span class="muted">none found</span>';
   updateBeekeeper(d.beekeeper||{});
   updateGo2rtc(d.go2rtc||{});
+  updateVision(d.vision||{});
   const rec=d.recovery||{};
   if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
   if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
@@ -966,6 +990,39 @@ async function disableGo2rtc(btn){
  if(!await confirmM('Stop go2rtc?\nLive camera views stop; snapshots and camera motion events from ONVIF keep working.',
    {title:'Disable go2rtc',confirmText:'Disable',danger:true}))return;
  const d=await act('/go2rtc/disable',null,false,btn);if(d&&d.success)refresh();}
+/* Object detection sidecar. Shares the Cameras sub-tab; its dot stays go2rtc's. */
+const VIS_HW={coral:'Coral Edge TPU',cpu:'CPU'};
+function updateVision(v){
+ const info=$('visInfo'),en=$('visEnableBtn'),dis=$('visDisableBtn'),re=$('visRestartBtn');
+ if(!info)return;
+ const hw=k=>esc(VIS_HW[k]||k||'?');
+ if(v.available===false){
+  info.innerHTML=dot('s-warn')+'<span class="muted">'+esc(v.error||'runtime socket unavailable')+'</span>';
+  en.hidden=dis.hidden=re.hidden=true;return;}
+ if(!v.installed){
+  info.innerHTML=dot(v.enabled?'s-bad':'s-mut')+'<span>'+(v.enabled?'missing':'not enabled')+
+   '</span><span class="muted"> &mdash; would run on the '+hw(v.would_use)+'</span>';
+  en.hidden=false;en.textContent='Enable';dis.hidden=re.hidden=true;}
+ else if(v.running){
+  info.innerHTML=dot('s-ok')+'<code>'+esc(v.name)+'</code><span class="muted">running on the '+hw(v.backend)+'</span>'+
+   (v.backend!==v.would_use?'<span class="muted"> &mdash; moving to the '+hw(v.would_use)+' shortly</span>':'');
+  en.hidden=true;dis.hidden=re.hidden=false;}
+ else{
+  info.innerHTML=dot(v.enabled?'s-bad':'s-mut')+'<code>'+esc(v.name)+'</code><span class="muted">'+
+   esc(v.enabled?(v.state||'stopped'):'disabled')+'</span>';
+  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=!v.enabled;}
+ updateBeekeeperService(v.service||{},v.installed&&v.enabled,['visSvcInfo','visSvcBtn']);}
+async function enableVision(btn){
+ const d=await act('/vision/enable',null,false,btn);if(d&&d.success)refresh();}
+async function restartVision(btn){
+ const d=await act('/vision/restart',null,false,btn);if(d&&d.success)refresh();}
+async function disableVision(btn){
+ if(!await confirmM('Stop object detection?\nCameras stop reporting person, vehicle and animal; live views and ONVIF motion keep working.',
+   {title:'Disable object detection',confirmText:'Disable',danger:true}))return;
+ const d=await act('/vision/disable',null,false,btn);if(d&&d.success)refresh();}
+async function installVisionService(btn){
+ const d=await act('/vision/service',{action:'install'},false,btn);
+ if(d&&d.success)setTimeout(refresh,3000);}
 /* Boot-time service: without it, Beekeeper (the LAN's DNS) may not return after an outage. */
 function updateBeekeeperService(s,installed,ids){
  ids=ids||['bkSvcInfo','bkSvcBtn'];
@@ -1432,7 +1489,8 @@ const LOG_SCOPES={
  SvcAi:{containers:['ollama']},
  SvcBee:{containers:['zigbee-matter-manager-beekeeper'],
          files:['beekeeper_firewall.log','beekeeper_service.log']},
- SvcCam:{containers:['zigbee-matter-manager-go2rtc'],files:['go2rtc_service.log']},
+ SvcCam:{containers:['zigbee-matter-manager-go2rtc','zigbee-matter-manager-vision'],
+         files:['go2rtc_service.log','vision.log','vision_service.log']},
  '':null};
 /* scope key -> the panel it lives in, so a stream can be revealed by name */
 const SCOPE_PANEL={Health:'health',Deployment:'deployment',Host:'host',

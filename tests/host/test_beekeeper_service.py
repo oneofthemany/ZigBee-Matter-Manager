@@ -123,6 +123,16 @@ def run() -> Checker:
     c.check("a docker host gets a docker unit", f"docker start -a {NAME}" in (b.systemd / "zmm-beekeeper.service").read_text())
     b.close()
 
+    b = Box("systemd")
+    b.run("install", sidecar="vision")
+    text = (b.systemd / "zmm-vision.service").read_text()
+    c.check("the detection sidecar's unit waits for the Coral driver, whose device node it needs",
+            "After=network-online.target zmm-coral-driver.service" in text
+            and "start -a zigbee-matter-manager-vision" in text, text[:300])
+    b.run("install", sidecar="go2rtc")
+    c.check("…and the others don't", "zmm-coral-driver" not in (b.systemd / "zmm-go2rtc.service").read_text())
+    b.close()
+
     c.section("OpenRC (Alpine, Gentoo)")
     b = Box("openrc")
     st = b.run("install")

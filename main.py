@@ -974,6 +974,15 @@ async def lifespan(app: FastAPI):
 
         await camera_manager.start()
 
+        # Object detection: mirrors the camera list to the vision sidecar and
+        # applies what it sees. Idle until the manager enables the sidecar.
+        from modules.vision import VisionBridge, set_vision_bridge
+        vision_bridge = VisionBridge(camera_manager)
+        camera_manager.on_change = vision_bridge.kick
+        set_vision_bridge(vision_bridge)
+        app.state.vision_bridge = vision_bridge
+        await vision_bridge.start()
+
         # Logbook: keeps live-log lines and the automation chain behind each.
         from modules.logbook import Logbook, set_logbook
         from modules.automation import current_chain
@@ -1176,6 +1185,9 @@ async def lifespan(app: FastAPI):
     alarm_panel = getattr(app.state, "alarm_panel", None)
     if alarm_panel:
         await alarm_panel.stop()
+    vision_bridge = getattr(app.state, "vision_bridge", None)
+    if vision_bridge:
+        await vision_bridge.stop()
     camera_manager = getattr(app.state, "camera_manager", None)
     if camera_manager:
         await camera_manager.stop()

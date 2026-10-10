@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # ZMM sidecar autostart helper (runs ON THE HOST as root).
-#   sidecar_service.sh beekeeper|go2rtc   (or ZMM_SIDECAR=...)
+#   sidecar_service.sh beekeeper|go2rtc|vision   (or ZMM_SIDECAR=...)
 # =============================================================================
 # The manager creates sidecar containers over the runtime socket and can't
 # reach the host's service manager, so this installs, removes or checks the
@@ -17,8 +17,14 @@ SIDECAR="${1:-${ZMM_SIDECAR:-beekeeper}}"
 case "$SIDECAR" in
     beekeeper) DESC="ZMM Beekeeper DNS sidecar" ;;
     go2rtc)    DESC="ZMM go2rtc camera streaming sidecar" ;;
-    *) echo "unknown sidecar '$SIDECAR' (beekeeper|go2rtc)" >&2; exit 2 ;;
+    vision)    DESC="ZMM object detection sidecar" ;;
+    *) echo "unknown sidecar '$SIDECAR' (beekeeper|go2rtc|vision)" >&2; exit 2 ;;
 esac
+
+# The container is created with the Coral's device node, which exists only
+# once its driver has loaded.
+AFTER=""
+[[ "$SIDECAR" == "vision" ]] && AFTER="zmm-coral-driver.service"
 
 DATA_DIR="${ZMM_DATA_DIR:-/opt/.zigbee-matter-manager}"
 BK_DIR="${DATA_DIR}/data/${SIDECAR}"
@@ -90,7 +96,7 @@ sd_unit_text() {
 [Unit]
 Description=${DESC} (${NAME})
 # Written by sidecar_service.sh when the sidecar is enabled, removed when it's disabled.
-After=network-online.target
+After=network-online.target${AFTER:+ $AFTER}
 Wants=network-online.target
 StartLimitIntervalSec=0
 

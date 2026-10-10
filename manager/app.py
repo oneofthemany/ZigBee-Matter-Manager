@@ -18,7 +18,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
 from manager import (accelerators, backups, beekeeper, containers, go2rtc, host, images,
-                     logs, ollama, recovery, upgrade, watchdog)
+                     logs, ollama, recovery, upgrade, watchdog, vision)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -85,6 +85,7 @@ async def status():
             "ollama": await ollama.summary(),
             "beekeeper": await beekeeper.status(),
             "go2rtc": await go2rtc.status(),
+            "vision": await vision.status(),
             "backup": backups.summary(),
             "host": host.summary()}
 
@@ -355,6 +356,46 @@ async def go2rtc_restart(authorization: str = Header(default="")):
         return _unauthorized()
     result = await go2rtc.restart()
     return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+# Object detection: the vision sidecar, run from the app's own image.
+
+@app.get("/vision")
+async def vision_status():
+    return await vision.status()
+
+
+@app.post("/vision/enable")
+async def vision_enable(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await vision.enable()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/vision/disable")
+async def vision_disable(data: dict = Body(default={}), authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await vision.disable(remove=bool(data.get("remove")))
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/vision/restart")
+async def vision_restart(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await vision.restart()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/vision/service")
+async def vision_service(data: dict = Body(default={}), authorization: str = Header(default="")):
+    """Install / remove / re-check the sidecar's boot-time service on the host."""
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    res = vision.request_service(str((data or {}).get("action") or "install"))
+    return JSONResponse(res, status_code=200 if res.get("success") else 400)
 
 
 # Host OS: updates as collected by scripts/os_updates.sh

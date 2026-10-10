@@ -2,6 +2,8 @@
 #    uv pip compile requirements.txt --python-version 3.12 --python-platform x86_64-manylinux_2_31 -o requirements.lock
 aenum==3.1.17
     # via home-assistant-chip-clusters
+ai-edge-litert==1.2.0
+    # via -r requirements.txt
 aiocoap==0.4.17
     # via aiohomekit
 aioesphomeapi==29.0.0
@@ -171,7 +173,9 @@ executing==2.2.1
 fastapi==0.138.1
     # via -r requirements.txt
 flatbuffers==25.12.19
-    # via onnxruntime
+    # via
+    #   ai-edge-litert
+    #   onnxruntime
 frozendict==2.4.7
     # via zigpy
 frozenlist==1.8.0
@@ -262,6 +266,7 @@ noiseprotocol==0.3.1
 numpy==2.4.6
     # via
     #   -r requirements.txt
+    #   ai-edge-litert
     #   kokoro-onnx
     #   onnxruntime
     #   pandas

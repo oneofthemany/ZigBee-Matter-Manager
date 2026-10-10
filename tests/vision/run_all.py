@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Run every manager test.
+Run every object-detection test.
 
-    python3 tests/manager/run_all.py
+    python3 tests/vision/run_all.py
 
-The manager modules against stand-ins (a fake container runtime on a unix
-socket); needs httpx. Exits non-zero if anything failed.
+No camera, model or accelerator: a scripted detector stands in for the real
+one. Needs numpy (the dev-box venv has it). Exits non-zero if anything failed.
 """
 
 from __future__ import annotations
@@ -18,15 +18,14 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-MODULES = ["test_images", "test_beekeeper_sync", "test_beekeeper_autostart", "test_go2rtc_sidecar", "test_vision_sidecar",
-           "test_accelerators", "test_routes"]
+MODULES = ["test_pipeline", "test_sidecar_api", "test_bridge"]
 
 
 def main() -> int:
     try:
-        import httpx  # noqa: F401
+        import numpy  # noqa: F401
     except ImportError:
-        print("SKIPPED: httpx not installed")
+        print("SKIPPED: numpy not installed")
         return 0
     passed, failures = 0, []
     for name in MODULES:

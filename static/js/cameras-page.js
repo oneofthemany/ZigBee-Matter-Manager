@@ -30,8 +30,14 @@ function stopAll() {
 
 // Grid
 
+// What object detection can report; the keys are the device's state keys.
+const OBJECTS = { person: ['fa-person', 'Person'], vehicle: ['fa-car-side', 'Vehicle'], animal: ['fa-paw', 'Animal'] };
+
 function card(c) {
-    const motion = c.motion ? '<span class="badge bg-warning text-dark ms-1"><i class="fas fa-person-running"></i> motion</span>' : '';
+    let motion = c.motion ? '<span class="badge bg-warning text-dark ms-1"><i class="fas fa-person-running"></i> motion</span>' : '';
+    for (const [k, [icon, label]] of Object.entries(OBJECTS)) {
+        if (c.objects?.[k]) motion += `<span class="badge bg-danger ms-1"><i class="fas ${icon}"></i> ${label.toLowerCase()}</span>`;
+    }
     const offline = c.online === false ? '<span class="badge bg-secondary ms-1">offline</span>' : '';
     return `<div class="col-12 col-md-6 col-xl-4">
         <div class="card shadow-sm h-100">
@@ -103,7 +109,56 @@ function cameraForm(c = {}) {
         <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="cf_enabled" ${c.enabled === false ? '' : 'checked'}>
             <label class="form-check-label small" for="cf_enabled">Enabled</label>
-        </div>`;
+        </div>
+        <div class="form-check form-switch mt-2">
+            <input class="form-check-input" type="checkbox" id="cf_detect" ${c.detect?.enabled ? 'checked' : ''}>
+            <label class="form-check-label small" for="cf_detect">Detect objects on this camera
+                (needs object detection enabled in the ZMM Manager)</label>
+        </div>
+        <div class="row g-2 mt-0 align-items-end">
+            <div class="col-12 col-md-5">
+                ${Object.entries(OBJECTS).map(([k, [icon, label]]) => `<div class="form-check form-check-inline">
+                    <input class="form-check-input cf-obj" type="checkbox" id="cf_obj_${k}" value="${k}"
+                        ${(c.detect?.labels || Object.keys(OBJECTS)).includes(k) ? 'checked' : ''}>
+                    <label class="form-check-label small" for="cf_obj_${k}"><i class="fas ${icon} me-1"></i>${label}</label></div>`).join('')}
+            </div>
+            <div class="col-8 col-md-5"><label class="form-label small mb-1" for="cf_durl">Low-resolution stream for detection</label>
+                <input class="form-control form-control-sm" id="cf_durl" placeholder="optional — the camera's sub-stream"
+                       value="${escapeHtml(c.detect?.url || '')}" autocomplete="off" spellcheck="false"></div>
+            <div class="col-4 col-md-2"><label class="form-label small mb-1" for="cf_dconf">Sure by (%)</label>
+                <input class="form-control form-control-sm" id="cf_dconf" type="number" min="30" max="95" step="5"
+                       value="${escapeHtml(Math.round((c.detect?.threshold || 0.5) * 100))}"></div>
+        </div>
+        <div class="small text-muted mt-1">Left blank, detection shares the stream above: one connection to the camera
+            however many people are watching. A sub-stream is a second connection, but far less work for the hub's CPU.</div>`;
+}
+
+function visionCard(v) {
+    const up = !!v?.reachable;
+    const where = { coral: 'Coral Edge TPU', cpu: 'CPU' }[v?.backend] || v?.backend;
+    const badge = !up ? '<span class="badge bg-secondary">not running</span>'
+        : !v.ready ? '<span class="badge bg-warning text-dark">getting the model…</span>'
+        : `<span class="badge bg-success">running on ${escapeHtml(where)}</span>`;
+    const cams = Object.entries(v?.cameras || {});
+    return `<div class="card shadow-sm mb-3"><div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <strong>Object detection</strong> ${badge}
+            <a class="btn btn-sm ${up ? 'btn-outline-secondary' : 'btn-primary'}" href="#" data-zmm-manager>
+                <i class="fas fa-up-right-from-square me-1"></i>${up ? 'Manage' : 'Enable'} in ZMM Manager</a>
+        </div>
+        <p class="small text-muted mb-2">Reports <strong>person</strong>, <strong>vehicle</strong> and <strong>animal</strong>
+            on each camera you switch it on for; they work in rules, notifications and alarm zones like any sensor.
+            Everything runs on the hub.</p>
+        ${v?.note ? `<div class="small text-warning-emphasis mb-2">${escapeHtml(v.note)}</div>` : ''}
+        ${up && v.ready ? `<div class="small text-muted mb-1">${escapeHtml(v.inference_ms || 0)} ms per look.</div>` : ''}
+        ${cams.map(([id, c]) => {
+            const name = cameras.find(x => x.id === id)?.name || id;
+            return `<div class="small">${c.online ? '<i class="fas fa-circle text-success me-1" style="font-size:.5rem;vertical-align:middle"></i>'
+                : '<i class="fas fa-circle text-secondary me-1" style="font-size:.5rem;vertical-align:middle"></i>'}
+                ${escapeHtml(name)} — ${c.online ? `watching, looked ${escapeHtml(c.looks)} times in ${escapeHtml(c.frames)} frames`
+                    : `<span class="text-danger">${escapeHtml(c.error || 'connecting…')}</span>`}</div>`;
+        }).join('')}
+    </div></div>`;
 }
 
 function collectForm() {
@@ -114,6 +169,11 @@ function collectForm() {
         onvif: host ? { host, port: Number(v('cf_oport')) || 80 } : null,
         motion: document.getElementById('cf_motion').checked,
         enabled: document.getElementById('cf_enabled').checked,
+        detect: {
+            enabled: document.getElementById('cf_detect').checked,
+            labels: [...document.querySelectorAll('.cf-obj:checked')].map(b => b.value),
+            url: v('cf_durl'), threshold: (Number(v('cf_dconf')) || 50) / 100,
+        },
     };
 }
 
@@ -125,6 +185,8 @@ async function renderManage(root) {
     catch (e) { el.innerHTML = `<div class="text-danger small">${escapeHtml(e.message)}</div>`; return; }
     const status = g.healthy ? '<span class="badge bg-success">running</span>'
         : '<span class="badge bg-secondary">not reachable</span>';
+    let vis = null;
+    try { vis = await api('GET', '/api/cameras/vision'); } catch { /* shown as not reachable */ }
     el.innerHTML = `
         <div class="card shadow-sm mb-3"><div class="card-body">
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
@@ -147,6 +209,8 @@ async function renderManage(root) {
             </details>
         </div></div>
 
+        ${visionCard(vis)}
+
         <div class="card shadow-sm mb-3"><div class="card-body">
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 <strong>Add a camera</strong>
@@ -163,6 +227,7 @@ async function renderManage(root) {
             <ul class="list-group list-group-flush mt-2">
                 ${cameras.map(c => `<li class="list-group-item px-0 d-flex flex-wrap align-items-center gap-2">
                     <span class="me-auto text-break">${escapeHtml(c.name)} <span class="text-muted small">${escapeHtml(c.url)}</span></span>
+                    ${c.detect?.enabled ? `<button class="btn btn-sm btn-outline-secondary cam-last" data-id="${escapeHtml(c.id)}">Last detection</button>` : ''}
                     <button class="btn btn-sm btn-outline-secondary cam-edit" data-id="${escapeHtml(c.id)}">Edit</button>
                     <button class="btn btn-sm btn-outline-danger cam-del" data-id="${escapeHtml(c.id)}">Remove</button></li>`).join('')}
             </ul></div></div>` : ''}`;
@@ -214,6 +279,7 @@ function wireManage(root) {
         } catch (e) { window.toast?.error(e.message); }
     });
     root.querySelectorAll('.cam-edit').forEach(b => b.addEventListener('click', () => editCamera(root, b.dataset.id)));
+    root.querySelectorAll('.cam-last').forEach(b => b.addEventListener('click', () => showLastDetection(b)));
     root.querySelectorAll('.cam-del').forEach(b => b.addEventListener('click', async () => {
         const c = cameras.find(x => x.id === b.dataset.id);
         if (b.dataset.confirm !== '1') {        // two-step, no browser dialog
@@ -224,6 +290,20 @@ function wireManage(root) {
         try { await api('DELETE', `/api/cameras/${encodeURIComponent(b.dataset.id)}`); await refresh(root); }
         catch (e) { window.toast?.error(e.message); }
     }));
+}
+
+function showLastDetection(btn) {
+    const li = btn.closest('li');
+    li.querySelector('.cam-last-view')?.remove();
+    const box = document.createElement('div');
+    box.className = 'cam-last-view w-100';
+    const img = new Image();
+    img.className = 'img-fluid rounded';
+    img.alt = 'Latest detection';
+    img.onerror = () => { box.innerHTML = '<span class="small text-muted">Nothing detected on this camera yet.</span>'; };
+    img.src = `/api/cameras/${encodeURIComponent(btn.dataset.id)}/detection?t=${Date.now()}`;
+    box.append(img);
+    li.append(box);
 }
 
 async function probe() {

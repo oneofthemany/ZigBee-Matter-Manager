@@ -83,6 +83,22 @@ def register_camera_routes(app: FastAPI) -> None:
         return Response(img, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
+    @app.get("/api/cameras/{cid}/detection")
+    async def detection_snapshot(cid: str, _=Depends(require_scope("camera:read"))):
+        """The frame of the camera's latest detection, boxes drawn."""
+        from modules.vision import VisionError, get_vision_bridge
+        b = get_vision_bridge()
+        if cid not in _mgr().cameras:
+            raise HTTPException(404, "No such camera")
+        if b is None:
+            raise HTTPException(503, "Detection not initialised")
+        try:
+            img = await b.client.snapshot(cid)
+        except VisionError as e:
+            raise HTTPException(404, str(e))
+        return Response(img, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     @app.websocket("/api/cameras/{cid}/stream")
     async def stream(ws: WebSocket, cid: str):
         m = get_camera_manager()
@@ -132,6 +148,16 @@ def register_camera_routes(app: FastAPI) -> None:
         except OnvifError as e:
             raise HTTPException(502, str(e))
         return {"profiles": profiles, "events": events}
+
+    @app.get("/api/cameras/vision")
+    async def vision_status(_=Depends(require_scope("admin"))):
+        """Whether ZMM reaches the detection sidecar and what it runs on.
+        Enabling it is the ZMM Manager's job."""
+        from modules.vision import get_vision_bridge
+        b = get_vision_bridge()
+        if b is None:
+            raise HTTPException(503, "Detection not initialised")
+        return b.public()
 
     @app.get("/api/cameras/go2rtc")
     async def go2rtc_status(_=Depends(require_scope("admin"))):

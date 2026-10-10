@@ -7,7 +7,7 @@ set -euo pipefail
 # =============================================================================
 # WATCHER SCHEMA VERSION
 # =============================================================================
-WATCHER_SCHEMA_VERSION=11
+WATCHER_SCHEMA_VERSION=12
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 BOLD='\033[1m'; NC='\033[0m'
@@ -167,7 +167,7 @@ else
 fi
 
 mkdir -p "${DATA_DIR}/data/os_updates" "${DATA_DIR}/data/coral"
-mkdir -p "${DATA_DIR}/data/beekeeper" "${DATA_DIR}/data/go2rtc"
+mkdir -p "${DATA_DIR}/data/beekeeper" "${DATA_DIR}/data/go2rtc" "${DATA_DIR}/data/vision"
 
 if build_src=$(find_build_sh); then
     mkdir -p "$APP_DIR"
@@ -404,6 +404,34 @@ Unit=zmm-go2rtc-service.service
 [Install]
 WantedBy=multi-user.target
 PATHUNIT
+
+        sudo tee "$unit_dir/zmm-vision-service.service" >/dev/null <<SERVICE
+[Unit]
+Description=ZMM object detection autostart helper (oneshot — install/remove its boot-time service)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/sidecar_service.sh vision
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1
+TimeoutStartSec=180
+SERVICE
+
+        sudo tee "$unit_dir/zmm-vision-service.path" >/dev/null <<PATHUNIT
+[Unit]
+Description=Watch for ZMM object detection autostart triggers
+
+[Path]
+# The :8001 manager writes this when object detection is enabled or disabled.
+PathChanged=${DATA_DIR}/data/vision/service_action
+Unit=zmm-vision-service.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
     fi
 
     if $HAVE_CORAL; then
@@ -453,8 +481,8 @@ PATHUNIT
         ok "Beekeeper firewall helper enabled (runs as root via system unit)"
     fi
     if $HAVE_BK_SERVICE; then
-        sudo systemctl enable --now zmm-beekeeper-service.path zmm-go2rtc-service.path
-        ok "Beekeeper and go2rtc autostart helpers enabled (run as root via system units)"
+        sudo systemctl enable --now zmm-beekeeper-service.path zmm-go2rtc-service.path zmm-vision-service.path
+        ok "Beekeeper, go2rtc and detection autostart helpers enabled (run as root via system units)"
     fi
     if $HAVE_CORAL; then
         sudo systemctl enable --now zmm-coral-action.path
@@ -507,7 +535,7 @@ while true; do
     if [[ -x "$BK_FIREWALL_SH" && -f "$BK_FIREWALL_TRIGGER" ]]; then
         ZMM_DATA_DIR="$DATA_DIR" bash "$BK_FIREWALL_SH" || true
     fi
-    for sc in beekeeper go2rtc; do
+    for sc in beekeeper go2rtc vision; do
         if [[ -x "$SIDECAR_SERVICE_SH" && -f "${DATA_DIR}/data/${sc}/service_action" ]]; then
             ZMM_DATA_DIR="$DATA_DIR" bash "$SIDECAR_SERVICE_SH" "$sc" || true
         fi

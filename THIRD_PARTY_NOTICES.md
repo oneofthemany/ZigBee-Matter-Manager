@@ -38,6 +38,7 @@ redistributed in this repository.
 
 | Package | License |
 |---|---|
+| ai-edge-litert | Apache-2.0 |
 | aiohomekit | Apache-2.0 |
 | aiohttp | Apache-2.0 |
 | aiomqtt | BSD-3-Clause |
@@ -67,6 +68,20 @@ redistributed in this repository.
 | zha-quirks (zhaquirks) | Apache-2.0 |
 | zigpy | GPL-3.0 |
 | zigpy-znp | GPL-3.0 |
+
+## Downloaded at runtime
+
+Fetched by the object-detection sidecar on first start (see `docs/vision.md`
+§Models); not redistributed in this repository or in the app image.
+
+| Component | Copyright | License |
+|---|---|---|
+| SSDLite MobileDet COCO models and labels ([google-coral/test_data](https://github.com/google-coral/test_data)) | Google LLC | Apache-2.0 |
+| libedgetpu ([feranick/libedgetpu](https://github.com/feranick/libedgetpu) build of Google's Edge TPU runtime) | Google LLC | Apache-2.0 |
+
+The Coral M.2 kernel driver (`scripts/coral_driver.sh`) is built on the host
+from [KyleGospo/gasket-dkms](https://github.com/KyleGospo/gasket-dkms), a
+maintained fork of Google's gasket-driver (GPL-2.0).
 
 ## Acknowledgements
 
