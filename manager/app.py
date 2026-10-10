@@ -17,8 +17,8 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import (beekeeper, containers, go2rtc, host, images, logs, ollama,
-                     recovery, upgrade, watchdog)
+from manager import (backups, beekeeper, containers, go2rtc, host, images, logs,
+                     ollama, recovery, upgrade, watchdog)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -85,6 +85,7 @@ async def status():
             "ollama": await ollama.summary(),
             "beekeeper": await beekeeper.status(),
             "go2rtc": await go2rtc.status(),
+            "backup": backups.summary(),
             "host": host.summary()}
 
 

@@ -379,6 +379,13 @@ dialog .remember input{accent-color:var(--honey)}
         deliberate restart.
       </div>
     </section>
+    <section class="card" style="grid-column:1/-1"><h2>Backups</h2>
+      <dl class="kv" id="healthBackup"><dd class="muted">&hellip;</dd></dl>
+      <div class="muted" style="font-size:.76rem;margin-top:.6rem">
+        The app&rsquo;s nightly backup &mdash; set it up under Settings &rarr; Config.
+        Shown here so a backup that stopped working is noticed before it is needed.
+      </div>
+    </section>
   </div>
   <section class="card"><h2>Logs <span class="hint">&mdash; the app&rsquo;s own logs, readable with its container down</span></h2>
     <div class="chips muted" id="logbtnsHealth">&hellip;</div>
@@ -799,6 +806,19 @@ async function refresh(){
    '<dt>restarts</dt><dd>'+esc(w.restarts??0)+'</dd>'+
    (wdetail?'<dt>detail</dt><dd>'+esc(wdetail)+'</dd>':'')+
    (w.checked_at?'<dt>checked</dt><dd>'+esc(String(w.checked_at).replace('T',' ').replace(/\..*/,'Z'))+'</dd>':'');
+  const bk=d.backup||{};
+  // Amber at worst: a failed backup is upkeep, not an outage (see the rule below).
+  const bkSev={ok:'ok',failed:'warn',stale:'warn',never:'warn',off:'mut'}[bk.status]||'mut';
+  const bkTxt={ok:'ok',failed:'last run failed',stale:'none for over 2 days',never:'not run yet',off:'off'}[bk.status]||'—';
+  const ago=t=>{if(!t)return '—';const s=Math.max(0,Date.now()/1000-t);
+   return s<5400?Math.round(s/60)+' min ago':s<172800?Math.round(s/3600)+' h ago':Math.round(s/86400)+' days ago';};
+  $('healthBackup').innerHTML=
+   '<dt>state</dt><dd>'+dot('s-'+bkSev)+esc(bkTxt)+'</dd>'+
+   (bk.enabled?'<dt>last good</dt><dd>'+esc(ago(bk.last_success))+
+     (bk.last_size?' · '+esc((bk.last_size/1048576).toFixed(1))+' MB':'')+(bk.encrypted?' · encrypted':'')+'</dd>':'')+
+   (bk.target?'<dt>to</dt><dd>'+esc(bk.target)+'</dd>':'')+
+   (bk.last_error?'<dt>error</dt><dd>'+esc(bk.last_error)+'</dd>':'')+
+   (bk.enabled&&bk.time?'<dt>nightly at</dt><dd>'+esc(bk.time)+'</dd>':'');
   const h=d.host||{};
   // Severity rule: red means the hub is not working. Pending host packages —
   // security ones included — are upkeep, not an outage, so they cap at warn.

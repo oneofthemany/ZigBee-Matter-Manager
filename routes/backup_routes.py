@@ -10,207 +10,79 @@ import logging
 import os
 import shutil
 import zipfile
-import httpx
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import StreamingResponse
+import httpx
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+
+from modules.auth_middleware import require_scope
+from modules.backup import (APP_DIR, BACKUP_DIRS, BACKUP_MANIFEST, OPTIONAL_BACKUP_FILES,
+                            RESTORE_PRIVATE, backup_name, build_zip, decrypt_bytes, entry_allowed,
+                            get_backup_scheduler, is_encrypted)
 
 logger = logging.getLogger("routes.backup")
-
-# Core files always included
-BACKUP_MANIFEST = [
-    # Network credentials & config — every integration's enablement lives in
-    # config.yaml, so this file alone carries the full enablement state.
-    "config/config.yaml",
-
-    # Zigpy device database (paired devices, network state).
-    # The live path is data/zigbee.db (config_builder database_path); the bare
-    # root entry is kept so backups from the legacy layout still restore.
-    "data/zigbee.db",
-    "zigbee.db",
-
-    # Application data
-    "data/names.json",
-    "data/device_settings.json",
-    "data/polling_config.json",
-    "data/device_state_cache.json",
-    "data/device_tabs.json",
-    "data/automations.json",
-    "data/banned_devices.json",
-    "data/device_overrides.json",
-    "data/zones.yaml",
-    "data/auth.yaml",
-    "data/floor_plan.json",
-
-    # Groups — live registry is data/groups.json; the groups/ entry is the
-    # legacy in-image location, kept so old backups still restore.
-    "data/groups.json",
-    "groups/groups.json",
-
-    # Integration enablement & user config (External APIs tab and friends)
-    "data/presence_users.yaml",
-    "data/remote_access.yaml",
-    "data/app_alerts.json",
-    "data/ac_timers.json",
-    "data/cast_sync_groups.json",
-    "data/cast_sync_model.json",
-    "data/cast_sync_trims.json",
-    "data/media_prefs.json",
-    "data/media_sessions.json",
-    "data/radio_favourites.json",
-    # HomeKit controller keys: without them a restored hub cannot reach a TV
-    # that still counts itself paired, and it will not accept a new pairing.
-    "data/homekit_pairings.json",
-]
-
-# Restored owner-only, matching how the app writes them: password hashes, API
-# tokens and MFA secrets; HomeKit controller private keys.
-RESTORE_PRIVATE = {"data/auth.yaml", "data/homekit_pairings.json"}
-
-# Directories included recursively (each contained file is backed up and
-# restorable — see _entry_allowed()).
-BACKUP_DIRS = [
-    # One Tidal refresh token per linked user. Plural where it used to be a
-    # single file, so a restore now hands back every household member's login.
-    "data/media/tidal",
-    "data/floor_plans",   # heating floor-plan background images
-    "data/coverage",      # saved signal heatmaps, for before/after comparison
-    "data/matter",        # Matter fabric / commissioning storage
-    "data/certs",         # TLS pair — preserves browser trust across restores
-]
-
-# Optional files (toggled via query param)
-OPTIONAL_BACKUP_FILES = [
-    "data/telemetry.duckdb",
-    "data/zigbee_cache.duckdb",
-]
-
-APP_DIR = os.environ.get("ZMM_APP_DIR", "/app")
 
 
 def register_backup_routes(app: FastAPI, get_zigbee_service):
     """Register backup & restore API routes."""
 
+    async def prepare(include_telemetry: bool) -> int:
+        """Flush what is only in memory so the files on disk are current.
+        Returns the device count for the manifest. Shared by the download
+        and the nightly schedule (app.state.backup_prepare)."""
+        svc = get_zigbee_service()
+        if svc and hasattr(svc, '_cache_dirty') and svc._cache_dirty:
+            svc._save_state_cache()
+            svc._cache_dirty = False
+        if svc and hasattr(svc, 'zone_manager') and svc.zone_manager:
+            try:
+                import yaml
+                configs = svc.zone_manager.save_config()
+                with open(os.path.join(APP_DIR, "data/zones.yaml"), "w") as f:
+                    yaml.dump({"zones": configs}, f)
+            except Exception as e:
+                logger.warning(f"Could not flush zones before backup: {e}")
+        if include_telemetry:
+            # Drain appender buffers and merge each WAL, so the copied file is
+            # whole. A WAL merge can take seconds: worker thread.
+            import asyncio
+            from modules import telemetry_db
+            for label, flush in (("telemetry", lambda: (telemetry_db.flush_appender(),
+                                                        telemetry_db._get_db().cursor().execute("CHECKPOINT"))),
+                                 ("octopus", lambda: telemetry_db._get_octopus_db().cursor().execute("CHECKPOINT"))):
+                try:
+                    await asyncio.to_thread(flush)
+                except Exception as e:
+                    logger.warning(f"Could not flush {label} DB before backup: {e}")
+        return len(svc.devices) if svc else 0
+
+    app.state.backup_prepare = prepare
+
     @app.get("/api/backup/create")
     async def create_backup(include_telemetry: bool = True):
         """
-        Create a full network backup as a downloadable .zip file.
-        Includes: config.yaml (all integration enablement + settings),
-        the zigpy device DB, groups/zones/automations/auth, per-integration
-        data files (presence, remote access, alerts, AC timers, media,
-        speaker-sync), the floor plan and its images, Matter storage, the TLS cert pair,
-        and (optionally) the telemetry DuckDBs.
+        Create a full network backup as a downloadable .zip file — everything
+        in modules/backup.py's manifest, and optionally the history databases.
+        Built in a worker thread, to a temp file: a large telemetry DB would
+        otherwise stall the event loop and sit in memory.
         """
+        import asyncio
+        import tempfile
+        from starlette.background import BackgroundTask
+        from fastapi.responses import FileResponse
+        tmpdir = tempfile.mkdtemp(prefix="zmm-backup-")
         try:
-            svc = get_zigbee_service()
-
-            # Flush state cache to disk before backing up
-            if svc and hasattr(svc, '_cache_dirty') and svc._cache_dirty:
-                svc._save_state_cache()
-                svc._cache_dirty = False
-
-            # Flush zone config
-            if svc and hasattr(svc, 'zone_manager') and svc.zone_manager:
-                try:
-                    import yaml
-                    configs = svc.zone_manager.save_config()
-                    with open(os.path.join(APP_DIR, "data/zones.yaml"), "w") as f:
-                        yaml.dump({"zones": configs}, f)
-                except Exception as e:
-                    logger.warning(f"Could not flush zones before backup: {e}")
-
-            # Flush telemetry: drain Rust appender buffers + CHECKPOINT to merge WAL
-            if include_telemetry:
-                try:
-                    from modules.telemetry_db import flush_appender, _get_db
-                    flush_appender()
-                    # WAL merge can take seconds on a grown DB — worker thread
-                    import asyncio
-                    await asyncio.to_thread(
-                        lambda: _get_db().cursor().execute("CHECKPOINT"))
-                except Exception as e:
-                    logger.warning(f"Could not flush telemetry DB before backup: {e}")
-
-            # Build manifest list for this run
-            manifest_files = list(BACKUP_MANIFEST)
-            if include_telemetry:
-                manifest_files.extend(OPTIONAL_BACKUP_FILES)
-
-            # Build zip in memory
-            buffer = io.BytesIO()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            included = []
-            skipped = []
-
-            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                meta = {
-                    "created_at": datetime.now().isoformat(),
-                    "version": "1.1",
-                    "include_telemetry": include_telemetry,
-                    "device_count": len(svc.devices) if svc else 0,
-                    "files": [],
-                }
-
-                def add_file(full, rel_path):
-                    zf.write(full, rel_path)
-                    included.append(rel_path)
-                    meta["files"].append({
-                        "path": rel_path,
-                        "size": os.path.getsize(full),
-                    })
-
-                for rel_path in manifest_files:
-                    full = os.path.join(APP_DIR, rel_path)
-                    if os.path.isfile(full):
-                        add_file(full, rel_path)
-                    else:
-                        skipped.append(rel_path)
-                        logger.debug(f"Backup skip (not found): {full}")
-
-                # Recursive directory entries (floor plans, matter storage, certs)
-                for rel_dir in BACKUP_DIRS:
-                    full_dir = os.path.join(APP_DIR, rel_dir)
-                    if not os.path.isdir(full_dir):
-                        skipped.append(rel_dir + "/")
-                        continue
-                    for root, _dirs, files in os.walk(full_dir):
-                        for fname in files:
-                            full = os.path.join(root, fname)
-                            rel_path = os.path.relpath(full, APP_DIR)
-                            try:
-                                add_file(full, rel_path)
-                            except OSError as e:
-                                skipped.append(rel_path)
-                                logger.warning(f"Backup skip (unreadable): {rel_path}: {e}")
-
-                if skipped:
-                    logger.info(f"Backup skipped {len(skipped)} missing files: {skipped}")
-
-                meta["included"] = len(included)
-                meta["skipped"] = skipped
-                zf.writestr("backup_manifest.json", json.dumps(meta, indent=2))
-
-            buffer.seek(0)
-            tail = "_full" if include_telemetry else "_config"
-            filename = f"zmm_backup_{ts}{tail}.zip"
-
-            logger.info(f"Backup created: {filename} ({len(included)} files)")
-
-            return StreamingResponse(
-                buffer,
-                media_type="application/zip",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                },
-            )
-
+            devices = await prepare(include_telemetry)
+            path = Path(tmpdir) / "backup.zip"
+            meta = await asyncio.to_thread(build_zip, path, include_telemetry, devices)
+            filename = backup_name(include_telemetry)
+            logger.info(f"Backup created: {filename} ({meta['included']} files)")
+            return FileResponse(path, media_type="application/zip", filename=filename,
+                                background=BackgroundTask(shutil.rmtree, tmpdir, True))
         except Exception as e:
-            logger.error(f"Backup creation failed: {e}")
-            import traceback
-            traceback.print_exc()
+            shutil.rmtree(tmpdir, True)
+            logger.error(f"Backup creation failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
 
@@ -218,6 +90,7 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
     async def restore_backup(
             file: Optional[UploadFile] = File(None),
             url: Optional[str] = Form(None),
+            passphrase: Optional[str] = Form(None),
     ):
         """
         Restore a full network backup from either:
@@ -228,8 +101,8 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
         """
         # Acquire the zip bytes from whichever source was provided
         if file is not None:
-            if not file.filename.endswith(".zip"):
-                return {"success": False, "error": "File must be a .zip archive"}
+            if not file.filename.endswith((".zip", ".zip.enc")):
+                return {"success": False, "error": "File must be a .zip (or encrypted .zip.enc) backup"}
             contents = await file.read()
 
         elif url is not None:
@@ -246,6 +119,17 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
 
         else:
             return {"success": False, "error": "Provide either a file upload or a 'url' field"}
+
+        # An encrypted backup (docs/backups.md §Encryption) is a zip inside.
+        if is_encrypted(contents):
+            if not passphrase:
+                return {"success": False, "needs_passphrase": True,
+                        "error": "This backup is encrypted — enter its passphrase"}
+            import asyncio
+            try:
+                contents = await asyncio.to_thread(decrypt_bytes, contents, passphrase)
+            except ValueError as e:
+                return {"success": False, "needs_passphrase": True, "error": str(e)}
 
         # Shared restore logic
         try:
@@ -266,20 +150,7 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                     f"zip entries: {[n for n in names if n != 'backup_manifest.json']})"
                 )
 
-                allowed = set(BACKUP_MANIFEST) | set(OPTIONAL_BACKUP_FILES)
-
-                def _entry_allowed(name: str) -> bool:
-                    # Zip-slip guard: reject absolute paths and any traversal
-                    # outside APP_DIR, then whitelist exact manifest files or
-                    # anything under a manifest directory.
-                    norm = os.path.normpath(name)
-                    if os.path.isabs(norm) or norm.startswith(".."):
-                        return False
-                    if norm in allowed:
-                        return True
-                    return any(
-                        norm.startswith(d.rstrip("/") + "/") for d in BACKUP_DIRS
-                    )
+                _entry_allowed = entry_allowed
 
                 restored = []
                 errors = []
@@ -467,3 +338,41 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
             "telemetry_size_mb": round(telemetry_size / (1024 * 1024), 2),
             "total_with_telemetry_mb": round((total_size + telemetry_size) / (1024 * 1024), 2),
         }
+    # Scheduled backups (docs/backups.md). Reading the status is system:read
+    # by the path table; changing where backups go, and with what keys, is admin.
+
+    def _sched():
+        s = get_backup_scheduler()
+        if s is None:
+            raise HTTPException(503, "Backup scheduler not initialised")
+        return s
+
+    @app.get("/api/backup/schedule")
+    async def get_schedule(_=Depends(require_scope("admin"))):
+        return _sched().public()
+
+    @app.put("/api/backup/schedule")
+    async def put_schedule(body: Dict[str, Any], _=Depends(require_scope("admin"))):
+        try:
+            return _sched().update(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except OSError as e:
+            raise HTTPException(500, f"Could not save: {e}")
+
+    @app.post("/api/backup/schedule/test")
+    async def test_schedule_target(_=Depends(require_scope("admin"))):
+        try:
+            return await _sched().test_target()
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/backup/schedule/run")
+    async def run_schedule_now(_=Depends(require_scope("admin"))):
+        status = await _sched().run()
+        return {"success": not status.get("last_error"), "status": status}
+
+    @app.get("/api/backup/status")
+    async def backup_status():
+        s = _sched()
+        return {"enabled": s.config["enabled"], "next_run": s.next_run(), **s.status}

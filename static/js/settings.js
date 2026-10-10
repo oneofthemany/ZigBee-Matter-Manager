@@ -11,6 +11,7 @@ const log = zmmLog('settings');
  import { confirmDialog } from './dialogs.js';
  import { jsArg } from './utils.js';
  import { lanSectionHtml, loadLanSection } from './lan-devices-settings.js';
+ import { initBackupSchedule } from './backup-schedule.js';
  import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard,
           startRestartGuardWatch, stopRestartGuardWatch } from './restart-guard.js';
 
@@ -3476,8 +3477,8 @@ function renderBackupRestoreSection() {
       <i class="fas fa-database me-1"></i> Network Backup
     </h6>
     <p class="text-muted small mb-3">
-      Download a full backup of your Zigbee network: config, paired devices (zigbee.db),
-      friendly names, automations, groups, zones, and device state cache.
+      Download a full backup: config and integration logins, paired devices (zigbee.db),
+      names, automations, groups, zones, alarm, cameras, notification setup and more.
       Use this to migrate to a new container or recover from failure.
     </p>
 
@@ -3504,8 +3505,8 @@ function renderBackupRestoreSection() {
           <div class="card-body text-center py-4">
             <i class="fas fa-upload fa-2x text-warning mb-2"></i>
             <h6 class="fw-semibold">Restore Backup</h6>
-            <p class="text-muted small mb-3">Upload a previously downloaded backup .zip</p>
-            <input type="file" id="restoreFileInput" accept=".zip" class="d-none"
+            <p class="text-muted small mb-3">Upload a backup .zip, or an encrypted .zip.enc from a scheduled backup</p>
+            <input type="file" id="restoreFileInput" accept=".zip,.enc" class="d-none"
                    onchange="window.handleRestoreFile(this)">
             <button class="btn btn-outline-warning"
                     onclick="document.getElementById('restoreFileInput').click()">
@@ -3528,6 +3529,11 @@ function renderBackupRestoreSection() {
           <span id="restoreFileName" class="fw-semibold"></span>
           <span id="restoreFileSize" class="text-muted ms-2"></span>
         </div>
+        <div class="mt-2" id="restorePassphraseRow">
+          <label class="form-label small mb-1" for="restorePassphrase">Passphrase <span class="fw-normal">(encrypted backups only)</span></label>
+          <input type="password" class="form-control form-control-sm" id="restorePassphrase"
+                 autocomplete="off" style="max-width: 22rem">
+        </div>
         <div class="mt-3 d-flex gap-2">
           <button class="btn btn-danger btn-sm" onclick="window.confirmRestore()">
             <i class="fas fa-check me-1"></i> Confirm Restore
@@ -3541,6 +3547,15 @@ function renderBackupRestoreSection() {
     `;
 
     loadBackupInfo();
+
+    // Scheduled backups (admin) sit under the manual ones.
+    let sched = document.getElementById('backupScheduleHost');
+    if (!sched) {
+        sched = document.createElement('div');
+        sched.id = 'backupScheduleHost';
+        el.after(sched);
+    }
+    initBackupSchedule(sched);
 }
 
 async function loadBackupInfo() {
@@ -3610,6 +3625,8 @@ async function confirmRestore() {
 
     const formData = new FormData();
     formData.append('file', _pendingRestoreFile);
+    const passphrase = document.getElementById('restorePassphrase')?.value;
+    if (passphrase) formData.append('passphrase', passphrase);
 
     const status = document.getElementById('restoreStatus');
     if (status) status.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Restoring…</span>';
@@ -3633,6 +3650,7 @@ async function confirmRestore() {
         } else {
             showSettingsAlert('danger', `Restore failed: ${result.error}`);
             if (status) status.innerHTML = '';
+            if (result.needs_passphrase) document.getElementById('restorePassphrase')?.focus();
         }
 
     } catch (e) {
