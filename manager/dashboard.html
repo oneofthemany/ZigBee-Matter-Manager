@@ -450,7 +450,6 @@ dialog .remember input{accent-color:var(--honey)}
   <button class="btn" role="tab" data-sub="ai" aria-controls="ollamaCard" hidden><span class="sdot s-mut" id="stDotAi"></span>AI models</button>
   <button class="btn" role="tab" data-sub="bee" aria-controls="bkCard"><span class="sdot s-mut" id="stDotBee"></span>Beekeeper</button>
   <button class="btn" role="tab" data-sub="cam" aria-controls="g2Card"><span class="sdot s-mut" id="stDotCam"></span>go2rtc</button>
-  <button class="btn" role="tab" data-sub="logs" aria-controls="svcLogs">Logs</button>
 </div>
 <section id="ollamaCard" class="card" role="tabpanel" data-sub="ai" hidden>
   <h2>AI models <span class="hint">— ollama sibling container</span></h2>
@@ -474,6 +473,11 @@ dialog .remember input{accent-color:var(--honey)}
     <span id="olTotals" class="muted"></span>
   </div>
   <pre id="olJob" class="term"></pre>
+</section>
+
+<section class="card" data-sub="ai" hidden><h2>Logs <span class="hint">&mdash; the ollama container&rsquo;s own output</span></h2>
+  <div class="chips muted" id="logbtnsSvcAi">&hellip;</div>
+  <pre id="logviewSvcAi" class="term"></pre>
 </section>
 
 <!-- Beekeeper — DNS ad/tracker blocker sidecar -->
@@ -504,6 +508,11 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
+<section class="card" data-sub="bee" hidden><h2>Logs <span class="hint">&mdash; the Beekeeper container, and its host firewall and autostart helpers</span></h2>
+  <div class="chips muted" id="logbtnsSvcBee">&hellip;</div>
+  <pre id="logviewSvcBee" class="term"></pre>
+</section>
+
 <!-- go2rtc — camera streaming sidecar -->
 <section id="g2Card" class="card" role="tabpanel" data-sub="cam" hidden>
   <h2>go2rtc <span class="hint">&mdash; camera streaming</span></h2>
@@ -528,10 +537,10 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-  <section class="card" id="svcLogs" role="tabpanel" data-sub="logs" hidden><h2>Logs <span class="hint">&mdash; the sibling containers&rsquo; own output</span></h2>
-    <div class="chips muted" id="logbtnsServices">&hellip;</div>
-    <pre id="logviewServices" class="term"></pre>
-  </section>
+<section class="card" data-sub="cam" hidden><h2>Logs <span class="hint">&mdash; the go2rtc container, and its host autostart helper</span></h2>
+  <div class="chips muted" id="logbtnsSvcCam">&hellip;</div>
+  <pre id="logviewSvcCam" class="term"></pre>
+</section>
 </section><!-- /p-services -->
 
 <!-- 4. LOGS — why did it break? Works with the app container dead. -->
@@ -851,8 +860,8 @@ function paintServices(){
   const el=$(id);if(el)el.className='sdot s-'+v;});}
 
 /* Services sub-tabs */
-const SUBS=['ai','bee','cam','logs'];
-const svcAvail={ai:false,bee:true,cam:true,logs:true};
+const SUBS=['ai','bee','cam'];
+const svcAvail={ai:false,bee:true,cam:true};
 let svcSub=(()=>{try{return localStorage.getItem('zmm.manager.svc')||'bee';}catch(e){return 'bee';}})();
 function showSub(id,focus){
  if(!svcAvail[id])id=SUBS.find(k=>svcAvail[k]);
@@ -862,7 +871,7 @@ function showSub(id,focus){
   b.hidden=!svcAvail[b.dataset.sub];b.classList.toggle('active',on);
   b.setAttribute('aria-selected',on?'true':'false');b.tabIndex=on?0:-1;
   if(on&&focus)b.focus();});
- document.querySelectorAll('#p-services [role=tabpanel][data-sub]').forEach(p=>{p.hidden=p.dataset.sub!==id;});
+ document.querySelectorAll('#p-services > [data-sub]').forEach(p=>{p.hidden=p.dataset.sub!==id;});
  try{localStorage.setItem('zmm.manager.svc',id);}catch(e){}}
 document.querySelectorAll('#svcTabs [data-sub]').forEach(b=>b.addEventListener('click',()=>showSub(b.dataset.sub)));
 $('svcTabs').addEventListener('keydown',e=>{
@@ -1330,12 +1339,16 @@ const LOG_SCOPES={
  Deployment:{containers:['zigbee-matter-manager','zigbee-matter-manager-previous'],
              files:['upgrade_watcher.log']},
  Host:{files:['os_updates.log','os_apply.log']},
- Services:{containers:['ollama','zigbee-matter-manager-beekeeper','zigbee-matter-manager-go2rtc'],
-           files:['beekeeper_firewall.log']},
+ /* One per Services sub-tab: a service's logs sit with its card. */
+ SvcAi:{containers:['ollama']},
+ SvcBee:{containers:['zigbee-matter-manager-beekeeper'],
+         files:['beekeeper_firewall.log','beekeeper_service.log']},
+ SvcCam:{containers:['zigbee-matter-manager-go2rtc'],files:['go2rtc_service.log']},
  '':null};
 /* scope key -> the panel it lives in, so a stream can be revealed by name */
 const SCOPE_PANEL={Health:'health',Deployment:'deployment',Host:'host',
-                   Services:'services','':'logs'};
+                   SvcAi:'services',SvcBee:'services',SvcCam:'services','':'logs'};
+const SCOPE_SUB={SvcAi:'ai',SvcBee:'bee',SvcCam:'cam'};
 
 function paintLogs(name){
  setCell('logs',name?'ok':'mut',name?'streaming':'idle',name||'nothing open');}
@@ -1366,7 +1379,7 @@ function openLog(name){
    LOG_SCOPES[k]&&(LOG_SCOPES[k].files||[]).includes(name));
  const key=scope||'';
  showPanel(SCOPE_PANEL[key]);
- if(key==='Services')showSub('logs');
+ if(SCOPE_SUB[key])showSub(SCOPE_SUB[key]);
  const strip=$('logbtns'+key),view=$('logview'+key);
  if(!strip||!view)return;
  const btn=[...strip.querySelectorAll('.btn')].find(b=>b.textContent.includes(name));
