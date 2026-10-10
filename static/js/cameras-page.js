@@ -5,10 +5,12 @@
 import { escapeHtml } from './utils.js';
 import { attachPlayer } from './camera-player.js';
 import { mountZoneEditor } from './camera-zones.js';
+import { renderRecordings } from './camera-recordings.js';
 
 let cameras = [];
 const players = new Map();            // id -> player, only for cards on screen
 let observer = null;
+let recordingsView = null;            // set while the Recordings panel is open
 let zoneEditor = null;                // set while a camera with detection is being edited
 
 async function api(method, url, body) {
@@ -133,6 +135,30 @@ function cameraForm(c = {}) {
         </div>
         <div class="small text-muted mt-1">Left blank, detection shares the stream above: one connection to the camera
             however many people are watching. A sub-stream is a second connection, but far less work for the hub's CPU.</div>
+        <div class="small fw-semibold mt-3 mb-1">Recording <span class="text-muted fw-normal">— needs Recording enabled in the ZMM Manager</span></div>
+        <div class="row g-2 align-items-end">
+            <div class="col-12 col-md-4"><label class="form-label small mb-1" for="cf_rmode">Keep</label>
+                <select class="form-select form-select-sm" id="cf_rmode">
+                    ${[['off', 'Nothing'], ['events', 'Clips of events'], ['continuous', 'Everything, and clips of events']].map(([v, l]) =>
+                        `<option value="${v}" ${(c.record?.mode || 'off') === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select></div>
+            <div class="col-6 col-md-2"><label class="form-label small mb-1" for="cf_rdays">Clips for (days)</label>
+                <input class="form-control form-control-sm" id="cf_rdays" type="number" min="1" max="90" value="${escapeHtml(c.record?.clip_days ?? 14)}"></div>
+            <div class="col-6 col-md-2"><label class="form-label small mb-1" for="cf_rhours">Everything for (hours)</label>
+                <input class="form-control form-control-sm" id="cf_rhours" type="number" min="1" max="168" value="${escapeHtml(c.record?.hours ?? 24)}"></div>
+            <div class="col-6 col-md-2"><label class="form-label small mb-1" for="cf_rpre">Seconds before</label>
+                <input class="form-control form-control-sm" id="cf_rpre" type="number" min="0" max="30" value="${escapeHtml(c.record?.pre_s ?? 5)}"></div>
+            <div class="col-6 col-md-2"><label class="form-label small mb-1" for="cf_rpost">Seconds after</label>
+                <input class="form-control form-control-sm" id="cf_rpost" type="number" min="0" max="60" value="${escapeHtml(c.record?.post_s ?? 10)}"></div>
+        </div>
+        <div class="mt-1"><span class="small me-2">An event is</span>
+            ${[['motion', 'fa-person-running', 'Motion'], ...Object.entries(OBJECTS).map(([k, v]) => [k, ...v])].map(([k, icon, label]) => `<div class="form-check form-check-inline">
+                <input class="form-check-input cf-rev" type="checkbox" id="cf_rev_${k}" value="${k}"
+                    ${(c.record?.events?.length ? c.record.events : Object.keys(OBJECTS)).includes(k) ? 'checked' : ''}>
+                <label class="form-check-label small" for="cf_rev_${k}"><i class="fas ${icon} me-1"></i>${label}</label></div>`).join('')}
+        </div>
+        <div class="small text-muted">Motion needs the camera's ONVIF events; person, vehicle and animal need detection on above.
+            Recording copies the stream as it is, at full quality, and uses go2rtc's connection to the camera.</div>
         ${c.id ? `<div id="cf_zones"></div>
         <div class="form-check mt-1">
             <input class="form-check-input" type="checkbox" id="cf_zonly" ${c.detect?.zones_only ? 'checked' : ''}>
@@ -177,6 +203,11 @@ function collectForm() {
         onvif: host ? { host, port: Number(v('cf_oport')) || 80 } : null,
         motion: document.getElementById('cf_motion').checked,
         enabled: document.getElementById('cf_enabled').checked,
+        record: {
+            mode: v('cf_rmode'), events: [...document.querySelectorAll('.cf-rev:checked')].map(b => b.value),
+            clip_days: Number(v('cf_rdays')) || 14, hours: Number(v('cf_rhours')) || 24,
+            pre_s: Number(v('cf_rpre') || 5), post_s: Number(v('cf_rpost') || 10),
+        },
         detect: {
             enabled: document.getElementById('cf_detect').checked,
             labels: [...document.querySelectorAll('.cf-obj:checked')].map(b => b.value),
@@ -377,11 +408,22 @@ function render(root) {
     root.innerHTML = `
         <div class="d-flex align-items-center mb-2 gap-2">
             <h5 class="mb-0"><i class="fas fa-video me-1"></i> Cameras</h5>
-            ${isAdmin() ? '<button class="btn btn-sm btn-outline-secondary ms-auto" id="cam-manage-btn" aria-expanded="false"><i class="fas fa-gear me-1"></i>Manage</button>' : ''}
+            <button class="btn btn-sm btn-outline-secondary ms-auto" id="cam-rec-btn" aria-expanded="false"><i class="fas fa-film me-1"></i>Recordings</button>
+            ${isAdmin() ? '<button class="btn btn-sm btn-outline-secondary" id="cam-manage-btn" aria-expanded="false"><i class="fas fa-gear me-1"></i>Manage</button>' : ''}
         </div>
         <div id="cam-error"></div>
+        <div id="cam-recordings" class="d-none mb-3"></div>
         <div id="cam-manage" class="d-none"></div>
         <div class="row g-2" id="cam-grid"></div>`;
+    document.getElementById('cam-rec-btn').addEventListener('click', async ev => {
+        const el = root.querySelector('#cam-recordings');
+        const open = el.classList.toggle('d-none') === false;
+        ev.currentTarget.setAttribute('aria-expanded', String(open));
+        recordingsView?.stop();
+        recordingsView = null;
+        if (open) recordingsView = await renderRecordings(el, cameras);
+        else el.innerHTML = '';
+    });
     document.getElementById('cam-manage-btn')?.addEventListener('click', ev => {
         const m = root.querySelector('#cam-manage');
         const open = m.classList.toggle('d-none') === false;

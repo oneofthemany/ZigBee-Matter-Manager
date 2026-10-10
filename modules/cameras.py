@@ -219,6 +219,8 @@ class CameraManager:
         self._task: Optional[asyncio.Task] = None
         self.last_error: Optional[str] = None
         self.on_change: Optional[Callable[[], None]] = None
+        # (cid, state) whenever a camera's motion or object signals move: the recorder.
+        self.on_signal: Optional[Callable[[str, Dict[str, Any]], None]] = None
         # cid -> JPEG of the latest detection, boxes drawn (the vision bridge).
         self.detection_snapshot: Optional[Callable[[str], Awaitable[bytes]]] = None
         self.load()
@@ -314,6 +316,12 @@ class CameraManager:
             cam["detect"] = {"enabled": bool(d.get("enabled")) and bool(labels), "labels": labels,
                              "threshold": round(threshold, 2), "url": url, "zones": zones,
                              "zones_only": bool(d.get("zones_only", prev.get("zones_only", False))) and bool(zones)}
+        if "record" in data or "detect" in data or current is None:
+            # Re-checked with detection: a clip can't start on a signal the camera no longer has.
+            from recorder.store import normalise_record
+            d = cam.get("detect") or {}
+            cam["record"] = normalise_record(data.get("record"), cam.get("record"),
+                                             list(d.get("labels") or []) if d.get("enabled") else [])
         return cam
 
     def _set_creds(self, cid: str, data: Dict[str, Any], url_creds: Dict[str, str]) -> None:
@@ -504,6 +512,7 @@ class CameraManager:
             return
         dev.state.update(motion=on, occupancy=on)
         dev.last_seen = time.time()
+        self._signalled(cid, dev)
         if self._evaluate:
             try:
                 await self._evaluate(dev.ieee, {"motion": on, "occupancy": on})
@@ -513,6 +522,13 @@ class CameraManager:
     # Object detection (docs/vision.md): the sidecar reads go2rtc's copy of
     # the stream, so the camera is connected to once and its login never
     # leaves ZMM and go2rtc.
+    def _signalled(self, cid: str, dev: CameraDevice) -> None:
+        if self.on_signal:
+            try:
+                self.on_signal(cid, dev.state)
+            except Exception as e:                        # noqa: BLE001
+                logger.warning("[cameras] signal hook failed for %s: %s", cid, e)
+
     def _changed(self) -> None:
         if self.on_change:
             self.on_change()
@@ -540,6 +556,7 @@ class CameraManager:
             return
         dev.state.update(changed)
         dev.last_seen = time.time()
+        self._signalled(cid, dev)
         if self._evaluate:
             try:
                 await self._evaluate(dev.ieee, changed)

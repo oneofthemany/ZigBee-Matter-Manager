@@ -127,6 +127,36 @@ def run() -> Checker:
             run_(v.ensure({}))
             c.check("a disabled sidecar is not brought back by the watchdog", rt.posts == [])
 
+            c.section("the recorder, the same way")
+            import manager.recorder
+            rec = importlib.reload(manager.recorder)
+            rt.inspect[APP] = app_info
+            rt.posts.clear()
+            res = run_(rec.enable())
+            create = next((p for p in rt.posts if p["path"] == "/containers/create"), {})
+            body = create.get("body") or {}
+            c.check("its own container from the app's image, running the recorder module",
+                    res["success"] and create.get("query") == "name=zigbee-matter-manager-recorder"
+                    and body.get("Cmd") == ["python", "-m", "recorder"] and body.get("Image") == "localhost/zmm:1.2.3", create)
+            c.check("sharing the data folder the recordings live in, with no devices and no variant",
+                    "/opt/zmm/data:/app/data:rw" in body["HostConfig"]["Binds"] and body.get("Env") == []
+                    and "Devices" not in body["HostConfig"], body)
+            c.check("its autostart is asked for under its own name, apart from detection's",
+                    Path(rec._SVC_TRIGGER).read_text() == "install" and "/recorder/" in rec._SVC_TRIGGER
+                    and rec._SVC_TRIGGER != v._SVC_TRIGGER)
+            rt.inspect["zigbee-matter-manager-recorder"] = {"Image": "sha256:app1", "Config": {"Env": []},
+                                                            "State": {"Running": True, "Status": "running"}}
+            rt.posts.clear()
+            run_(rec.ensure({}))
+            c.check("running on the app's image: the watchdog leaves it be", not any("create" in p["path"] for p in rt.posts))
+            rt.inspect[APP] = {**app_info, "Image": "sha256:app9"}
+            run_(rec.ensure({}))
+            c.check("after an app upgrade it is recreated, so it runs the new code",
+                    any(p["path"] == "/containers/create" for p in rt.posts))
+            rt.inspect[APP] = app_info
+            del rt.inspect["zigbee-matter-manager-recorder"]
+            run_(rec.disable())
+
             c.section("without the pieces")
             rt.inspect[APP] = {"Image": "sha256:app2", "Mounts": []}
             del rt.inspect[VIS]
@@ -141,7 +171,8 @@ def run() -> Checker:
                 os.environ[k] = val
         import manager.accelerators
         import manager.containers
+        import manager.recorder
         import manager.vision
-        for mod in (manager.containers, manager.accelerators, manager.vision):
+        for mod in (manager.containers, manager.accelerators, manager.vision, manager.recorder):
             importlib.reload(mod)
     return c

@@ -44,6 +44,8 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/cameras",           {"GET": "camera:read", "*": "admin"}),
     ("/api/cameras/go2rtc",    {"*": "admin"}),
     ("/api/cameras/vision",    {"*": "admin"}),
+    # Recordings: watching is camera:read; deleting and the space limit are admin.
+    ("/api/recordings",        {"GET": "camera:read", "*": "admin"}),
 
     # Shelly / ESPHome setup; using the devices is /api/device/* (device:*).
     ("/api/logbook",           {"GET": "system:read", "*": "admin"}),

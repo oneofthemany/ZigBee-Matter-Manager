@@ -19,6 +19,7 @@ let _chartTimer = null;
 let _dbTimer = null;
 let _chart = null;
 let _chartData = [];
+let _detChart = null;
 
 const SERIES = [
     { key: 'cpu_percent', label: 'CPU %', color: '#0d6efd', id: 'cpu' },
@@ -120,6 +121,17 @@ function _renderSkeleton() {
             <div id="sys-history-chart" style="height:240px">
                 <div class="text-muted small text-center py-4"><i class="fas fa-spinner fa-spin"></i> Loading history...</div>
             </div>
+        </div>
+    </div>
+
+    <!-- Object detection: shown once the vision sidecar has recorded anything -->
+    <div class="card mb-3 d-none" id="sys-detector-card">
+        <div class="card-header bg-light d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+            <strong class="small"><i class="fas fa-eye me-1"></i> Object detection</strong>
+            <span class="small text-muted" id="sys-detector-now"></span>
+        </div>
+        <div class="card-body p-2">
+            <div id="sys-detector-chart" style="height:220px"></div>
         </div>
     </div>
 
@@ -281,6 +293,67 @@ async function _refreshChart() {
         _chartData = json.data;
         _renderChart();
     } catch (e) { /* silent */ }
+    _refreshDetector(hours, bucket);
+}
+
+// OBJECT DETECTION — the detector's own series (docs/vision.md §Metrics).
+// Its own chart: degrees, milliseconds and a rate don't belong on a 0-100% axis.
+
+const DET_BACKENDS = { coral: 'Coral Edge TPU', cpu: 'CPU' };
+
+async function _refreshDetector(hours, bucket) {
+    const card = document.getElementById('sys-detector-card');
+    if (!card) return;
+    let rows = [];
+    try {
+        const json = await (await fetch(`/api/telemetry/system/detector?hours=${hours}&bucket=${bucket}`)).json();
+        rows = json.success ? json.data || [] : [];
+    } catch (e) { return; }
+    card.classList.toggle('d-none', !rows.length);
+    if (!rows.length) return;
+
+    const last = rows[rows.length - 1];
+    const bits = [DET_BACKENDS[last.backend] || last.backend || 'Detector'];
+    if (last.temp != null) bits.push(`${last.temp.toFixed(0)} °C`);
+    if (last.ms != null) bits.push(`${last.ms.toFixed(0)} ms a look`);
+    bits.push(`${last.looks_per_min.toFixed(0)} looks/min`);
+    const now = document.getElementById('sys-detector-now');
+    now.textContent = bits.join(' · ');
+    if (last.throttle) {
+        const warn = document.createElement('span');
+        warn.className = 'badge bg-warning text-dark ms-2';
+        warn.textContent = `slowed to 1/${2 ** last.throttle} to cool down`;
+        now.append(warn);
+    }
+
+    const el = document.getElementById('sys-detector-chart');
+    if (!_detChart) _detChart = createChart(el);
+    const line = (name, key, color, yAxisIndex) => ({
+        name, type: 'line', showSymbol: false, smooth: true, sampling: 'lttb', yAxisIndex,
+        lineStyle: { width: 1.5, color }, itemStyle: { color },
+        data: rows.filter(d => d[key] != null).map(d => [d.ts * 1000, d[key]]),
+    });
+    const hasTemp = rows.some(d => d.temp != null);
+    const series = [
+        ...(hasTemp ? [line('TPU temp °C', 'temp', '#dc3545', 0)] : []),
+        line('ms per look', 'ms', '#6f42c1', 0),
+        line('Looks / min', 'looks_per_min', '#0d6efd', 1),
+    ];
+    // Throttled stretches as a band, so "it got slow" lines up with "it got hot".
+    const hot = rows.filter(d => d.throttle).map(d => [{ xAxis: d.ts * 1000 }, { xAxis: (d.ts + bucket * 60) * 1000 }]);
+    if (hot.length) series[0].markArea = { silent: true, itemStyle: { color: 'rgba(255,193,7,0.18)' }, data: hot };
+    _detChart.setOption({
+        animationDuration: 600,
+        grid: { top: 32, right: 40, bottom: 22, left: 38 },
+        legend: { top: 0, itemHeight: 8, itemWidth: 14, textStyle: { fontSize: 11 }, data: series.map(s => s.name) },
+        tooltip: { trigger: 'axis', valueFormatter: v => (v == null ? '—' : Number(v).toFixed(1)) },
+        xAxis: { type: 'time', axisLabel: { fontSize: 9, hideOverlap: true } },
+        yAxis: [
+            { type: 'value', min: 0, splitNumber: 4, axisLabel: { fontSize: 9 } },
+            { type: 'value', min: 0, splitNumber: 4, axisLabel: { fontSize: 9 }, splitLine: { show: false } },
+        ],
+        series,
+    }, true);
 }
 
 function _renderChart() {

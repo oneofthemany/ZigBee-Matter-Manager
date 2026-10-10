@@ -48,6 +48,23 @@ async def system_detail(area: str):
         return {"success": False, "error": str(e)}
 
 
+@router.get("/system/detector")
+async def detector_history(hours: int = 1, bucket: int = 1):
+    """The object detector's time series — Coral temperature and throttling,
+    time per look, looks per minute — as the vision sidecar recorded it
+    (docs/vision.md §Metrics). Empty when detection has never run."""
+    hours = min(max(hours, 1), 168)
+    bucket = min(max(bucket, 1), 60)
+    try:
+        from modules.vision import TOKEN_FILE
+        from vision.metrics import read
+        data = await asyncio.to_thread(read, TOKEN_FILE.parent / "metrics.jsonl", hours, bucket)
+        return {"success": True, "hours": hours, "bucket_minutes": bucket, "data": data}
+    except Exception as e:
+        logger.error(f"Detector history failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/system/history")
 async def system_history(hours: int = 1, bucket: int = 1):
     """

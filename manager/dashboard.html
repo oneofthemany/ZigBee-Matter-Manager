@@ -571,7 +571,30 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-<section class="card" data-sub="cam" hidden><h2>Logs <span class="hint">&mdash; the go2rtc and detection containers, and their host autostart helpers</span></h2>
+<!-- Recording — the recorder sidecar, run from the app's image -->
+<section id="recCard" class="card" data-sub="cam" hidden>
+  <h2>Recording <span class="hint">&mdash; camera footage and clips of events</span></h2>
+  <div class="rowline" style="border:0;flex-wrap:wrap">
+    <span id="recInfo" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn primary" id="recEnableBtn" onclick="sidecarAct('recorder','enable',this)" hidden>Enable</button>
+    <button class="btn" id="recRestartBtn" onclick="sidecarAct('recorder','restart',this)" hidden>Restart</button>
+    <button class="btn" id="recDisableBtn" onclick="disableRecorder(this)" hidden>Disable</button>
+  </div>
+  <div class="rowline" style="border:0;margin-top:.3rem">
+    <span id="recSvcInfo" class="muted"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="recSvcBtn" onclick="sidecarAct('recorder','service',this,{action:'install'})" hidden>Install autostart</button>
+  </div>
+  <div class="muted" style="font-size:.76rem;margin-top:.4rem">
+    Records the cameras you switch it on for in the app&rsquo;s <strong>Cameras</strong> tab, into
+    <code>data/recordings</code> on this host. It is its own container, so recording carries on
+    while the app restarts or upgrades. It reads go2rtc&rsquo;s copy of each stream, so go2rtc has to
+    be running too.
+  </div>
+</section>
+
+<section class="card" data-sub="cam" hidden><h2>Logs <span class="hint">&mdash; the go2rtc, detection and recorder containers, and their host autostart helpers</span></h2>
   <div class="chips muted" id="logbtnsSvcCam">&hellip;</div>
   <pre id="logviewSvcCam" class="term"></pre>
 </section>
@@ -883,6 +906,7 @@ async function refresh(){
   updateBeekeeper(d.beekeeper||{});
   updateGo2rtc(d.go2rtc||{});
   updateVision(d.vision||{});
+  updateRecorder(d.recorder||{});
   const rec=d.recovery||{};
   if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
   if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
@@ -1023,6 +1047,31 @@ async function disableVision(btn){
 async function installVisionService(btn){
  const d=await act('/vision/service',{action:'install'},false,btn);
  if(d&&d.success)setTimeout(refresh,3000);}
+/* Recorder sidecar: the same card shape as object detection, minus the hardware. */
+function updateRecorder(v){
+ const info=$('recInfo'),en=$('recEnableBtn'),dis=$('recDisableBtn'),re=$('recRestartBtn');
+ if(!info)return;
+ if(v.available===false){
+  info.innerHTML=dot('s-warn')+'<span class="muted">'+esc(v.error||'runtime socket unavailable')+'</span>';
+  en.hidden=dis.hidden=re.hidden=true;return;}
+ if(!v.installed){
+  info.innerHTML=dot(v.enabled?'s-bad':'s-mut')+'<span>'+(v.enabled?'missing':'not enabled')+'</span>';
+  en.hidden=false;en.textContent='Enable';dis.hidden=re.hidden=true;}
+ else if(v.running){
+  info.innerHTML=dot('s-ok')+'<code>'+esc(v.name)+'</code><span class="muted">running</span>';
+  en.hidden=true;dis.hidden=re.hidden=false;}
+ else{
+  info.innerHTML=dot(v.enabled?'s-bad':'s-mut')+'<code>'+esc(v.name)+'</code><span class="muted">'+
+   esc(v.enabled?(v.state||'stopped'):'disabled')+'</span>';
+  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=!v.enabled;}
+ updateBeekeeperService(v.service||{},v.installed&&v.enabled,['recSvcInfo','recSvcBtn']);}
+async function sidecarAct(name,action,btn,body){
+ const d=await act('/'+name+'/'+action,body||null,false,btn);
+ if(d&&d.success)setTimeout(refresh,action==='service'?3000:0);}
+async function disableRecorder(btn){
+ if(!await confirmM('Stop recording?\nNo footage or clips are kept while it is off. What is already recorded stays.',
+   {title:'Disable recording',confirmText:'Disable',danger:true}))return;
+ sidecarAct('recorder','disable',btn);}
 /* Boot-time service: without it, Beekeeper (the LAN's DNS) may not return after an outage. */
 function updateBeekeeperService(s,installed,ids){
  ids=ids||['bkSvcInfo','bkSvcBtn'];
@@ -1489,8 +1538,8 @@ const LOG_SCOPES={
  SvcAi:{containers:['ollama']},
  SvcBee:{containers:['zigbee-matter-manager-beekeeper'],
          files:['beekeeper_firewall.log','beekeeper_service.log']},
- SvcCam:{containers:['zigbee-matter-manager-go2rtc','zigbee-matter-manager-vision'],
-         files:['go2rtc_service.log','vision.log','vision_service.log']},
+ SvcCam:{containers:['zigbee-matter-manager-go2rtc','zigbee-matter-manager-vision','zigbee-matter-manager-recorder'],
+         files:['go2rtc_service.log','vision.log','vision_service.log','recorder.log','recorder_service.log']},
  '':null};
 /* scope key -> the panel it lives in, so a stream can be revealed by name */
 const SCOPE_PANEL={Health:'health',Deployment:'deployment',Host:'host',

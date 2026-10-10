@@ -18,7 +18,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
 from manager import (accelerators, backups, beekeeper, containers, go2rtc, host, images,
-                     logs, ollama, recovery, upgrade, watchdog, vision)
+                     logs, ollama, recorder, recovery, upgrade, watchdog, vision)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -86,6 +86,7 @@ async def status():
             "beekeeper": await beekeeper.status(),
             "go2rtc": await go2rtc.status(),
             "vision": await vision.status(),
+            "recorder": await recorder.status(),
             "backup": backups.summary(),
             "host": host.summary()}
 
@@ -395,6 +396,46 @@ async def vision_service(data: dict = Body(default={}), authorization: str = Hea
     if not upgrade.check_token(authorization):
         return _unauthorized()
     res = vision.request_service(str((data or {}).get("action") or "install"))
+    return JSONResponse(res, status_code=200 if res.get("success") else 400)
+
+
+# Recording: the recorder sidecar, run from the app's own image.
+
+@app.get("/recorder")
+async def recorder_status():
+    return await recorder.status()
+
+
+@app.post("/recorder/enable")
+async def recorder_enable(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await recorder.enable()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/recorder/disable")
+async def recorder_disable(data: dict = Body(default={}), authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await recorder.disable(remove=bool(data.get("remove")))
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/recorder/restart")
+async def recorder_restart(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await recorder.restart()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/recorder/service")
+async def recorder_service(data: dict = Body(default={}), authorization: str = Header(default="")):
+    """Install / remove / re-check the sidecar's boot-time service on the host."""
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    res = recorder.request_service(str((data or {}).get("action") or "install"))
     return JSONResponse(res, status_code=200 if res.get("success") else 400)
 
 

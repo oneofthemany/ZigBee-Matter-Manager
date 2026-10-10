@@ -979,7 +979,19 @@ async def lifespan(app: FastAPI):
         # applies what it sees. Idle until the manager enables the sidecar.
         from modules.vision import VisionBridge, set_vision_bridge
         vision_bridge = VisionBridge(camera_manager)
-        camera_manager.on_change = vision_bridge.kick
+        # Recordings: the recorder sidecar is told what to record and sent
+        # each camera's signals. Idle until the manager enables the sidecar.
+        from modules.recordings import RecorderBridge, set_recorder
+        recorder = RecorderBridge(camera_manager)
+        camera_manager.on_signal = recorder.signal
+        set_recorder(recorder)
+        app.state.recorder = recorder
+        await recorder.start()
+
+        def _cameras_changed():
+            vision_bridge.kick()
+            recorder.kick()
+        camera_manager.on_change = _cameras_changed
         camera_manager.detection_snapshot = vision_bridge.client.snapshot
         set_vision_bridge(vision_bridge)
         app.state.vision_bridge = vision_bridge
@@ -1190,6 +1202,9 @@ async def lifespan(app: FastAPI):
     vision_bridge = getattr(app.state, "vision_bridge", None)
     if vision_bridge:
         await vision_bridge.stop()
+    recorder = getattr(app.state, "recorder", None)
+    if recorder:
+        await recorder.stop()
     camera_manager = getattr(app.state, "camera_manager", None)
     if camera_manager:
         await camera_manager.stop()
@@ -1418,6 +1433,8 @@ from routes.house_routes import register_house_routes
 register_house_routes(app)
 from routes.camera_routes import register_camera_routes
 register_camera_routes(app)
+from routes.recording_routes import register_recording_routes
+register_recording_routes(app)
 from routes.logbook_routes import register_logbook_routes
 register_logbook_routes(app)
 from routes.lan_device_routes import register_lan_device_routes

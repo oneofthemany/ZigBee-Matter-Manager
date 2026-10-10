@@ -157,7 +157,7 @@ In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 
 ## Not yet
 
-Clips and recordings, per-object counts, GPU and Hailo backends, and larger models.
+Per-object counts, GPU and Hailo backends, and larger models.
 
 ## Hardware
 

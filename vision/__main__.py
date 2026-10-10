@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import PORT
 from .detector import Detector
+from .metrics import Sampler
 from .server import Hub, load_token, serve
 
 DATA = Path(os.environ.get("ZMM_VISION_DIR", "./data/vision"))
@@ -58,6 +59,7 @@ def main() -> None:
 
     threading.Thread(target=load, name="load", daemon=True).start()
     done = threading.Event()
+    threading.Thread(target=Sampler(hub, DATA / "metrics.jsonl").run, args=(done,), name="metrics", daemon=True).start()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: done.set())
     done.wait()

@@ -131,6 +131,10 @@ def run() -> Checker:
             and "start -a zigbee-matter-manager-vision" in text, text[:300])
     b.run("install", sidecar="go2rtc")
     c.check("…and the others don't", "zmm-coral-driver" not in (b.systemd / "zmm-go2rtc.service").read_text())
+    st = b.run("install", sidecar="recorder")
+    text = (b.systemd / "zmm-recorder.service").read_text()
+    c.check("the recorder gets a unit of its own, so recording comes back after a reboot",
+            "start -a zigbee-matter-manager-recorder" in text and "Restart=always" in text and st["enabled"], text[:200])
     b.close()
 
     c.section("OpenRC (Alpine, Gentoo)")

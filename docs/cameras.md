@@ -145,9 +145,9 @@ requests, so it keeps working through the tunnel, where Origin and Host differ.
 
 ## Not yet
 
-Recording and event clips, snapshots attached to alerts, a Frames card, PTZ,
-WebRTC, and IAS-style camera sirens. Person, vehicle and animal detection is
-in [vision.md](vision.md).
+A Frames card, PTZ, WebRTC, and IAS-style camera sirens. Person, vehicle and
+animal detection is in [vision.md](vision.md); recording and clips in
+[recordings.md](recordings.md).
 
 ## API
 
