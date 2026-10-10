@@ -118,8 +118,12 @@ def run() -> Checker:
         c.check("no footage: nothing to play", s.play("front", T0 + 9000, 60) is None)
 
         c.section("settings")
-        c.check("the space limit defaults to 20 GB", s.settings() == {"max_gb": 20})
-        c.check("…and can be changed", s.save_settings({"max_gb": "50"}) == {"max_gb": 50.0} and s.settings()["max_gb"] == 50)
+        c.check("the space limit defaults to 20 GB, recording only while away on",
+                s.settings() == {"max_gb": 20, "away_only": True})
+        c.check("…and can be changed", s.save_settings({"max_gb": "50"}) == {"max_gb": 50.0, "away_only": True}
+                and s.settings()["max_gb"] == 50)
+        c.check("away-only can be switched off on its own", s.save_settings({"away_only": False})["away_only"] is False
+                and s.settings() == {"max_gb": 50, "away_only": False})
         for bad in ({"max_gb": 0}, {"max_gb": "lots"}, {}):
             try:
                 s.save_settings(bad)

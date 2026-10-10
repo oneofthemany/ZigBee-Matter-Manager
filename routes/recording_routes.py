@@ -51,10 +51,13 @@ def register_recording_routes(app: FastAPI) -> None:
 
     @app.put("/api/recordings/settings")
     async def settings(body: Dict[str, Any], _=Depends(require_scope("admin"))):
+        r = _rec()
         try:
-            return await asyncio.to_thread(_rec().store.save_settings, body)
+            out = await asyncio.to_thread(r.store.save_settings, body)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        r.kick()                                          # away-only changes what records
+        return out
 
     @app.get("/api/recordings/clips/{camera}/{name}")
     async def clip(camera: str, name: str, download: int = 0, _=Depends(require_scope("camera:read"))):

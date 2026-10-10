@@ -176,13 +176,29 @@ export async function renderRecordings(host, cameras) {
             return `<div class="text-break"><i class="fas fa-circle ${ok ? 'text-danger' : 'text-secondary'} me-1" style="font-size:.5rem;vertical-align:middle"></i>${escapeHtml(name(id))}${
                 ok ? ' <span class="text-muted">recording</span>' : ` <span class="text-danger">${escapeHtml(c?.error || (s.reachable ? 'starting…' : 'not recording'))}</span>`}</div>`;
         }).join('');
+        const paused = (s.paused || []).map(id => `<div class="text-break"><i class="fas fa-pause me-1 text-secondary" style="font-size:.6rem"></i>${escapeHtml(name(id))}
+            <span class="text-muted">paused — someone is home</span></div>`).join('');
+        const awayOnly = s.settings.away_only;
         el.innerHTML = `
+            <div class="form-check form-switch mb-1">
+                <input class="form-check-input" type="checkbox" id="rec_away" ${awayOnly ? 'checked' : ''} ${isAdmin() ? '' : 'disabled'}>
+                <label class="form-check-label" for="rec_away">Only record while everyone is away</label>
+                <div class="text-muted">${awayOnly ? 'House mode away or holiday. At home, detection still runs but nothing is saved.'
+                    : 'Cameras record whenever recording is on for them, whoever is home.'}</div>
+            </div>
+            ${awayOnly && s.away == null && (s.paused?.length || s.wanted.length) ? `<div class="small text-warning-emphasis mb-1">House mode isn't set up,
+                so cameras are recording all the time. Set it up under Settings → Security.</div>` : ''}
             ${!s.reachable && s.wanted.length ? `<div class="alert alert-warning py-2 mb-2">Nothing is being recorded: the recorder isn't running.
                 ${isAdmin() ? '<a href="#" data-zmm-manager>Enable it in the ZMM Manager</a> (Services → Cameras → Recording).' : 'Ask an admin to enable it.'}</div>` : ''}
-            <div>${cams || '<span class="text-muted">No camera is set to record.</span>'}</div>
+            <div>${cams}${paused}${cams || paused ? '' : '<span class="text-muted">No camera is set to record.</span>'}</div>
             <div class="text-muted">Using ${gb(u.footage_bytes + u.clip_bytes)} of ${gb(u.max_bytes)} GB
                 (${gb(u.clip_bytes)} GB clips) · ${gb(u.free_bytes)} GB free on the disk
                 ${isAdmin() ? `· <a href="#" id="rec_limit">Change limit</a>` : ''}</div>`;
+        $('rec_away')?.addEventListener('change', async ev => {
+            try { await api('PUT', '/api/recordings/settings', { away_only: ev.target.checked }); }
+            catch (e) { window.toast?.error(e.message); }
+            setTimeout(loadStatus, 1500);                 // the recorder takes the new list on its next check
+        });
         $('rec_limit')?.addEventListener('click', async ev => {
             ev.preventDefault();
             const v = window.prompt('Most space recordings may use, in GB. The oldest footage is deleted first when it fills.', s.settings.max_gb);

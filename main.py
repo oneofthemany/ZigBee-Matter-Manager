@@ -982,8 +982,17 @@ async def lifespan(app: FastAPI):
         # Recordings: the recorder sidecar is told what to record and sent
         # each camera's signals. Idle until the manager enables the sidecar.
         from modules.recordings import RecorderBridge, set_recorder
-        recorder = RecorderBridge(camera_manager)
+        def _house_away():
+            mode = house_mode.current()
+            return None if mode is None else mode.lower() in ("away", "holiday")
+        recorder = RecorderBridge(camera_manager, away=_house_away)
         camera_manager.on_signal = recorder.signal
+
+        def _recorder_follows_mode(ieee, changed):
+            hw = house_mode.worker()
+            if hw is not None and ieee == hw.ieee and "value" in changed:
+                recorder.kick()
+        zigbee_service.automation.add_state_listener(_recorder_follows_mode)
         set_recorder(recorder)
         app.state.recorder = recorder
         await recorder.start()

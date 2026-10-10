@@ -57,6 +57,7 @@ def normalise_record(data: Any, current: Optional[Dict[str, Any]], detect_labels
         if d["mode"] not in MODES:
             raise ValueError(f"Recording mode must be one of {', '.join(MODES)}")
         out["mode"] = d["mode"]
+    out.pop("when", None)
     if "events" in d:
         out["events"] = [k for k in EVENT_KEYS if k in (d["events"] or [])]
     for key, lo, hi, what in (("pre_s", 0, 30, "Seconds before"), ("post_s", 0, 60, "Seconds after"),
@@ -117,20 +118,29 @@ class Store:
             gb = float(raw.get("max_gb", DEFAULT_MAX_GB))
         except (TypeError, ValueError):
             gb = DEFAULT_MAX_GB
-        return {"max_gb": min(max(gb, 1), 100000)}
+        # On: cameras record only while the house mode is away or holiday.
+        return {"max_gb": min(max(gb, 1), 100000), "away_only": raw.get("away_only", True) is not False}
 
     def save_settings(self, changes: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            gb = float(changes.get("max_gb"))
-        except (TypeError, ValueError):
-            raise ValueError("The space limit must be a number of GB")
-        if not 1 <= gb <= 100000:
-            raise ValueError("The space limit must be at least 1 GB")
+        """A partial update: what isn't mentioned is kept."""
+        out = self.settings()
+        if "max_gb" in changes:
+            try:
+                gb = float(changes.get("max_gb"))
+            except (TypeError, ValueError):
+                raise ValueError("The space limit must be a number of GB")
+            if not 1 <= gb <= 100000:
+                raise ValueError("The space limit must be at least 1 GB")
+            out["max_gb"] = gb
+        if "away_only" in changes:
+            out["away_only"] = bool(changes["away_only"])
+        if not {"max_gb", "away_only"} & set(changes):
+            raise ValueError("Nothing to change")
         self.root.mkdir(parents=True, exist_ok=True)
         tmp = self.root / "settings.tmp"
-        tmp.write_text(json.dumps({"max_gb": gb}))
+        tmp.write_text(json.dumps(out))
         os.replace(tmp, self.root / "settings.json")
-        return {"max_gb": gb}
+        return out
 
     # What to record, as the app last sent it. Kept so recording resumes
     # after a restart with the app down. It holds go2rtc's API password, as

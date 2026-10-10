@@ -7,12 +7,25 @@ them under Cameras → **Recordings**.
 
 1. ZMM Manager → Services → Cameras → **Recording → Enable**. (go2rtc must be
    enabled too: the recorder reads its copy of each stream.)
-2. In the app: Cameras → Manage → edit a camera → **Recording → Keep**:
+2. In the app: Cameras → Settings → **Edit** a camera → **Recording** tab → **Keep**:
    - *Clips of events* — a clip for each event, and nothing else;
    - *Everything, and clips of events* — continuous footage for the hours you
      choose, plus the clips.
 3. Tick what counts as an event: motion (needs the camera's ONVIF events),
    person, vehicle, animal (need detection on — [vision.md](vision.md)).
+
+### Only while everyone is away
+
+One switch for the house, at the top of Cameras → Recordings, on by default:
+cameras record only while the house mode is **away** or **holiday**
+([house-mode-and-alarm.md](house-mode-and-alarm.md)). At home, detection still
+runs — rules, notifications and live signals work — but no footage or clips
+are saved. Switch it off and cameras record whenever recording is on for them.
+
+If house mode isn't set up the switch can't tell who is home, so cameras
+record all the time and the panel says so: missing footage is the worse
+mistake. The recorder keeps the last list it was given, so during an app
+restart it carries on as it was.
 
 ## Where it is kept
 
@@ -124,7 +137,7 @@ play and delete — both containers mount it.
 | `GET /api/recordings/footage/{camera}?start=&end=` | stretches there is footage for (epoch seconds, two days at most) |
 | `GET /api/recordings/footage/{camera}/play?start=&seconds=` | that stretch as one MP4 |
 | `GET /api/recordings/status` | what is recording, space used and free |
-| `PUT /api/recordings/settings` | `{max_gb}`, admin |
+| `PUT /api/recordings/settings` | `{max_gb?, away_only?}`, admin |
 
 In the ZMM Manager (`:8001`; actions need the Manager token): `GET /recorder`,
 `POST /recorder/enable`, `/recorder/disable` `{remove?}`, `/recorder/restart`,

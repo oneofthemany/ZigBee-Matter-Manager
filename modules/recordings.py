@@ -73,8 +73,11 @@ class RecorderClient:
 class RecorderBridge:
     """Keeps the sidecar's camera list equal to ZMM's and passes signals on."""
 
-    def __init__(self, cameras: Any, client: Optional[RecorderClient] = None, store: Optional[Store] = None):
+    def __init__(self, cameras: Any, client: Optional[RecorderClient] = None, store: Optional[Store] = None,
+                 away: Callable[[], Optional[bool]] = lambda: None):
+        """`away()`: whether the household is away; None when house mode isn't set up."""
         self.cameras, self.client, self.store = cameras, client or RecorderClient(), store or Store()
+        self._away = away
         self.status: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
         self._pushed: Optional[str] = None
@@ -83,12 +86,30 @@ class RecorderBridge:
         self._kick = asyncio.Event()
         self._clips: Tuple[float, List[Dict[str, Any]]] = (0.0, [])
 
+    def _away_now(self) -> Optional[bool]:
+        try:
+            return self._away()
+        except Exception:                                 # noqa: BLE001
+            return None
+
+    def active(self, cam: Dict[str, Any], away: Optional[bool] = None) -> bool:
+        """Whether a camera should be recording now. "Only while away" with no
+        house mode to ask records anyway: missing footage is the worse mistake."""
+        rec = cam.get("record") or {}
+        if not cam.get("enabled", True) or rec.get("mode", "off") == "off":
+            return False
+        if not self.store.settings()["away_only"]:
+            return True
+        away = self._away_now() if away is None else away
+        return away is not False
+
     def wanted(self) -> List[Dict[str, Any]]:
         from modules.cameras import STREAM_PREFIX
         out = []
+        away = self._away_now()
         for cid, cam in sorted(self.cameras.cameras.items()):
             rec = cam.get("record") or {}
-            if cam.get("enabled", True) and rec.get("mode", "off") != "off":
+            if self.active(cam, away):
                 # go2rtc's copy of the stream: still one connection to the camera.
                 out.append({"id": cid, "url": self.cameras.go2rtc.stream_url(STREAM_PREFIX + cid), "record": rec})
         return out
@@ -109,8 +130,9 @@ class RecorderBridge:
     def signal(self, cid: str, state: Dict[str, Any]) -> None:
         """A camera's signals moved. Fire and forget: a recorder that is down
         must never hold up the rule engine."""
-        rec = (self.cameras.cameras.get(cid) or {}).get("record") or {}
-        if rec.get("mode", "off") == "off":
+        cam = self.cameras.cameras.get(cid) or {}
+        rec = cam.get("record") or {}
+        if not self.active(cam):
             return
         keys = {k: bool(state.get(k)) for k in rec.get("events") or []}
 
@@ -169,8 +191,12 @@ class RecorderBridge:
 
     def public(self) -> Dict[str, Any]:
         st = self.status or {}
-        return {"reachable": self.status is not None, "error": self.error,
-                "wanted": [c["id"] for c in self.wanted()], "cameras": st.get("cameras") or {}}
+        away = self._away_now()
+        paused = [cid for cid, cam in sorted(self.cameras.cameras.items())
+                  if cam.get("enabled", True) and (cam.get("record") or {}).get("mode", "off") != "off"
+                  and not self.active(cam, away)]
+        return {"reachable": self.status is not None, "error": self.error, "away": away,
+                "wanted": [c["id"] for c in self.wanted()], "paused": paused, "cameras": st.get("cameras") or {}}
 
 
 _bridge: Optional[RecorderBridge] = None

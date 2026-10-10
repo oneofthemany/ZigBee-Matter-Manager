@@ -138,6 +138,37 @@ def run() -> Checker:
                     pub["reachable"] and pub["wanted"] == ["front", "yard"] and pub["cameras"]["front"]["recording"]
                     and "apipw" not in json.dumps(pub), pub)
 
+            c.section("only while away")
+            house = {"away": False}
+            hb = M.RecorderBridge(cams, FakeClient(), store, away=lambda: house["away"])
+            cams.cameras["yard"]["record"] = {**rec, "mode": "continuous"}
+            c.check("on by default: with someone home nothing records",
+                    store.settings()["away_only"] is True and hb.wanted() == [] and hb.public()["paused"] == ["front", "yard"])
+            house["away"] = True
+            c.check("once everyone is away, they all do", [x["id"] for x in hb.wanted()] == ["front", "yard"]
+                    and hb.public()["paused"] == [])
+            house["away"] = None
+            c.check("no house mode to ask: record rather than miss something, and say why",
+                    [x["id"] for x in hb.wanted()] == ["front", "yard"] and hb.public()["away"] is None)
+            house["away"] = False
+            await hb.step()
+            first = hb.client.pushes
+            house["away"] = True
+            await hb.step()
+            c.check("going away sends the recorder the new list", hb.client.pushes == first + 1
+                    and [x["id"] for x in hb.client.config] == ["front", "yard"])
+            house["away"] = False
+            hb.signal("front", {"person": True})
+            await asyncio.sleep(0.05)
+            c.check("a camera paused because someone is home sends no events", hb.client.signals == [])
+            store.save_settings({"away_only": False})
+            c.check("switched off: cameras record whoever is home", [x["id"] for x in hb.wanted()] == ["front", "yard"]
+                    and hb.public()["paused"] == [])
+            c.check("…and the space limit is kept when only that changes", store.settings()["max_gb"] == 20)
+            store.save_settings({"away_only": True})
+            cams.cameras["yard"]["record"] = {**R.RECORD_DEFAULTS}
+            house["away"] = None
+
             c.section("signals")
             async def frame(cid):
                 return b"\xff\xd8boxed"

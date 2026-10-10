@@ -9,7 +9,7 @@ on the hub; no picture leaves it.
 
 1. ZMM Manager → Services → Cameras → **Object detection → Enable**. It uses
    the Coral if one is ready (see §Hardware), otherwise the CPU.
-2. In the app: Cameras → Manage → edit a camera → **Detect objects on this
+2. In the app: Cameras → Settings → **Edit** a camera → **Detection** tab → **Detect objects on this
    camera**, and tick what to look for.
 3. The camera device now has `person` / `vehicle` / `animal` (true or false).
    **Last detection** in the camera list shows the frame behind the latest
@@ -45,7 +45,7 @@ nothing.
 ## Zones
 
 A zone is a polygon on the camera's picture with a name: the drive, the porch,
-the lawn. Cameras → Manage → edit a camera → **Zones → Add zone**, then tap the
+the lawn. Cameras → Settings → **Edit** a camera → **Zones** tab → **Add zone**, then tap the
 picture to place corners. A tap near an edge adds a corner to that edge; drag
 a corner to move it. Up to 8 zones per camera, 3–24 corners each, any shape.
 

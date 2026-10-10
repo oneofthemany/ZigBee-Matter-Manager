@@ -518,8 +518,8 @@ async function openRuleEditor(ruleId) {
         zoneSel.value = object ? zoneWanted : '';
         document.getElementById('notifRuleZoneWrap').style.display = object ? 'block' : 'none';
         document.getElementById('notifRuleZoneHint').textContent = !object ? ''
-            : options.length ? 'Zones are drawn on each camera under Cameras → Manage.'
-            : 'No camera has a zone for this yet — draw one under Cameras → Manage.';
+            : options.length ? 'Zones are drawn on each camera under Cameras → Settings → Edit.'
+            : 'No camera has a zone for this yet — draw one under Cameras → Settings → Edit.';
         document.getElementById('notifRuleScopeWrap').style.display = object && zoneSel.value ? 'none' : 'block';
     }
     zoneSel.addEventListener('change', () => { zoneWanted = zoneSel.value; syncZone(); });

@@ -24,6 +24,14 @@ camera ──RTSP──▶ go2rtc (sidecar, API only) ◀──HTTP/WS, Basic au
 | `config/secrets.yaml` → `cameras`, `go2rtc` | camera credentials; go2rtc's API credentials |
 | `data/go2rtc/go2rtc.yaml` | go2rtc's config, written by ZMM (0600) |
 
+## Finding your way
+
+The Cameras tab has three views: **Live** (the grid; streams run only while it
+shows), **Recordings** ([recordings.md](recordings.md)), and **Settings**
+(admin): streaming and detection at a glance, and the camera list. **Add
+camera** and **Edit** open one window with a tab each for **Stream**,
+**Detection**, **Zones** and **Recording**.
+
 ## Setting up
 
 1. **ZMM Manager → Services → go2rtc → Enable** (the Cameras tab's Manage
