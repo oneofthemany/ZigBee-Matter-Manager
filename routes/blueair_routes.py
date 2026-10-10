@@ -57,10 +57,17 @@ def register_blueair_routes(app: FastAPI):
             return
 
         async def _probe():
+            before = {i for i in ctl.device_ids() if ctl.cached_status(i) is not None}
             try:
                 await ctl.list_devices()
             except Exception as e:
-                logger.debug(f"Blueair background refresh failed: {e}")
+                logger.warning(f"Blueair background refresh failed: {e}")
+            after = {i for i in ctl.device_ids() if ctl.cached_status(i) is not None}
+            # The device table fetches once on load, before the first cloud
+            # login lands, so tell it when rows become available.
+            if after != before:
+                from routes.websocket_routes import broadcast_event
+                await broadcast_event("devices_changed", {"source": "blueair"})
 
         state["probe"] = asyncio.create_task(_probe())
 

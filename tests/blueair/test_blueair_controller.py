@@ -90,19 +90,33 @@ class FakeApi:
         FakeApi.closed += 1
 
 
+class FakeSession:
+    opened: list = []
+
+    def __init__(self):
+        self.closed = False
+        FakeSession.opened.append(self)
+
+    async def close(self):
+        self.closed = True
+
+
 def _fake_library(aws=(), classic=(), aws_error=None, classic_error=None):
     lib = types.ModuleType("blueair_api")
     lib.LoginError = FakeLoginError
     lib.calls = []
+    lib.sessions = []
 
-    async def get_aws_devices(username, password, region):
+    async def get_aws_devices(username, password, region, client_session=None):
         lib.calls.append(("aws", username, region))
+        lib.sessions.append(client_session)
         if aws_error:
             raise aws_error
         return FakeApi(), list(aws)
 
-    async def get_devices(username, password):
+    async def get_devices(username, password, client_session=None):
         lib.calls.append(("classic", username))
+        lib.sessions.append(client_session)
         if classic_error:
             raise classic_error
         return FakeApi(), list(classic)
@@ -127,12 +141,15 @@ class Env:
         self._saved_env = {k: os.environ.pop(k, None) for k in (B.ENV_USERNAME, B.ENV_PASSWORD)}
         os.environ.update(self.env)
         self._saved_lib = sys.modules.get("blueair_api")
+        self._saved_session = B._new_session
+        B._new_session = FakeSession
         if self.lib is not None:
             sys.modules["blueair_api"] = self.lib
         return self
 
     def __exit__(self, *exc):
         B.SECRETS_FILE = self._saved_file
+        B._new_session = self._saved_session
         for k, v in self._saved_env.items():
             os.environ.pop(k, None)
             if v is not None:
@@ -216,6 +233,21 @@ def _login(c: Checker) -> None:
         ctl = B.BlueairController({"enabled": True})
         c.check("an account with no classic devices still works",
                 [d["id"] for d in _run(ctl.list_devices())] == ["A1"])
+        c.check("both APIs are handed the controller's session, so a failing one can't open its own",
+                len(lib.sessions) == 2 and lib.sessions[0] is lib.sessions[1]
+                and isinstance(lib.sessions[0], FakeSession), lib.sessions)
+        _run(ctl.reset())
+        c.check("the session is closed on reset even though the classic lookup raised",
+                lib.sessions[0].closed)
+        _run(ctl.list_devices())
+        c.check("a re-login closes the previous session before opening another",
+                lib.sessions[0].closed and lib.sessions[2] is not lib.sessions[0]
+                and not lib.sessions[2].closed)
+
+    lib = _fake_library(aws=[aws], classic_error=RuntimeError("no classic devices"))
+    with Env(lib=lib, secrets=CREDS):
+        _run(B.BlueairController({"enabled": True}).test_login("me@example.com", "pw", "eu"))
+        c.check("test login closes its session", lib.sessions and all(x.closed for x in lib.sessions))
 
     lib = _fake_library(aws_error=FakeLoginError("bad credentials"))
     with Env(lib=lib, secrets=CREDS):
@@ -343,6 +375,23 @@ def _real_library(c: Checker) -> None:
             sys.modules["blueair_api"] = saved
 
     c.section("real blueair_api contract")
+
+    import inspect
+    c.check("both bootstrap calls accept client_session",
+            all("client_session" in inspect.signature(f).parameters
+                for f in (lib.get_devices, lib.get_aws_devices)))
+
+    async def given_session_used():
+        session = B._new_session()
+        try:
+            from blueair_api.http_aws_blueair import HttpAwsBlueair
+            from blueair_api.http_blueair import HttpBlueair
+            return (HttpBlueair(username="u", password="p", client_session=session).api_session is session
+                    and HttpAwsBlueair(username="u", password="p", client_session=session).api_session is session)
+        finally:
+            await session.close()
+    c.check("a supplied session is used instead of the library opening its own",
+            _run(given_session_used()))
 
     class CloudApi:
         def __init__(self):

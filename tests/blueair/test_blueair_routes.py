@@ -107,6 +107,13 @@ def run() -> Checker:
 
         c.section("devices")
         hook = app.state.blueair_device_entries
+        import routes.websocket_routes as W
+        pushed = []
+        real_broadcast = W.broadcast_event
+
+        async def fake_broadcast(event_type, data):
+            pushed.append(event_type)
+        W.broadcast_event = fake_broadcast
 
         async def first_list():
             entries = await hook()
@@ -114,11 +121,19 @@ def run() -> Checker:
             for _ in range(50):
                 await asyncio.sleep(0)
             return entries, await hook()
-        before, after = asyncio.run(first_list())
+        try:
+            before, after = asyncio.run(first_list())
+            pushes_after_first = list(pushed)
+            asyncio.run(first_list())
+        finally:
+            W.broadcast_event = real_broadcast
         c.check("the device list never waits on the cloud", before == [], before)
         c.check("purifiers join /api/devices once cached",
                 len(after) == 1 and after[0]["blueair_device_id"] == "P1"
                 and after[0]["type"] == "AirPurifier" and after[0]["ieee"] == "blueair_P1", after)
+        c.check("the open device table is told to refetch when purifiers first arrive",
+                pushes_after_first == ["devices_changed"], pushes_after_first)
+        c.check("a refresh that changes no rows pushes nothing", pushed == ["devices_changed"], pushed)
 
         r = client.get("/api/blueair/devices/P1/status").json()
         c.check("status endpoint returns the normalised status", r["success"] and r["status"]["id"] == "P1", r)

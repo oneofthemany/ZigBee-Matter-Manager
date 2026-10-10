@@ -175,6 +175,11 @@ export function initWS() {
                     try { dismissKnownDevices(state.devices); } catch(e) {}
                     break;
 
+                // Rows (Blueair, HomeKit) whose first refresh landed after the list loaded.
+                case "devices_changed":
+                    fetchAllDevices().catch(() => {});
+                    break;
+
                 case "device_joined":
                 case "device_initialized":
                     fetchAllDevices().then(() => {

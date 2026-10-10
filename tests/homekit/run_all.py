@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-PY_MODULES = ["test_homekit_controller"]
+PY_MODULES = ["test_homekit_controller", "test_homekit_routes"]
 
 
 def main() -> int:

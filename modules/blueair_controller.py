@@ -115,6 +115,13 @@ def save_credentials(username: str, password: str) -> None:
     logger.info("Blueair credentials saved to %s", path)
 
 
+def _new_session():
+    """The library opens its own session when given none and drops it unclosed
+    when login raises, so the controller always supplies and closes it."""
+    from aiohttp import ClientSession
+    return ClientSession(raise_for_status=False)
+
+
 # Normalisation
 
 def _val(v: Any) -> Any:
@@ -223,6 +230,7 @@ class BlueairController:
         self._devices: Dict[str, tuple[Any, str]] = {}   # id -> (device, generation)
         self._status: Dict[str, tuple[float, Dict[str, Any]]] = {}
         self._apis: List[Any] = []
+        self._session: Any = None
         self._devices_at = 0.0
         self._session_key: Optional[tuple] = None
         self._lock = asyncio.Lock()
@@ -239,11 +247,14 @@ class BlueairController:
     # Session
     async def _close_apis(self) -> None:
         apis, self._apis = self._apis, []
+        session, self._session = self._session, None
         for api in apis:
             try:
                 await api.cleanup_client_session()
             except Exception as e:                        # noqa: BLE001
                 logger.debug(f"Blueair session close: {e}")
+        if session is not None and not session.closed:
+            await session.close()
 
     async def reset(self) -> None:
         """Drop the session and caches — credentials or region changed."""
@@ -262,13 +273,15 @@ class BlueairController:
                                "add 'blueair_api' to requirements") from e
 
         await self._close_apis()
+        self._session = _new_session()
         devices: Dict[str, tuple[Any, str]] = {}
         errors: List[str] = []
 
         # Newer devices: the one most accounts have.
         try:
             api, aws = await blueair_api.get_aws_devices(
-                username=username, password=password, region=self.region)
+                username=username, password=password, region=self.region,
+                client_session=self._session)
             self._apis.append(api)
             for d in aws:
                 devices[str(d.uuid)] = (d, "aws")
@@ -287,7 +300,8 @@ class BlueairController:
         # Classic devices live on the older API; an account without any
         # answers with an error there, which is not a failure.
         try:
-            api, classic = await blueair_api.get_devices(username=username, password=password)
+            api, classic = await blueair_api.get_devices(
+                username=username, password=password, client_session=self._session)
             self._apis.append(api)
             for d in classic:
                 devices.setdefault(str(d.uuid), (d, "classic"))

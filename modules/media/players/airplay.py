@@ -41,6 +41,29 @@ SCAN_TIMEOUT = 5
 STOP_GRACE_SECONDS = 3.0
 
 
+def _quiet_knock_errors(loop: asyncio.AbstractEventLoop) -> None:
+    """pyatv's knock() waits FIRST_EXCEPTION and never retrieves the failed
+    task, so every scan of an unreachable host logs "Task exception was never
+    retrieved". Drop exactly that; everything else reaches the prior handler."""
+    prior = loop.get_exception_handler()
+    if getattr(prior, "_zmm_knock_filter", False):
+        return
+
+    def handler(lp, context):
+        fut = context.get("future")
+        coro = getattr(fut, "get_coro", lambda: None)() if fut is not None else None
+        if (isinstance(context.get("exception"), OSError)
+                and getattr(coro, "__qualname__", "") == "_async_knock"):
+            return
+        if prior is not None:
+            prior(lp, context)
+        else:
+            lp.default_exception_handler(context)
+
+    handler._zmm_knock_filter = True
+    loop.set_exception_handler(handler)
+
+
 def _pid(identifier: str) -> str:
     return f"airplay:{identifier}"
 
@@ -157,6 +180,7 @@ class AirPlayPlayerProvider(PlayerProvider):
 
     # Discovery
     async def start(self) -> None:
+        _quiet_knock_errors(asyncio.get_running_loop())
         if not self._ffmpeg:
             logger.warning("AirPlay: ffmpeg not found — playback will fail")
         await self._scan()
