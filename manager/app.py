@@ -17,8 +17,8 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import (beekeeper, containers, host, images, logs, ollama, recovery,
-                     upgrade, watchdog)
+from manager import (beekeeper, containers, go2rtc, host, images, logs, ollama,
+                     recovery, upgrade, watchdog)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -84,6 +84,7 @@ async def status():
             "recovery": recovery.state(app_ok=app_health.get("ok")),
             "ollama": await ollama.summary(),
             "beekeeper": await beekeeper.status(),
+            "go2rtc": await go2rtc.status(),
             "host": host.summary()}
 
 
@@ -309,6 +310,50 @@ async def beekeeper_service(data: dict = Body(default={}), authorization: str = 
         return _unauthorized()
     res = beekeeper.request_service(str((data or {}).get("action") or "install"))
     return JSONResponse(res, status_code=200 if res.get("success") else 400)
+
+
+# go2rtc: the camera streaming sidecar (third-party image, pinned)
+# Reads are open; enable/disable/restart need the token. The app's Cameras
+# tab writes go2rtc's config and drives its API once it's running.
+
+@app.get("/go2rtc")
+async def go2rtc_status():
+    return await go2rtc.status()
+
+
+@app.post("/go2rtc/enable")
+async def go2rtc_enable(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = go2rtc.start_enable()
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 409)
+
+
+@app.post("/go2rtc/disable")
+async def go2rtc_disable(data: dict = Body(default={}),
+                         authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await go2rtc.disable(remove=bool(data.get("remove")))
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/go2rtc/service")
+async def go2rtc_service(data: dict = Body(default={}), authorization: str = Header(default="")):
+    """Install / remove / re-check go2rtc's boot-time service on the host."""
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    res = go2rtc.request_service(str((data or {}).get("action") or "install"))
+    return JSONResponse(res, status_code=200 if res.get("success") else 400)
+
+
+@app.post("/go2rtc/restart")
+async def go2rtc_restart(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await go2rtc.restart()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
 
 
 # Host OS: updates as collected by scripts/os_updates.sh

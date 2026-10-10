@@ -957,7 +957,12 @@ async def lifespan(app: FastAPI):
         # Cameras: go2rtc streams, ONVIF motion as a device signal.
         # See docs/cameras.md.
         from modules.cameras import CameraManager, set_camera_manager
-        from modules.go2rtc import start_if_installed as start_go2rtc
+        from modules.go2rtc import write_config as write_go2rtc_config
+        # Written before the manager can create the sidecar, which mounts it.
+        try:
+            await asyncio.to_thread(write_go2rtc_config)
+        except Exception as e:
+            logger.warning(f"[cameras] could not write go2rtc's config: {e}")
         camera_manager = CameraManager(evaluate=zigbee_service.automation.evaluate)
         zigbee_service.automation.add_device_getter(camera_manager.automation_devices)
         set_camera_manager(camera_manager)
@@ -967,10 +972,7 @@ async def lifespan(app: FastAPI):
             return camera_manager.device_entries()
         app.state.camera_device_entries = _camera_entries
 
-        async def _start_cameras():
-            await start_go2rtc()
-            await camera_manager.start()
-        asyncio.create_task(_start_cameras())
+        await camera_manager.start()
 
         # Journeys: its own DuckDB file and worker thread — DuckDB is
         # single-writer per file, so journeys never share a database.

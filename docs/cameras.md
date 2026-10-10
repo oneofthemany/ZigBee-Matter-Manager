@@ -14,7 +14,9 @@ camera ──RTSP──▶ go2rtc (sidecar, API only) ◀──HTTP/WS, Basic au
 | Path | Role |
 |---|---|
 | `modules/cameras.py` | registry, credentials, keeping go2rtc in step, snapshots, motion watchers |
-| `modules/go2rtc.py` | go2rtc's config, API client, installing the sidecar |
+| `modules/go2rtc.py` | go2rtc's config and API client |
+| `manager/go2rtc.py` | the sidecar's lifecycle, in the ZMM Manager |
+| `scripts/sidecar_service.sh go2rtc` | its boot-time service, on the host |
 | `modules/onvif.py` | WS-Discovery, profiles and stream URIs, pull-point motion events |
 | `routes/camera_routes.py` | API and the stream websocket |
 | `static/js/cameras-page.js`, `static/js/camera-player.js` | the tab, the player |
@@ -24,11 +26,11 @@ camera ──RTSP──▶ go2rtc (sidecar, API only) ◀──HTTP/WS, Basic au
 
 ## Setting up
 
-1. **Cameras → Manage → Install go2rtc** (admin). ZMM pulls
-   `docker.io/alexxit/go2rtc:1.9.14` over the host's container socket and
-   starts `zigbee-matter-manager-go2rtc` on host networking, sharing ZMM's data
-   folder for its config. This needs the podman or docker socket mounted into
-   ZMM, as for Ollama; without one, see *Running go2rtc yourself*.
+1. **ZMM Manager → Services → go2rtc → Enable** (the Cameras tab's Manage
+   panel links there). Like Beekeeper and Ollama, go2rtc is an external
+   container, so the Manager owns it: it pulls `docker.io/alexxit/go2rtc:1.9.14`
+   and starts `zigbee-matter-manager-go2rtc` on host networking, mounting only
+   ZMM's `data/go2rtc` folder, where ZMM has already written the config.
 2. **Add a camera**: either **Find ONVIF cameras**, pick one, enter its
    username and password and **Read streams** (ZMM asks the camera for its RTSP
    URLs), or paste the RTSP URL. A `user:pass@` in a pasted URL is lifted into
@@ -61,15 +63,22 @@ docker ZMM is not on the host network, so the installer sets go2rtc to `:1984`
 and ZMM to reach it at `host.docker.internal:1984`; the API password then
 crosses the LAN in Basic auth on any request to it, so firewall `1984` to the
 host. Both are editable under **Manage → Address**, which rewrites the config
-and restarts go2rtc.
+and tells go2rtc to reload it (its own `/api/restart`).
 
-**After a reboot**, podman doesn't restart an `unless-stopped` container by
-itself; ZMM starts the sidecar when it comes up.
+**After a reboot or outage.** Enabling also asks the host for a boot-time
+service — a systemd unit (`zmm-go2rtc.service`) or OpenRC script that runs the
+container and restarts it if it stops — written by
+`scripts/sidecar_service.sh go2rtc`, the same helper Beekeeper uses, via the
+`zmm-go2rtc-service.path` trigger (or the polling watcher on hosts without
+systemd). Disabling removes the service before stopping the container, so the
+service can't bring it back. The card shows whether autostart is on. On a host
+with neither systemd nor OpenRC, the Manager's watchdog starts an enabled
+go2rtc that has stopped, and it moves go2rtc to a newly pinned image after a ZMM
+upgrade.
 
 ### Running go2rtc yourself
 
-Without a container socket, or if go2rtc already runs (Frigate ships one), run
-it with a config like ZMM's — API only, credentials, `local_auth: true` — and
+If go2rtc already runs elsewhere (Frigate ships one), run it with a config like ZMM's — API only, credentials, `local_auth: true` — and
 enter its address and the API username/password under **Manage → Address**.
 ZMM only needs the API.
 
@@ -151,6 +160,15 @@ WebRTC, Frigate's person/vehicle events, and IAS-style camera sirens.
 | `DELETE /api/cameras/{id}` | remove (and its credentials and stream) |
 | `POST /api/cameras/discover` | ONVIF cameras on the hub's network |
 | `POST /api/cameras/probe` | `{host, port, username, password}` → profiles with RTSP URLs, events support |
-| `GET /api/cameras/go2rtc` | go2rtc address, health, sidecar state |
-| `POST /api/cameras/go2rtc/install` | install or start the sidecar |
-| `PUT /api/cameras/go2rtc` | `{url, listen, username?, password?}`; rewrites the config, restarts go2rtc |
+| `GET /api/cameras/go2rtc` | go2rtc address and health |
+| `PUT /api/cameras/go2rtc` | `{url, listen, username?, password?}`; rewrites the config, has go2rtc reload it |
+
+In the ZMM Manager (`:8001`; actions need the Manager token):
+
+| | |
+|---|---|
+| `GET /go2rtc` | container, image, enabled, boot-time service, job log |
+| `POST /go2rtc/enable` | pull, create and start (or start); requests the boot-time service |
+| `POST /go2rtc/disable` | `{remove?}`; removes the service, then stops |
+| `POST /go2rtc/restart` | |
+| `POST /go2rtc/service` | `{action: install|remove|check}` |

@@ -221,6 +221,9 @@ label{display:block;font-family:var(--mono);font-size:.64rem;color:var(--muted);
 
 /* log terminal */
 .chips{display:flex;flex-wrap:wrap;gap:.35rem}
+/* Services sub-tabs: one sibling's card at a time, not a page of all of them */
+.subtabs{display:flex;flex-wrap:wrap;gap:.35rem;margin:.2rem 0 .9rem}
+.subtabs .sdot{display:inline-block;margin-right:.4rem;vertical-align:middle}
 .term{display:none;background:#071019;border:1px solid var(--line);
   border-radius:10px;padding:.6rem .75rem;margin-top:.6rem;max-height:46vh;
   overflow:auto;font-family:var(--mono);font-size:.72rem;line-height:1.45;
@@ -442,8 +445,14 @@ dialog .remember input{accent-color:var(--honey)}
 
 <!-- 6. SERVICES — the sibling containers this manager also looks after -->
 <section class="panel" id="p-services" role="tabpanel" aria-labelledby="tServices" hidden>
-  <h1>Services <span class="hint">&mdash; sibling containers: local AI and the DNS sinkhole</span></h1>
-<section id="ollamaCard" class="card" hidden>
+  <h1>Services <span class="hint">&mdash; sibling containers: local AI, the DNS sinkhole, camera streaming</span></h1>
+<div class="subtabs" id="svcTabs" role="tablist" aria-label="Services">
+  <button class="btn" role="tab" data-sub="ai" aria-controls="ollamaCard" hidden><span class="sdot s-mut" id="stDotAi"></span>AI models</button>
+  <button class="btn" role="tab" data-sub="bee" aria-controls="bkCard"><span class="sdot s-mut" id="stDotBee"></span>Beekeeper</button>
+  <button class="btn" role="tab" data-sub="cam" aria-controls="g2Card"><span class="sdot s-mut" id="stDotCam"></span>go2rtc</button>
+  <button class="btn" role="tab" data-sub="logs" aria-controls="svcLogs">Logs</button>
+</div>
+<section id="ollamaCard" class="card" role="tabpanel" data-sub="ai" hidden>
   <h2>AI models <span class="hint">— ollama sibling container</span></h2>
   <div class="rowline" style="border:0">
     <span id="olInfo" class="muted">&hellip;</span>
@@ -468,7 +477,7 @@ dialog .remember input{accent-color:var(--honey)}
 </section>
 
 <!-- Beekeeper — DNS ad/tracker blocker sidecar -->
-<section id="bkCard" class="card">
+<section id="bkCard" class="card" role="tabpanel" data-sub="bee">
   <h2>Beekeeper <span class="hint">&mdash; DNS ad/tracker blocker</span></h2>
   <div class="rowline" style="border:0">
     <span id="bkInfo" class="muted">&hellip;</span>
@@ -495,7 +504,31 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-  <section class="card"><h2>Logs <span class="hint">&mdash; the sibling containers&rsquo; own output</span></h2>
+<!-- go2rtc — camera streaming sidecar -->
+<section id="g2Card" class="card" role="tabpanel" data-sub="cam" hidden>
+  <h2>go2rtc <span class="hint">&mdash; camera streaming</span></h2>
+  <div class="rowline" style="border:0">
+    <span id="g2Info" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn primary" id="g2EnableBtn" onclick="enableGo2rtc(this)" hidden>Enable</button>
+    <button class="btn" id="g2RestartBtn" onclick="restartGo2rtc(this)" hidden>Restart</button>
+    <button class="btn" id="g2DisableBtn" onclick="disableGo2rtc(this)" hidden>Disable</button>
+  </div>
+  <div class="rowline" style="border:0;margin-top:.3rem">
+    <span id="g2SvcInfo" class="muted"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="g2SvcBtn" onclick="installGo2rtcService(this)" hidden>Install autostart</button>
+  </div>
+  <pre id="g2Job" class="term"></pre>
+  <div class="muted" style="font-size:.76rem;margin-top:.4rem">
+    Turns camera RTSP into browser video for the app&rsquo;s <strong>Cameras</strong> tab, which
+    adds the cameras and writes go2rtc&rsquo;s config &mdash; only its password-protected API is
+    on; its own RTSP and WebRTC servers are off. Enabling also installs a boot-time service on the
+    host (systemd or OpenRC), so it comes back after a reboot or outage.
+  </div>
+</section>
+
+  <section class="card" id="svcLogs" role="tabpanel" data-sub="logs" hidden><h2>Logs <span class="hint">&mdash; the sibling containers&rsquo; own output</span></h2>
     <div class="chips muted" id="logbtnsServices">&hellip;</div>
     <pre id="logviewServices" class="term"></pre>
   </section>
@@ -792,6 +825,7 @@ async function refresh(){
       '<button class="btn sm" type="button" data-detail="'+esc(x.name)+'">details</button></div>';
     }).join('')||'<span class="muted">none found</span>';
   updateBeekeeper(d.beekeeper||{});
+  updateGo2rtc(d.go2rtc||{});
   const rec=d.recovery||{};
   if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
   if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
@@ -804,14 +838,41 @@ refresh();
 /* Beekeeper (DNS ad/tracker blocker) enablement */
 /* SERVICES hex = the worse of Ollama and Beekeeper. Neither is required for
    the hub to work, so "not installed" is grey, never a fault. */
-const svc={ollama:'mut',bee:'mut',ollamaTxt:'',beeTxt:''};
+const svc={ollama:'mut',bee:'mut',cam:'mut',ollamaTxt:'',beeTxt:'',camTxt:''};
 function paintServices(){
- const sev=worst(svc.ollama,svc.bee);
+ const sev=worst(svc.ollama,svc.bee,svc.cam);
  const short=t=>t==='running'?'ok':t;
  const bits=[svc.beeTxt&&('bee '+short(svc.beeTxt)),
-             svc.ollamaTxt&&('ai '+short(svc.ollamaTxt))].filter(Boolean);
+             svc.ollamaTxt&&('ai '+short(svc.ollamaTxt)),
+             svc.camTxt&&('cams '+short(svc.camTxt))].filter(Boolean);
  const label=sev==='ok'?'ok':(sev==='mut'?'none':(sev==='bad'?'stopped':'attention'));
- setCell('services',sev,label,bits.join(' · '));}
+ setCell('services',sev,label,bits.join(' · '));
+ [['stDotAi',svc.ollama],['stDotBee',svc.bee],['stDotCam',svc.cam]].forEach(([id,v])=>{
+  const el=$(id);if(el)el.className='sdot s-'+v;});}
+
+/* Services sub-tabs */
+const SUBS=['ai','bee','cam','logs'];
+const svcAvail={ai:false,bee:true,cam:true,logs:true};
+let svcSub=(()=>{try{return localStorage.getItem('zmm.manager.svc')||'bee';}catch(e){return 'bee';}})();
+function showSub(id,focus){
+ if(!svcAvail[id])id=SUBS.find(k=>svcAvail[k]);
+ svcSub=id;
+ document.querySelectorAll('#svcTabs [data-sub]').forEach(b=>{
+  const on=b.dataset.sub===id;
+  b.hidden=!svcAvail[b.dataset.sub];b.classList.toggle('active',on);
+  b.setAttribute('aria-selected',on?'true':'false');b.tabIndex=on?0:-1;
+  if(on&&focus)b.focus();});
+ document.querySelectorAll('#p-services [role=tabpanel][data-sub]').forEach(p=>{p.hidden=p.dataset.sub!==id;});
+ try{localStorage.setItem('zmm.manager.svc',id);}catch(e){}}
+document.querySelectorAll('#svcTabs [data-sub]').forEach(b=>b.addEventListener('click',()=>showSub(b.dataset.sub)));
+$('svcTabs').addEventListener('keydown',e=>{
+ const vis=SUBS.filter(k=>svcAvail[k]);const i=vis.indexOf(svcSub);if(i<0)return;
+ let n=null;
+ if(e.key==='ArrowRight')n=(i+1)%vis.length;
+ else if(e.key==='ArrowLeft')n=(i-1+vis.length)%vis.length;
+ else if(e.key==='Home')n=0;else if(e.key==='End')n=vis.length-1;
+ if(n===null)return;e.preventDefault();showSub(vis[n],true);});
+showSub(svcSub);
 
 function updateBeekeeper(bk){
  const info=$('bkInfo'),en=$('bkEnableBtn'),dis=$('bkDisableBtn'),re=$('bkRestartBtn');
@@ -835,9 +896,47 @@ function updateBeekeeper(bk){
  paintServices();
  updateBeekeeperFirewall(bk.firewall||{},bk.installed);
  updateBeekeeperService(bk.service||{},bk.installed);}
+/* go2rtc (camera streaming) enablement. Grey when unused, like the others. */
+function updateGo2rtc(g){
+ const info=$('g2Info'),en=$('g2EnableBtn'),dis=$('g2DisableBtn'),re=$('g2RestartBtn'),job=$('g2Job');
+ if(!info)return;
+ const j=g.job;
+ const showJob=!!(j&&j.log&&j.log.length&&(j.status==='running'||j.status==='error'));
+ job.style.display=showJob?'block':'none';
+ if(showJob)job.textContent=j.log.join('\n');
+ if(g.available===false){
+  info.innerHTML=dot('s-warn')+'<span class="muted">'+esc(g.error||'runtime socket unavailable')+'</span>';
+  en.hidden=dis.hidden=re.hidden=true;svc.cam='warn';svc.camTxt='unavailable';paintServices();return;}
+ if(j&&j.status==='running'){
+  info.innerHTML=dot('s-warn')+'<span class="muted">working&hellip;</span>';
+  en.hidden=dis.hidden=re.hidden=true;svc.cam='warn';svc.camTxt='starting';paintServices();return;}
+ if(!g.installed){
+  info.innerHTML=dot('s-mut')+'<span>not installed</span>'+
+   (g.config?'':'<span class="muted"> &mdash; restart ZMM on this version first, it writes the config</span>');
+  en.hidden=false;en.textContent='Enable';dis.hidden=re.hidden=true;
+  svc.cam=g.enabled?'bad':'mut';svc.camTxt=g.enabled?'missing':'';paintServices();return;}
+ if(g.running){
+  info.innerHTML=dot('s-ok')+'<code>'+esc(g.name)+'</code><span class="muted">running · '+esc(g.image)+'</span>';
+  en.hidden=true;dis.hidden=re.hidden=false;svc.cam='ok';svc.camTxt='running';}
+ else{
+  info.innerHTML=dot(g.enabled?'s-bad':'s-mut')+'<code>'+esc(g.name)+'</code><span class="muted">'+
+   esc(g.enabled?(g.state||'stopped'):'disabled')+'</span>';
+  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=!g.enabled;
+  svc.cam=g.enabled?'bad':'mut';svc.camTxt=g.enabled?(g.state||'stopped'):'';}
+ paintServices();
+ updateBeekeeperService(g.service||{},g.installed&&g.enabled,['g2SvcInfo','g2SvcBtn']);}
+async function enableGo2rtc(btn){
+ const d=await act('/go2rtc/enable',null,false,btn);if(d&&d.success)refresh();}
+async function restartGo2rtc(btn){
+ const d=await act('/go2rtc/restart',null,false,btn);if(d&&d.success)refresh();}
+async function disableGo2rtc(btn){
+ if(!await confirmM('Stop go2rtc?\nLive camera views stop; snapshots and camera motion events from ONVIF keep working.',
+   {title:'Disable go2rtc',confirmText:'Disable',danger:true}))return;
+ const d=await act('/go2rtc/disable',null,false,btn);if(d&&d.success)refresh();}
 /* Boot-time service: without it, Beekeeper (the LAN's DNS) may not return after an outage. */
-function updateBeekeeperService(s,installed){
- const info=$('bkSvcInfo'),btn=$('bkSvcBtn');
+function updateBeekeeperService(s,installed,ids){
+ ids=ids||['bkSvcInfo','bkSvcBtn'];
+ const info=$(ids[0]),btn=$(ids[1]);
  if(!info)return;
  if(!installed){info.textContent='';btn.hidden=true;return;}
  const via=s.backend&&s.backend!=='none'?' <span class="muted">('+esc(s.backend)+(s.unit?' · '+esc(s.unit):'')+')</span>':'';
@@ -852,6 +951,9 @@ function updateBeekeeperService(s,installed){
  info.innerHTML=dot('s-bad')+'autostart: <b>off</b> — won&rsquo;t come back after a reboot'+
   (s.known?'':' <span class="muted">('+esc(s.detail||'host helper not installed')+')</span>');
  btn.hidden=false;}
+async function installGo2rtcService(btn){
+ const d=await act('/go2rtc/service',{action:'install'},false,btn);
+ if(d&&d.success)setTimeout(refresh,3000);}
 async function installBeekeeperService(btn){
  const d=await act('/beekeeper/service',{action:'install'},false,btn);
  if(d&&d.success)setTimeout(refresh,3000);}
@@ -1156,8 +1258,8 @@ async function loadOllama(){
  try{
   const r=await fetch('/ollama');if(!r.ok)throw 0;const d=await r.json();
   olIdx=0;
-  const card=$('ollamaCard');
-  card.hidden=!d.installed;
+  svcAvail.ai=!!d.installed;
+  showSub(svcSub);
   if(!d.installed){olPrevJob='';svc.ollama='mut';svc.ollamaTxt='';paintServices();return;}
   svc.ollama=d.healthy?'ok':(d.present&&!d.running?'bad':'warn');
   svc.ollamaTxt=d.healthy?'running':(d.present&&!d.running?'stopped':'starting');
@@ -1228,7 +1330,7 @@ const LOG_SCOPES={
  Deployment:{containers:['zigbee-matter-manager','zigbee-matter-manager-previous'],
              files:['upgrade_watcher.log']},
  Host:{files:['os_updates.log','os_apply.log']},
- Services:{containers:['ollama','zigbee-matter-manager-beekeeper'],
+ Services:{containers:['ollama','zigbee-matter-manager-beekeeper','zigbee-matter-manager-go2rtc'],
            files:['beekeeper_firewall.log']},
  '':null};
 /* scope key -> the panel it lives in, so a stream can be revealed by name */
@@ -1264,6 +1366,7 @@ function openLog(name){
    LOG_SCOPES[k]&&(LOG_SCOPES[k].files||[]).includes(name));
  const key=scope||'';
  showPanel(SCOPE_PANEL[key]);
+ if(key==='Services')showSub('logs');
  const strip=$('logbtns'+key),view=$('logview'+key);
  if(!strip||!view)return;
  const btn=[...strip.querySelectorAll('.btn')].find(b=>b.textContent.includes(name));

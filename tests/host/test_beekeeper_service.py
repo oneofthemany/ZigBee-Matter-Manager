@@ -1,4 +1,5 @@
-"""scripts/beekeeper_service.sh: Beekeeper's boot-time service on systemd, OpenRC and neither."""
+"""scripts/sidecar_service.sh: the sidecars' boot-time services on systemd, OpenRC and
+neither. Beekeeper runs through the beekeeper_service.sh wrapper, as installed hosts call it."""
 
 from __future__ import annotations
 
@@ -63,12 +64,14 @@ class Box:
                     "ZMM_OPENRC_RUN": str(r / ("rcrun" if backend == "openrc" else "absent"))}
         (r / "sdrun").mkdir(); (r / "rcrun").mkdir()
 
-    def run(self, action: str) -> dict:
-        d = self.data / "data" / "beekeeper"
+    def run(self, action: str, sidecar: str = "beekeeper") -> dict:
+        d = self.data / "data" / sidecar
         d.mkdir(parents=True, exist_ok=True)
         (d / "service_action").write_text(action)
         (self.stubs / "calls.log").write_text("")
-        subprocess.run(["bash", str(SCRIPTS / "beekeeper_service.sh")], env=self.env, capture_output=True, timeout=30)
+        cmd = (["bash", str(SCRIPTS / "beekeeper_service.sh")] if sidecar == "beekeeper"
+               else ["bash", str(SCRIPTS / "sidecar_service.sh"), sidecar])
+        subprocess.run(cmd, env=self.env, capture_output=True, timeout=30)
         self.trigger_left = (d / "service_action").exists()
         return json.loads((d / "service_status.json").read_text())
 
@@ -145,9 +148,34 @@ def run() -> Checker:
     c.check("writes nothing", not any(b.systemd.iterdir()) and not any(b.initd.iterdir()))
     b.close()
 
+    c.section("go2rtc")
+    b = Box("systemd")
+    st = b.run("install", "go2rtc")
+    unit = b.systemd / "zmm-go2rtc.service"
+    text = unit.read_text() if unit.exists() else ""
+    c.check("go2rtc gets its own unit supervising its own container",
+            "start -a zigbee-matter-manager-go2rtc" in text and "camera streaming" in text
+            and "Restart=always" in text, text[:300])
+    c.check("…enabled for boot and started",
+            "systemctl enable zmm-go2rtc.service" in b.calls() and st["installed"] and st["active"], (b.calls(), st))
+    c.check("…with its status beside go2rtc's config, not Beekeeper's",
+            (b.data / "data" / "go2rtc" / "service_status.json").exists()
+            and not (b.data / "data" / "beekeeper" / "service_status.json").exists())
+    c.check("Beekeeper's unit is untouched", not (b.systemd / "zmm-beekeeper.service").exists())
+    st = b.run("remove", "go2rtc")
+    c.check("remove takes go2rtc's unit away", not unit.exists() and st["installed"] is False, st)
+    b.close()
+    b = Box("openrc")
+    b.run("install", "go2rtc")
+    c.check("OpenRC gets a go2rtc init script", (b.initd / "zmm-go2rtc").exists()
+            and "rc-update add zmm-go2rtc default" in b.calls(), b.calls())
+    b.close()
+
     c.section("input")
     b = Box("systemd")
     st = b.run("rm -rf /")
     c.check("an unknown action only checks", st["action"] == "check" and not (b.systemd / "zmm-beekeeper.service").exists(), st)
     b.close()
+    r = subprocess.run(["bash", str(SCRIPTS / "sidecar_service.sh"), "../../etc"], capture_output=True, timeout=10)
+    c.check("an unknown sidecar is refused before touching anything", r.returncode == 2)
     return c

@@ -123,20 +123,18 @@ async function renderManage(root) {
     let g;
     try { g = await api('GET', '/api/cameras/go2rtc'); }
     catch (e) { el.innerHTML = `<div class="text-danger small">${escapeHtml(e.message)}</div>`; return; }
-    const sc = g.sidecar || {};
     const status = g.healthy ? '<span class="badge bg-success">running</span>'
-        : sc.installed ? '<span class="badge bg-warning text-dark">installed, not answering</span>'
-        : '<span class="badge bg-secondary">not installed</span>';
+        : '<span class="badge bg-secondary">not reachable</span>';
     el.innerHTML = `
         <div class="card shadow-sm mb-3"><div class="card-body">
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 <strong>go2rtc</strong> ${status}
-                ${g.healthy ? '' : `<button class="btn btn-sm btn-primary" id="g2_install" ${sc.socket ? '' : 'disabled'}>
-                    ${sc.installed ? 'Start' : 'Install'} go2rtc</button>`}
+                <a class="btn btn-sm ${g.healthy ? 'btn-outline-secondary' : 'btn-primary'}" href="#" data-zmm-manager>
+                    <i class="fas fa-up-right-from-square me-1"></i>${g.healthy ? 'Manage' : 'Enable'} in ZMM Manager</a>
             </div>
-            <p class="small text-muted mb-2">The streaming sidecar (${escapeHtml(sc.image || '')}). Cameras are only ever
-                reached through ZMM; go2rtc's own RTSP and WebRTC servers are switched off.
-                ${sc.socket ? '' : '<br><span class="text-warning-emphasis">No container socket is mounted, so ZMM can\'t install it — see docs/cameras.md §Running go2rtc yourself.</span>'}</p>
+            <p class="small text-muted mb-2">The streaming sidecar. Enable, stop and update it in the
+                <strong>ZMM Manager</strong> (Services → go2rtc), which also sets it to start at boot.
+                Cameras are only ever reached through ZMM; go2rtc's own RTSP and WebRTC servers are off.</p>
             ${g.error ? `<div class="small text-danger mb-2">${escapeHtml(g.error)}</div>` : ''}
             <details><summary class="small">Address</summary>
                 <div class="row g-2 mt-1">
@@ -173,13 +171,6 @@ async function renderManage(root) {
 
 function wireManage(root) {
     const on = (id, fn) => document.getElementById(id)?.addEventListener('click', fn);
-    on('g2_install', async ev => {
-        ev.currentTarget.disabled = true;
-        ev.currentTarget.textContent = 'Installing… (pulling the image)';
-        try { await api('POST', '/api/cameras/go2rtc/install'); window.toast?.success('go2rtc running'); }
-        catch (e) { window.toast?.error(e.message); }
-        renderManage(root);
-    });
     on('g2_save', async () => {
         try {
             await api('PUT', '/api/cameras/go2rtc', {

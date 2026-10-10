@@ -135,42 +135,29 @@ def register_camera_routes(app: FastAPI) -> None:
 
     @app.get("/api/cameras/go2rtc")
     async def go2rtc_status(_=Depends(require_scope("admin"))):
-        from modules.go2rtc import sidecar_status
+        """Whether ZMM reaches go2rtc. Enabling it is the ZMM Manager's job."""
         m = _mgr()
         s = m.go2rtc.settings
         return {"url": s["url"], "listen": s["listen"], "credentials": bool(s.get("password")),
-                "healthy": await m.go2rtc.healthy(), "sidecar": await sidecar_status(),
-                "error": m.last_error}
-
-    @app.post("/api/cameras/go2rtc/install")
-    async def go2rtc_install(_=Depends(require_scope("admin"))):
-        from modules.go2rtc import Go2rtcError as E, install, load_settings
-        try:
-            st = await install()
-        except E as e:
-            raise HTTPException(400, str(e))
-        m = _mgr()
-        m.go2rtc.settings = load_settings()
-        for _attempt in range(10):          # first start pulls nothing, but takes a moment
-            if await m.go2rtc.healthy():
-                break
-            await asyncio.sleep(1)
-        await m.reconcile()
-        return {"sidecar": st, "healthy": await m.go2rtc.healthy()}
+                "healthy": await m.go2rtc.healthy(), "error": m.last_error}
 
     @app.put("/api/cameras/go2rtc")
     async def go2rtc_settings(body: Dict[str, Any], _=Depends(require_scope("admin"))):
-        """Where go2rtc is and what it listens on, for one ZMM didn't install
-        or a docker host; the config is rewritten and the sidecar restarted."""
-        from modules.go2rtc import restart_sidecar, save_settings, write_config
+        """Where go2rtc is and what it listens on, for a docker host or one ZMM
+        didn't set up. The config is rewritten and go2rtc told to reload it."""
+        from modules.go2rtc import Go2rtcError as E, save_settings, write_config
+        m = _mgr()
         try:
             s = save_settings({k: body[k] for k in ("url", "listen", "username", "password") if k in body})
         except ValueError as e:
             raise HTTPException(400, str(e))
         write_config(s)
-        await restart_sidecar()
-        m = _mgr()
+        try:
+            await m.go2rtc.restart()          # still at the old address and credentials
+        except E as e:
+            logger.info("[cameras] go2rtc restart after settings change: %s", e)
         m.go2rtc.settings = s
+        await asyncio.sleep(2)
         await m.reconcile()
         return {"url": s["url"], "listen": s["listen"], "healthy": await m.go2rtc.healthy()}
 
