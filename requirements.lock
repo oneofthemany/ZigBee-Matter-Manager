@@ -4,10 +4,13 @@ aenum==3.1.17
     # via home-assistant-chip-clusters
 aiocoap==0.4.17
     # via aiohomekit
+aioesphomeapi==29.0.0
+    # via -r requirements.txt
 aiofiles==25.1.0
     # via midea-local
 aiohappyeyeballs==2.6.2
     # via
+    #   aioesphomeapi
     #   aiohomekit
     #   aiohttp
 aiohomekit==3.2.20
@@ -45,7 +48,9 @@ appdirs==1.4.4
 asttokens==3.0.1
     # via stack-data
 async-interrupt==1.2.2
-    # via aiohomekit
+    # via
+    #   aioesphomeapi
+    #   aiohomekit
 async-timeout==5.0.1
     # via
     #   pyatv
@@ -92,6 +97,7 @@ chacha20poly1305==0.0.3
     # via aiohomekit
 chacha20poly1305-reuseable==0.13.2
     # via
+    #   aioesphomeapi
     #   aiohomekit
     #   pyatv
 charset-normalizer==3.4.7
@@ -123,9 +129,11 @@ crccheck==1.3.1
 cryptography==44.0.0
     # via
     #   -r requirements.txt
+    #   aioesphomeapi
     #   aiohomekit
     #   chacha20poly1305-reuseable
     #   home-assistant-chip-core
+    #   noiseprotocol
     #   pyatv
     #   python-matter-server
     #   zigpy
@@ -249,6 +257,8 @@ multidict==6.7.1
     #   yarl
 netifaces==0.11.0
     # via greeclimate
+noiseprotocol==0.3.1
+    # via aioesphomeapi
 numpy==2.4.6
     # via
     #   -r requirements.txt
@@ -288,6 +298,7 @@ propcache==0.5.2
     #   yarl
 protobuf==7.35.1
     # via
+    #   aioesphomeapi
     #   onnxruntime
     #   pyatv
     #   pychromecast
@@ -452,6 +463,7 @@ yarl==1.24.2
 zeroconf==0.136.2
     # via
     #   -r requirements.txt
+    #   aioesphomeapi
     #   aiohomekit
     #   pyatv
     #   pychromecast

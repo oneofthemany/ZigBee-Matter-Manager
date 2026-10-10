@@ -10,6 +10,7 @@ const log = zmmLog('settings');
  import { createChart } from './chart-utils.js';
  import { confirmDialog } from './dialogs.js';
  import { jsArg } from './utils.js';
+ import { lanSectionHtml, loadLanSection } from './lan-devices-settings.js';
  import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard,
           startRestartGuardWatch, stopRestartGuardWatch } from './restart-guard.js';
 
@@ -729,6 +730,23 @@ const API_PROVIDERS = [
         disablePatch: null,
         onRemove: () => _blueairPost('/api/homekit/config', { enabled: false }),
         isConfigured: c => !!c.homekit?.enabled,
+    },
+    {
+        id: 'shelly', label: 'Shelly', icon: 'fa-plug-circle-bolt',
+        render: () => lanSectionHtml('shelly'),
+        onShow: () => loadLanSection('shelly'),
+        // Own endpoints: device passwords never ride along with the main Save.
+        collect: () => ({}),
+        disablePatch: null,
+        isConfigured: () => null,
+    },
+    {
+        id: 'esphome', label: 'ESPHome', icon: 'fa-microchip',
+        render: () => lanSectionHtml('esphome'),
+        onShow: () => loadLanSection('esphome'),
+        collect: () => ({}),
+        disablePatch: null,
+        isConfigured: () => null,
     },
     {
         id: 'fuel', label: 'Fuel', icon: 'fa-gas-pump',

@@ -57,6 +57,12 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 devices.extend(await camera_entries())
             except Exception as e:
                 logger.warning(f"Camera device-list merge failed: {e}")
+        # Shelly / ESPHome
+        for hub in getattr(app.state, "lan_hubs", []):
+            try:
+                devices.extend(hub.device_entries())
+            except Exception as e:
+                logger.warning(f"{hub.kind} device-list merge failed: {e}")
         # Nuki bridge locks — provider registered by security_routes
         # (Matter-commissioned locks already arrive via the matter bridge)
         nuki_entries = getattr(app.state, "nuki_device_entries", None)
@@ -140,6 +146,15 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                             "name": request.name}
             except Exception as e:
                 logger.warning(f"AC rename failed: {e}")
+
+        for hub in getattr(app.state, "lan_hubs", []):
+            dev = hub.by_ieee(request.ieee)
+            if dev is not None:
+                try:
+                    await hub.update(dev.cfg["id"], {"name": request.name})
+                except ValueError as e:
+                    return {"success": False, "error": str(e)}
+                return {"success": True, "ieee": request.ieee, "name": request.name}
 
         if request.ieee.startswith("matter_") and matter_bridge:
             matter_bridge.rename_device(request.ieee, request.name)
@@ -250,6 +265,11 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         if request.ieee.startswith("matter_") and matter_bridge and matter_bridge.is_connected:
             node_id = int(request.ieee.replace("matter_", ""))
             return await matter_bridge.send_command(node_id, request.command, request.value)
+
+        for hub in getattr(app.state, "lan_hubs", []):
+            dev = hub.by_ieee(request.ieee)
+            if dev is not None:
+                return await dev.send_command(request.command, request.value, request.endpoint)
 
         return await get_zigbee_service().send_command(
             request.ieee, request.command, request.value, endpoint_id=request.endpoint

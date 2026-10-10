@@ -36,3 +36,6 @@ markdown-it-py
 kokoro-onnx==0.4.7
 # Web Push (RFC 8291/8292): ECDH + HKDF + AES-GCM and ES256 VAPID signing.
 cryptography
+# ESPHome native API (docs/esphome.md). Exact pin: the newest release that fits
+# the python-matter-server 7.x protobuf/zeroconf/cryptography pins.
+aioesphomeapi==29.0.0

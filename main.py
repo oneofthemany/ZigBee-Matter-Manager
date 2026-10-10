@@ -974,6 +974,18 @@ async def lifespan(app: FastAPI):
 
         await camera_manager.start()
 
+        # Shelly and ESPHome on their local APIs. See docs/wifi-devices.md.
+        from modules.shelly import ShellyHub, set_shelly_hub
+        from modules.esphome import ESPHomeHub, set_esphome_hub
+        lan_hubs = []
+        for hub_cls, setter in ((ShellyHub, set_shelly_hub), (ESPHomeHub, set_esphome_hub)):
+            hub = hub_cls(broadcast=broadcast_event, evaluate=zigbee_service.automation.evaluate)
+            zigbee_service.automation.add_device_getter(hub.automation_devices)
+            setter(hub)
+            await hub.start()
+            lan_hubs.append(hub)
+        app.state.lan_hubs = lan_hubs
+
         # Journeys: its own DuckDB file and worker thread — DuckDB is
         # single-writer per file, so journeys never share a database.
         journey_manager = JourneyManager()
@@ -1147,6 +1159,8 @@ async def lifespan(app: FastAPI):
     camera_manager = getattr(app.state, "camera_manager", None)
     if camera_manager:
         await camera_manager.stop()
+    for hub in getattr(app.state, "lan_hubs", []):
+        await hub.stop()
     journey_manager = getattr(app.state, "journey_manager", None)
     if journey_manager:
         await journey_manager.stop()
@@ -1364,6 +1378,11 @@ from routes.house_routes import register_house_routes
 register_house_routes(app)
 from routes.camera_routes import register_camera_routes
 register_camera_routes(app)
+from routes.lan_device_routes import register_lan_device_routes
+from modules.shelly import get_shelly_hub
+from modules.esphome import get_esphome_hub
+register_lan_device_routes(app, "shelly", get_shelly_hub)
+register_lan_device_routes(app, "esphome", get_esphome_hub)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
 register_wiki_routes(app)

@@ -55,6 +55,11 @@ export async function openDeviceModal(d) {
         const { openHomekitModal } = await import('./modal/homekit-modal.js');
         return openHomekitModal(d.homekit_device_id);
     }
+    // Shelly / ESPHome: controls from the device's own channel list
+    if (d?.lan_kind) {
+        const { openLanDeviceModal } = await import('./modal/lan-device-modal.js');
+        return openLanDeviceModal(d.ieee);
+    }
     // Cameras: the live view
     if (d?.camera_id) {
         const { openCameraFromDevice } = await import('./cameras-page.js');

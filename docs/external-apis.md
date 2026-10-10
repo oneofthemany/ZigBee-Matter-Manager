@@ -34,6 +34,8 @@ There are two save paths:
 | Air Con | Gree and Midea units | local | bind (Midea: one-time token fetch) | `config.yaml` → `ac.units` | [air-conditioning.md](air-conditioning.md) |
 | Energy | Octopus Energy | cloud | API key and account number | `config.yaml` → `octopus` | [energy.md](energy.md) |
 | Blueair | Blueair cloud (AWS) | cloud | Blueair app email and password | `config/secrets.yaml` → `blueair` | [below](#blueair) |
+| Shelly | Shelly local API (Gen1 REST, Gen2+ RPC) | local | the device password, if one is set | `config/secrets.yaml` → `shelly` | [wifi-devices.md](wifi-devices.md) |
+| ESPHome | ESPHome native API | local | the device's API encryption key | `config/secrets.yaml` → `esphome` | [wifi-devices.md](wifi-devices.md) |
 | HomeKit | HomeKit TVs (e.g. Sky Glass) | local | the code the TV shows when pairing | `data/homekit_pairings.json` | [below](#homekit) |
 | Fuel | per-country price feeds; UK Fuel Finder | cloud | region; UK: Fuel Finder client id/secret | `config/secrets.yaml` | [journeys.md](journeys.md) |
 | Security | Nuki bridge, Nuki/Yale over Matter | local | bridge host and token | `config.yaml` → `security` | [security.md](security.md) |
@@ -42,7 +44,7 @@ There are two save paths:
 `config/secrets.yaml.example` documents every key, and environment variables
 override that file where noted.
 
-Devices from Air Con, Blueair, HomeKit and the Nuki bridge appear in the main
+Devices from Air Con, Blueair, HomeKit, Shelly, ESPHome and the Nuki bridge appear in the main
 **Devices** list next to Zigbee and Matter devices. **Manage** on one opens
 that integration's own control modal.
 

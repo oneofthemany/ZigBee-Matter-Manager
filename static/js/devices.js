@@ -378,6 +378,9 @@ export function handleDeviceUpdate(payload) {
 
         try { dismissKnownDevices(state.devices); } catch(e) {}
 
+        // Integration modals (Shelly, ESPHome) re-render from this.
+        window.dispatchEvent(new CustomEvent('zmm-device-updated', { detail: payload }));
+
         // Frames renders live values straight from the cache, so it only needs
         // to re-render the cells for this device.
         if (window.framesHandleDeviceUpdate) window.framesHandleDeviceUpdate(payload.ieee);

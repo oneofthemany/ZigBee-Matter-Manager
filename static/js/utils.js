@@ -54,6 +54,10 @@ export function getTypeIcon(type) {
     if (type === 'Matter') return '<i class="fas fa-atom text-info"></i>';
     if (type === 'AirConditioner') return '<i class="fas fa-snowflake text-info" title="Air conditioner (WiFi)"></i>';
     if (type === 'AirPurifier') return '<i class="fas fa-wind text-info" title="Air purifier (Blueair cloud)"></i>';
+    if (type === 'Switch') return '<i class="fas fa-toggle-on text-info" title="Switch (Wi-Fi)"></i>';
+    if (type === 'Light') return '<i class="fas fa-lightbulb text-info" title="Light (Wi-Fi)"></i>';
+    if (type === 'Cover') return '<i class="fas fa-window-maximize text-info" title="Cover (Wi-Fi)"></i>';
+    if (type === 'Sensor' || type === 'WiFi') return '<i class="fas fa-wifi text-info" title="Wi-Fi device"></i>';
     if (type === 'Camera') return '<i class="fas fa-video text-info" title="Camera"></i>';
     if (type === 'Television') return '<i class="fas fa-tv text-info" title="Television (HomeKit)"></i>';
     // Changed fa-wifi to fa-plug to better represent mains-powered devices
