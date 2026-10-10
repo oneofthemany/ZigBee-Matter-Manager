@@ -1437,6 +1437,18 @@ class AutomationEngine:
         self._last_values[source_ieee] = {**full_state, **changed_data}
 
     def _evaluate_rule(self, rule, devices, names, now, view, trigger=None) -> None:
+        # Clock, webhook and startup evaluations arrive outside evaluate(), so
+        # they open their own chain; the sequence task inherits it.
+        if _chain_id.get() is not None:
+            return self._evaluate_rule_in_chain(rule, devices, names, now, view, trigger)
+        import secrets as _secrets
+        token = _chain_id.set(_secrets.token_hex(6))
+        try:
+            return self._evaluate_rule_in_chain(rule, devices, names, now, view, trigger)
+        finally:
+            _chain_id.reset(token)
+
+    def _evaluate_rule_in_chain(self, rule, devices, names, now, view, trigger=None) -> None:
         """Run one rule through the state machine — conditions, prerequisites,
         the transition, and the sequence that transition fires.
 
@@ -2782,7 +2794,16 @@ class AutomationEngine:
             coro = self._run_after(live[-1], rule_id, rule_name, seq, path)
         else:
             coro = self._run_sequence(rule_id, rule_name, seq, path)
-        task = asyncio.create_task(coro)
+        # "Run now" starts a sequence with no evaluation behind it.
+        token = None
+        if _chain_id.get() is None:
+            import secrets as _secrets
+            token = _chain_id.set(_secrets.token_hex(6))
+        try:
+            task = asyncio.create_task(coro)
+        finally:
+            if token is not None:
+                _chain_id.reset(token)
         self._rule_runs[rule_id] = live + [task]
         task.add_done_callback(lambda t, rid=rule_id: self._forget_run(rid, t))
         return True

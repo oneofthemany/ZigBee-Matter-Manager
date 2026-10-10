@@ -128,17 +128,151 @@ function renderDetailPanel(packet, isMatter) {
     `;
 }
 
+// Log history and tracing — the hub keeps every line (modules/logbook.py), so
+// the view survives a reload and each line can be traced. docs/logbook.md.
+let visibleLimit = 150;         // grows with "Load earlier"
+let historyLoaded = false;
+let historyExhausted = false;
+let lastRendered = '';
+
+function stamp(ts) {
+    const d = new Date(ts * 1000);
+    const pad = (n, w = 2) => String(n).padStart(w, '0');
+    const day = d.toDateString() === new Date().toDateString() ? '' : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
+    return `${day}${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+/** Fetch stored lines older than `before` (or the newest) and merge them in. */
+export async function loadLogHistory(before = null) {
+    try {
+        const res = await fetch(`/api/logbook/events?limit=200${before ? `&before=${before}` : ''}`);
+        if (!res.ok) return;                  // no system:read: live lines only
+        const rows = (await res.json()).events || [];
+        if (rows.length < 200) historyExhausted = true;
+        const have = new Set(state.allLogs.map(l => l.event_id).filter(Boolean));
+        const add = rows.filter(r => !have.has(r.id)).map(r => ({
+            event_id: r.id, ts: r.ts, timestamp: stamp(r.ts), level: r.level || 'INFO',
+            message: r.message || '', ieee: r.ieee, device_name: r.device_name,
+            attribute: r.attribute, category: r.category,
+        }));
+        state.allLogs = state.allLogs.concat(add).sort((a, b) => (a.ts || Infinity) - (b.ts || Infinity));
+        historyLoaded = true;
+        renderLogs();
+    } catch (e) { log.debug('log history unavailable', e); }
+}
+
+async function loadEarlier() {
+    const oldest = state.allLogs.find(l => l.ts);
+    visibleLimit += 200;
+    await loadLogHistory(oldest ? oldest.ts : null);
+    renderLogs();
+}
+
+const OUTCOMES = {
+    NO_MATCH: 'conditions not met', PREREQ_FAIL: 'prerequisites not met', BLOCKED: 'in cooldown',
+    SUSTAIN_WAIT: 'waiting for the condition to hold', DISABLED: 'rule disabled',
+};
+
+function conditionsHtml(detail) {
+    const rows = [...(detail?.conditions || []), ...(detail?.prerequisites || [])];
+    if (!rows.length) return '';
+    return `<ul class="list-unstyled small mb-1 ms-3">${rows.map(x => {
+        const ok = String(x.result).toUpperCase() === 'PASS';
+        return `<li><i class="fas ${ok ? 'fa-check text-success' : 'fa-xmark text-danger'} me-1"></i>
+            <code>${escapeHtml(x.attribute ?? x.type ?? '?')} ${escapeHtml(x.operator ?? '')} ${escapeHtml(x.threshold_raw ?? x.value ?? '')}</code>
+            ${x.actual_raw !== undefined ? `<span class="text-muted">— was ${escapeHtml(x.actual_raw)}</span>` : ''}</li>`;
+    }).join('')}</ul>`;
+}
+
+function ruleHtml(r) {
+    const badge = r.fired ? '<span class="badge bg-success">fired</span>'
+        : `<span class="badge bg-secondary">${escapeHtml(OUTCOMES[r.outcome] || r.outcome || 'not fired')}</span>`;
+    const why = r.entries.find(e => e.detail && (r.fired ? e.result.endsWith('_FIRING') : true));
+    const steps = r.entries.filter(e => e.phase === 'step' || e.phase === 'sequence');
+    return `<div class="border rounded p-2 mb-2">
+        <div><strong>${escapeHtml(r.rule_name || r.rule_id)}</strong> ${badge}</div>
+        ${conditionsHtml(why?.detail)}
+        ${steps.length ? `<ul class="list-unstyled small mb-0 ms-3">${steps.map(e =>
+            `<li class="${e.level === 'ERROR' ? 'text-danger' : ''}">${escapeHtml(e.message)}</li>`).join('')}</ul>` : ''}
+    </div>`;
+}
+
+function causeHtml(cause) {
+    if (!cause) return '<span class="text-muted">Reported by the device itself — no rule or person commanded it just before.</span>';
+    if (cause.kind === 'user') return `<i class="fas fa-user me-1"></i>Commanded by <strong>${escapeHtml(cause.user)}</strong> from ZMM.`;
+    const ch = cause.chain || {};
+    const changed = Object.entries(ch.changed || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+    return `<i class="fas fa-gears me-1"></i>Rule <strong>${escapeHtml((cause.rules || []).join(', ') || '?')}</strong>,
+        which fired because <strong>${escapeHtml(ch.trigger_name || 'a schedule')}</strong>
+        ${changed ? `reported <code>${escapeHtml(changed)}</code>` : 'ran'}.`;
+}
+
+function traceHtml(t) {
+    const ev = t.event, ch = t.chain;
+    const section = (title, body) => `<h6 class="mt-3 mb-1">${title}</h6>${body}`;
+    let html = `<div class="font-monospace small p-2 bg-dark text-light rounded text-break">${escapeHtml(ev.message)}</div>
+        <div class="small text-muted mt-1">${escapeHtml(new Date(ev.ts * 1000).toLocaleString())}</div>`;
+    html += section('Why it happened', `<div class="small">${causeHtml(t.cause)}</div>`);
+    if (!ch) {
+        html += section('What it triggered', '<div class="small text-muted">No rule looked at this — none is set to trigger on it.</div>');
+        return html;
+    }
+    html += section('Rules that looked at it', ch.rules.length ? ch.rules.map(ruleHtml).join('')
+        : '<div class="small text-muted">None.</div>');
+    if ((ch.notes || []).some(n => n.level === 'WARNING' || n.level === 'ERROR')) {
+        html += ch.notes.filter(n => n.level !== 'DEBUG').map(n =>
+            `<div class="small text-warning-emphasis">${escapeHtml(n.message)}</div>`).join('');
+    }
+    if ((ch.effects || []).length) {
+        html += section('What changed as a result', `<ul class="list-unstyled small mb-0">${ch.effects.map(e =>
+            `<li class="font-monospace">${escapeHtml(e.message)}</li>`).join('')}</ul>`);
+    }
+    const then = (ch.then || []).filter(k => k.rules.length);
+    if (then.length) {
+        html += section('…which set off', then.map(k => `<div class="small mb-1">
+            <strong>${escapeHtml(k.trigger_name || '')}</strong>: ${k.rules.map(r =>
+                `${escapeHtml(r.rule_name || r.rule_id)} ${r.fired ? '<span class="badge bg-success">fired</span>'
+                    : `<span class="badge bg-secondary">${escapeHtml(OUTCOMES[r.outcome] || r.outcome || 'not fired')}</span>`}`).join(', ')}
+            </div>`).join(''));
+    }
+    return html;
+}
+
+async function openTrace(eventId) {
+    document.getElementById('logTraceModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', `
+        <div class="modal fade" id="logTraceModal" tabindex="-1" aria-labelledby="logTraceTitle">
+          <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
+            <div class="modal-header py-2"><h6 class="modal-title" id="logTraceTitle">
+                <i class="fas fa-diagram-project me-1"></i> Trace</h6>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+            <div class="modal-body" id="logTraceBody"><div class="text-muted small">Loading…</div></div>
+          </div></div></div>`);
+    const el = document.getElementById('logTraceModal');
+    el.addEventListener('hidden.bs.modal', () => el.remove());
+    bootstrap.Modal.getOrCreateInstance(el).show();
+    const body = document.getElementById('logTraceBody');
+    try {
+        const res = await fetch(`/api/logbook/trace/${encodeURIComponent(eventId)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
+        body.innerHTML = traceHtml(data);
+    } catch (e) {
+        body.innerHTML = `<div class="text-danger small">${escapeHtml(e.message)}</div>`;
+    }
+}
+
 /**
  * Add log entry to the log buffer
  */
 export function addLogEntry(log) {
     if (!log.timestamp) {
-        log.timestamp = getTimestamp();
+        log.timestamp = log.ts ? stamp(log.ts) : getTimestamp();
     }
 
     // Keep buffer size reasonable
     state.allLogs.push(log);
-    if (state.allLogs.length > 2000) state.allLogs.shift();
+    if (state.allLogs.length > 2000 + visibleLimit) state.allLogs.shift();
 
     // Use requestAnimationFrame for smoother UI updates during packet bursts
     requestAnimationFrame(renderLogs);
@@ -203,7 +337,7 @@ export function renderLogs() {
         }
 
         return true;
-    }).slice(-150);
+    }).slice(-visibleLimit);
 
     // 3. Render HTML
     const html = visibleLogs.map(l => {
@@ -221,15 +355,34 @@ export function renderLogs() {
             content = content.replace(new RegExp(`(${safe})`, 'gi'), '<span class="bg-warning text-dark px-1">$1</span>');
         }
 
-        return `<div class="border-bottom border-secondary log-entry py-1">` +
+        // A stored line can be traced: what caused it, what it triggered.
+        const trace = l.event_id ? ` data-eid="${escapeHtml(l.event_id)}" role="button" tabindex="0" ` +
+            `title="Trace this event" style="cursor:pointer"` : '';
+        return `<div class="border-bottom border-secondary log-entry py-1"${trace}>` +
                `<span class="small me-2" style="color: #b0b0b0; opacity: 0.8;">[${l.timestamp}]</span>` +
                `<span style="color:${color}" class="fw-bold me-2">[${l.level}]</span>` +
                `<span>${content}</span>` +
                `</div>`;
     }).join('');
 
-    if (container.innerHTML !== html) {
-        container.innerHTML = html;
+    const earlier = historyLoaded && !historyExhausted
+        ? '<div class="text-center py-1"><button type="button" class="btn btn-sm btn-outline-light" id="logLoadEarlier">Load earlier</button></div>'
+        : '';
+    if (!container.dataset.traceWired) {
+        container.dataset.traceWired = '1';
+        const go = ev => {
+            if (ev.target.closest('#logLoadEarlier')) { loadEarlier(); return; }
+            const row = ev.target.closest('[data-eid]');
+            // Selecting text to copy isn't a click on the line.
+            if (row && !String(window.getSelection()).length) openTrace(row.dataset.eid);
+        };
+        container.addEventListener('click', go);
+        container.addEventListener('keydown', ev => { if (ev.key === 'Enter') go(ev); });
+    }
+    const full = earlier + html;
+    if (lastRendered !== full) {
+        lastRendered = full;
+        container.innerHTML = full;
         if (container.scrollHeight - container.scrollTop - container.clientHeight < 200) {
             container.scrollTop = container.scrollHeight;
         }
@@ -950,3 +1103,7 @@ window.togglePacketDetails = function(id) {
         icon.classList.add('fa-chevron-down');
     }
 };
+// Stored lines load once someone is signed in (the endpoint needs system:read),
+// so a reload doesn't start from an empty log.
+window.zmmAuth?.onChange(p => { if (p && !historyLoaded) loadLogHistory(); });
+if (window.zmmAuth?.whoami?.() && !historyLoaded) loadLogHistory();

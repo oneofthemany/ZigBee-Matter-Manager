@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS chains (
 CREATE TABLE IF NOT EXISTS trace (
     chain_id VARCHAR, ts DOUBLE, rule_id VARCHAR, rule_name VARCHAR, phase VARCHAR,
     result VARCHAR, message VARCHAR, target_ieee VARCHAR, level VARCHAR);
+ALTER TABLE trace ADD COLUMN IF NOT EXISTS detail VARCHAR;
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
 CREATE INDEX IF NOT EXISTS chains_id ON chains (id);
 CREATE INDEX IF NOT EXISTS trace_chain ON trace (chain_id)
@@ -100,7 +101,7 @@ class Logbook:
 
     def _write(self, rows: Dict[str, List[tuple]]) -> None:
         con = self._ensure_open()
-        cols = {"events": 12, "chains": 8, "trace": 9}
+        cols = {"events": 12, "chains": 8, "trace": 10}
         for table, batch in rows.items():
             if batch:
                 con.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * cols[table])})", batch)
@@ -225,11 +226,19 @@ class Logbook:
             self._causes[entry["target_ieee"]] = (self._clock() + CAUSE_TTL_S, chain_id, None)
         if not chain_id:
             return
-        self._store_chain(chain_id)
+        if chain_id not in self._chains_seen and chain_id not in self._chain_info:
+            # No device change opened this chain: the clock, a webhook or "run now".
+            self._chain_info[chain_id] = {"ts": self._clock(), "parent": None, "ieee": None,
+                                          "name": "schedule, webhook or manual run", "changed": {},
+                                          "cause_chain": None, "cause_user": None}
+        if entry.get("level") != "DEBUG" or chain_id in self._chains_seen:
+            self._store_chain(chain_id)
+        if chain_id not in self._chains_seen:
+            return                              # nothing but debug chatter so far
         self._queue("trace", (chain_id, entry.get("timestamp") or self._clock(), entry.get("rule_id"),
                               entry.get("rule_name"), entry.get("phase"), result,
                               str(entry.get("message") or "")[:500], entry.get("target_ieee"),
-                              entry.get("level")))
+                              entry.get("level"), _detail(entry)))
         kind = "FIRING" if result.endswith("_FIRING") else result
         if kind in _LIVE:
             lvl = entry.get("level") or "INFO"
@@ -310,10 +319,12 @@ class Logbook:
             r = rules.setdefault(rid, {"rule_id": rid, "rule_name": t["rule_name"], "fired": False,
                                        "outcome": None, "entries": []})
             r["rule_name"] = r["rule_name"] or t["rule_name"]
-            r["entries"].append({k: t[k] for k in ("ts", "phase", "result", "message", "target_ieee", "level")})
+            r["entries"].append({**{k: t[k] for k in ("ts", "phase", "result", "message", "target_ieee", "level")},
+                                 "detail": _load(t.get("detail"))})
             if t["result"].endswith("_FIRING"):
                 r["fired"] = True
-            if t["phase"] in ("evaluate", "prerequisite", "cooldown", "transition") and not r["fired"]:
+            # The reason is the first verdict; later transition entries are bookkeeping.
+            if t["phase"] in ("evaluate", "prerequisite", "cooldown") and r["outcome"] is None:
                 r["outcome"] = t["result"]
         out = {"id": ch["id"], "ts": ch["ts"], "trigger_ieee": ch["trigger_ieee"],
                "trigger_name": ch["trigger_name"], "changed": _load(ch["changed"]),
@@ -359,6 +370,17 @@ class Logbook:
     async def trace(self, event_id: str) -> Optional[Dict[str, Any]]:
         await self.flush()
         return await self._run(self._trace, event_id)
+
+
+def _detail(entry: Dict[str, Any]) -> Optional[str]:
+    """Per-condition results, when the engine attached them: the "why"."""
+    d = {k: entry[k] for k in ("conditions", "prerequisites", "condition_logic") if entry.get(k)}
+    if not d:
+        return None
+    try:
+        return json.dumps(d, default=str)[:4000]
+    except (TypeError, ValueError):
+        return None
 
 
 def _load(s: Optional[str]) -> Any:

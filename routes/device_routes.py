@@ -4,7 +4,7 @@ Extracted from main.py.
 """
 import logging
 from typing import Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from models import (
     DeviceRequest, RenameRequest, ConfigureRequest, CommandRequest,
     AttributeReadRequest, BindRequest, PermitJoinRequest,
@@ -254,8 +254,16 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
     # Commands & Attributes
 
     @app.post("/api/device/command")
-    async def send_command(request: CommandRequest):
+    async def send_command(request: CommandRequest, http: Request):
         """Send a command to a device."""
+        # So the logbook can say who turned it on (docs/logbook.md).
+        try:
+            from modules.logbook import get_logbook
+            who = getattr(getattr(http.state, "principal", None), "user", None)
+            if get_logbook() is not None and who is not None:
+                get_logbook().note_user_command(request.ieee, who.username)
+        except Exception as e:
+            logger.debug(f"logbook attribution failed: {e}")
         # Nuki bridge locks (pseudo-ieee nuki_<id>) — hook from security_routes
         nuki_command = getattr(app.state, "nuki_send_command", None)
         if request.ieee.startswith("nuki_") and nuki_command is not None:

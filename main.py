@@ -985,6 +985,15 @@ async def lifespan(app: FastAPI):
         set_logbook(logbook)
         app.state.logbook = logbook
 
+        # Nightly backups. See docs/backups.md.
+        from modules.backup import BackupScheduler, set_backup_scheduler
+        from modules.app_alerts import raise_alert as _raise_alert, resolve_alert as _resolve_alert
+        backup_scheduler = BackupScheduler(prepare=getattr(app.state, "backup_prepare", None),
+                                           alert=_raise_alert, resolve=_resolve_alert)
+        set_backup_scheduler(backup_scheduler)
+        await backup_scheduler.start()
+        app.state.backup_scheduler = backup_scheduler
+
         # Shelly and ESPHome on their local APIs. See docs/wifi-devices.md.
         from modules.shelly import ShellyHub, set_shelly_hub
         from modules.esphome import ESPHomeHub, set_esphome_hub
@@ -1175,6 +1184,9 @@ async def lifespan(app: FastAPI):
     logbook = getattr(app.state, "logbook", None)
     if logbook:
         await logbook.stop()
+    backup_scheduler = getattr(app.state, "backup_scheduler", None)
+    if backup_scheduler:
+        await backup_scheduler.stop()
     journey_manager = getattr(app.state, "journey_manager", None)
     if journey_manager:
         await journey_manager.stop()
@@ -1392,6 +1404,8 @@ from routes.house_routes import register_house_routes
 register_house_routes(app)
 from routes.camera_routes import register_camera_routes
 register_camera_routes(app)
+from routes.logbook_routes import register_logbook_routes
+register_logbook_routes(app)
 from routes.lan_device_routes import register_lan_device_routes
 from modules.shelly import get_shelly_hub
 from modules.esphome import get_esphome_hub
