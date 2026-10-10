@@ -116,18 +116,19 @@ service_state() {   # -> "installed enabled"
 
 SOURCE=""
 write_status() {   # state detail
-    local tmp="${STATUS}.tmp" st l=false sb=false
+    local tmp="${STATUS}.tmp" st l=false sb=false src="$SOURCE"
     st=$(service_state)
     loaded && l=true
     secure_boot && sb=true
-    if [[ -z "$SOURCE" ]] && $l; then
-        [[ -f "${MOD_DIR}/${KVER}/apex.ko" ]] && SOURCE="built" || SOURCE="distro"
+    # A guess for the report only: SOURCE itself decides what install does.
+    if [[ -z "$src" ]] && $l; then
+        [[ -f "${MOD_DIR}/${KVER}/apex.ko" ]] && src="built" || src="distro"
     fi
     # shellcheck disable=SC2046
     printf '{"state":%s,"backend":%s,"kernel":%s,"present":%s,"installed":%s,"enabled":%s,"loaded":%s,"node":%s,"source":%s,"built_for":%s,"secure_boot":%s,"action":%s,"detail":%s,"updated_at":%s}\n' \
         "$(json_str "$1")" "$(json_str "$BACKEND")" "$(json_str "$KVER")" \
         "$(card_present && echo true || echo false)" "${st% *}" "${st#* }" "$l" "$(json_str "$(node)")" \
-        "$(json_str "$SOURCE")" "$(json_list $(built_kernels))" "$sb" \
+        "$(json_str "$src")" "$(json_list $(built_kernels))" "$sb" \
         "$(json_str "$ACTION")" "$(json_str "$2")" "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" \
         > "$tmp" 2>>"$LOG" && mv -f "$tmp" "$STATUS"
     log "$ACTION ($BACKEND, $1): $2"
@@ -365,6 +366,11 @@ case "$ACTION" in
         card_present || finish "failed" "no Coral M.2 or Mini PCIe card on the PCI bus (a USB Coral needs no driver)"
         write_status "running" "building and loading the driver — a first build takes a few minutes"
         load_modules || finish "failed" "$ERR"
+        # A driver loaded by hand still needs a copy on disk for the next boot.
+        if [[ "$SOURCE" != "distro" ]] && ! { have modinfo && modinfo -k "$KVER" apex >/dev/null 2>&1; }; then
+            build_for "$KVER" || finish "failed" "$ERR"
+            SOURCE="built"
+        fi
         install_udev
         install_service
         prebuild

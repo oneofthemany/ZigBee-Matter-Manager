@@ -12,6 +12,7 @@ Standalone by design: the manager never imports from modules/.
 import glob
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 SYS = os.environ.get("ZMM_SYSFS_ROOT", "/sys")
@@ -91,6 +92,30 @@ def request_driver(action: str) -> Dict[str, Any]:
         return {"success": True, "message": f"Coral driver {action} requested"}
     except OSError as e:
         return {"success": False, "error": str(e)}
+
+
+DRIVER_RETRY_S = 15 * 60
+DRIVER_FAILED_RETRY_S = 6 * 3600
+
+
+def ensure_driver(t: Dict[str, Any], now: Optional[float] = None) -> Optional[str]:
+    """Watchdog step: a fitted M.2 Coral gets its driver installed to load at
+    every boot without anyone asking, so it survives reboots and kernel
+    updates. Returns the action requested, if any."""
+    now = time.time() if now is None else now
+    if not any(d["kind"] == "coral" and d["bus"] == "pci" for d in _pci()):
+        return None
+    st = driver_status()
+    if st.get("pending") or st.get("state") == "running" or st.get("installed"):
+        return None
+    # No service manager to install into: loaded is as good as it gets.
+    if st.get("backend") == "none" and st.get("loaded"):
+        return None
+    wait = DRIVER_FAILED_RETRY_S if st.get("state") == "failed" else DRIVER_RETRY_S
+    if now - t.get("requested_at", 0) < wait:
+        return None
+    t["requested_at"] = now
+    return "install" if request_driver("install").get("success") else None
 
 
 def set_throttle(celsius: Any) -> Dict[str, Any]:

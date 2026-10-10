@@ -106,6 +106,37 @@ def run() -> Checker:
             st = acc.driver_status()
             c.check("the host's report is passed through", st["known"] and st["installed"] and not st["pending"], st)
 
+            # Watchdog: a fitted Coral is set up to load at boot without anyone asking.
+            tree = Path(t) / "hw"
+            _tree(tree, pci=[(*CORAL, "apex")])
+            os.environ.update(ZMM_SYSFS_ROOT=str(tree / "sys"), ZMM_DEV_ROOT=str(tree / "dev"))
+            acc = importlib.reload(manager.accelerators)
+            status = Path(t) / "data/coral/driver_status.json"
+            trig = Path(t) / "data/coral/driver_action"
+            status.write_text('{"state": "done", "installed": false, "loaded": true, "backend": "systemd"}')
+            w = {}
+            c.check("loaded by hand but not at boot: the watchdog asks for the boot-time driver",
+                    acc.ensure_driver(w, now=1000) == "install" and trig.read_text() == "install")
+            c.check("…not again while that request is waiting", acc.ensure_driver(w, now=5000) is None)
+            trig.unlink()
+            c.check("…nor within a quarter of an hour of asking", acc.ensure_driver(w, now=1500) is None)
+            status.write_text('{"state": "running", "installed": false}')
+            c.check("…nor while a build is under way", acc.ensure_driver({}, now=1000) is None)
+            status.write_text('{"state": "failed", "installed": false, "detail": "Secure Boot"}')
+            w = {"requested_at": 1000}
+            c.check("after a failure it waits hours, not minutes, before trying again",
+                    acc.ensure_driver(w, now=1000 + 3600) is None and acc.ensure_driver(w, now=1000 + 7 * 3600) == "install")
+            trig.unlink()
+            status.write_text('{"state": "done", "installed": true, "loaded": true}')
+            c.check("installed: left alone", acc.ensure_driver({}, now=99999) is None and not trig.exists())
+            status.write_text('{"state": "done", "installed": false, "loaded": true, "backend": "none"}')
+            c.check("no service manager on the host and loaded: nothing more it can do", acc.ensure_driver({}, now=99999) is None)
+            _tree(Path(t) / "nocoral", pci=[IGPU])
+            os.environ.update(ZMM_SYSFS_ROOT=str(Path(t) / "nocoral/sys"))
+            acc = importlib.reload(manager.accelerators)
+            status.unlink()
+            c.check("no Coral fitted: never asks", acc.ensure_driver({}, now=99999) is None and not trig.exists())
+
         with tempfile.TemporaryDirectory() as t:
             _tree(Path(t), pci=[(*CORAL, "apex")])          # nothing in /dev, as inside a container
             (Path(t) / "sys/bus/pci/devices/0000:02:00.0/apex/apex_0").mkdir(parents=True)

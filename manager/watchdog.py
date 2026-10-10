@@ -17,7 +17,7 @@ from typing import Any, Dict
 
 import httpx
 
-from manager import beekeeper, containers, go2rtc, ollama, recorder, vision
+from manager import accelerators, beekeeper, containers, go2rtc, ollama, recorder, vision
 
 logger = logging.getLogger("manager.watchdog")
 
@@ -335,6 +335,7 @@ async def run_loop():
     beekeeper_t: Dict[str, Any] = {}
     service_t: Dict[str, Any] = {}
     go2rtc_t: Dict[str, Any] = {}
+    coral_t: Dict[str, Any] = {}
     vision_t: Dict[str, Any] = {}
     recorder_t: Dict[str, Any] = {}
     async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
@@ -365,6 +366,13 @@ async def run_loop():
                 raise
             except Exception as e:
                 logger.warning("Watchdog beekeeper-service error: %s", e)
+            try:
+                if await asyncio.to_thread(accelerators.ensure_driver, coral_t) == "install":
+                    logger.info("Coral fitted without a boot-time driver — asked the host to install it")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Watchdog coral-driver error: %s", e)
             try:
                 if not (_upgrade_in_progress() or _test_deploy_active()):
                     await go2rtc.ensure(go2rtc_t)

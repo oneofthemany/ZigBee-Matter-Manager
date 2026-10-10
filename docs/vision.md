@@ -197,9 +197,13 @@ what could be used once it is set up.
 ## Coral driver
 
 `scripts/coral_driver.sh` builds, loads and keeps loaded the `gasket` and
-`apex` modules an M.2 / Mini PCIe Coral needs. **Set up driver** on the
-Detection hardware card asks for it; the host helper (installed by
-`install_watcher.sh`) does the work as root.
+`apex` modules an M.2 / Mini PCIe Coral needs. It is automatic: whenever a
+Coral card is fitted and its driver isn't set to load at boot, the Manager's
+watchdog asks the host helper (installed by `install_watcher.sh`) to install
+it, and the helper does the work as root. A driver already loaded by hand is
+kept, and a copy is built so the next boot has one. After a failure (Secure
+Boot, no network for a first build) it tries again every six hours; the
+Detection hardware card shows why.
 
 - **Source.** Google's `gasket-driver` is archived and no longer compiles on
   current kernels, so the build uses the maintained `KyleGospo/gasket-dkms`

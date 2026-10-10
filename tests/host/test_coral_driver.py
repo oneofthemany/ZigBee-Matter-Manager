@@ -184,6 +184,17 @@ def run() -> Checker:
     c.check("installing again neither rebuilds nor reloads",
             not any(x.startswith(("podman run", "insmod", "curl")) for x in b.calls()) and st["state"] == "done", b.calls())
 
+    c.section("a driver already loaded by hand")
+    b2 = Box()
+    (b2.sys / "module" / "apex").mkdir(parents=True)
+    (b2.sys / "module" / "gasket").mkdir(parents=True)
+    (b2.dev / "apex_0").write_text("")
+    st = b2.run("install")
+    c.check("is left loaded, but a copy is built so the next boot has one",
+            b2.built() and not any(x.startswith("insmod") for x in b2.calls())
+            and st["installed"] and st["source"] == "built", (b2.calls(), st))
+    b2.close()
+
     c.section("surviving a kernel update")
     b.add_kernel(K2, staged=True)
     st = b.run("prebuild", via_trigger=False)
