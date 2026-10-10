@@ -30,6 +30,10 @@ initSpeakerSyncTab();
 
 import { initNotifications } from './notifications.js';
 initNotifications();
+import { initAlarmSettings } from './alarm-settings.js';
+initAlarmSettings();
+import { initCamerasPage } from './cameras-page.js';
+initCamerasPage();
 
 import { initAppAlerts } from './app-alerts.js';
 initAppAlerts();
@@ -419,6 +423,7 @@ document.addEventListener('DOMContentLoaded', () => {
         checkMatterStatus();
         // Header presence badge — page-level, not tied to the Settings tab.
         if (window.initPresenceBadge) window.initPresenceBadge();
+        if (window.initHouseBadge) window.initHouseBadge();
         if (window.initMessagesUI) window.initMessagesUI();
         // Fallback poll — the matter_status websocket event is the primary
         // signal; this catches missed events (ws reconnects, backend restarts)

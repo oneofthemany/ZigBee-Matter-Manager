@@ -150,6 +150,10 @@ export function initWS() {
                                                          { detail: msg.payload }));
                     break;
 
+                case 'alarm_state':
+                    window.dispatchEvent(new CustomEvent('zmm-alarm-state', { detail: msg.payload }));
+                    break;
+
                 // Sent only to the rule's owner; see notifications.js.
                 case 'notification_rule_fired':
                     if (window.zbmHandleRuleFired) window.zbmHandleRuleFired(msg.payload);

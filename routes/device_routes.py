@@ -50,6 +50,13 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 devices.extend(await homekit_entries())
             except Exception as e:
                 logger.warning(f"HomeKit device-list merge failed: {e}")
+        # Cameras — provider registered in main.py
+        camera_entries = getattr(app.state, "camera_device_entries", None)
+        if camera_entries is not None:
+            try:
+                devices.extend(await camera_entries())
+            except Exception as e:
+                logger.warning(f"Camera device-list merge failed: {e}")
         # Nuki bridge locks — provider registered by security_routes
         # (Matter-commissioned locks already arrive via the matter bridge)
         nuki_entries = getattr(app.state, "nuki_device_entries", None)

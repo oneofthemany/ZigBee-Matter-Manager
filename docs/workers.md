@@ -322,4 +322,5 @@ worker, so deleting one that three rules depend on is never a silent act.
 | `static/js/workers-page.js` | Automations → Workers sub-tab |
 | `data/workers.json` | Configuration and restored state |
 
-See also `docs/automations.md` for the rule engine itself.
+See also `docs/automations.md` for the rule engine itself, and
+`docs/house-mode-and-alarm.md` for the Mode worker designated as the house mode.

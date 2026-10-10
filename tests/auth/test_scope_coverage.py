@@ -153,10 +153,13 @@ def run() -> Checker:
             and not scope_matches(s, granted)
             and not s.startswith("admin")
         })
-        # What remains must be system:write: admin work, not a lockout.
+        # What remains must be system:write: admin work, not a lockout. Viewers
+        # are also kept off cameras on purpose — live video of the inside of
+        # the house is a grant of its own (docs/cameras.md §Who can see).
+        withheld = ("system:write",) + (("camera:read",) if group == "viewers" else ())
         leaked = [d for d in denied
                   if scope_for_path(d.split(" ", 1)[1],
-                                    d.split(" ", 1)[0]) != "system:write"]
+                                    d.split(" ", 1)[0]) not in withheld]
         c.check(f"'{group}' is not locked out of ordinary use", not leaked,
                 leaked[:12])
 

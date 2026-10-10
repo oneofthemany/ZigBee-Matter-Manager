@@ -29,6 +29,20 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/notification-rules", {"*": AUTHENTICATED}),
     ("/api/notify-channels",   {"*": AUTHENTICATED}),
     ("/api/notify-channels/hub", {"*": "admin"}),
+
+    # House mode is a worker value (device:write to set, as for any worker);
+    # the alarm sits with locks under security:*.
+    ("/api/house",             {"GET": "device:read", "*": "device:write"}),
+    ("/api/house/mode/config", {"*": "admin"}),
+    ("/api/alarm",             {"GET": "security:read", "*": "security:write"}),
+    ("/api/alarm/config",      {"*": "admin"}),
+    # Setting your own PIN is security:write; clearing someone's is admin.
+    ("/api/alarm/pin",         {"POST": "security:write", "*": "admin"}),
+
+    # Cameras: watching is camera:read; adding, editing, discovery and the
+    # go2rtc sidecar are admin. The stream websocket checks camera:read itself.
+    ("/api/cameras",           {"GET": "camera:read", "*": "admin"}),
+    ("/api/cameras/go2rtc",    {"*": "admin"}),
     ("/api/wiki",              {"*": AUTHENTICATED}),
     ("/api/therapy",           {"*": AUTHENTICATED}),
     # Anonymous in practice (ANONYMOUS_PATHS); mapped so coverage sees intent.

@@ -54,8 +54,10 @@ Permissions are expressed as dotted strings like `device:write` or
 | `media:write`          | Play, pause, group, change volume, announce.             |
 | `energy:read`          | View tariffs, consumption and cost.                      |
 | `energy:write`         | Change tariff and energy settings.                       |
-| `security:read`        | View lock state.                                         |
-| `security:write`       | Lock and unlock.                                         |
+| `security:read`        | View lock and alarm state.                               |
+| `security:write`       | Lock and unlock; arm and disarm (disarming also needs your PIN). |
+| `camera:read`          | Watch camera streams and snapshots.                      |
+| `camera:write`         | Reserved; camera setup is admin.                         |
 | `presence:read`        | Read presence-user state.                                |
 | `presence:write`       | Update **any** user's presence.                          |
 | `presence:write:<id>`  | Update **only** the named user's presence (mobile-app token). |
@@ -66,6 +68,12 @@ Wildcards work at any segment: `device:*` matches all device permissions,
 `security:*` is deliberately not part of `device:*`. Unlocking a door is not
 the same capability as switching a lamp, and a token should be able to hold
 one without the other.
+
+`camera:*` is its own grant for the same reason, and more so: live video of the
+inside of the house. The default `users` group has `camera:read`, `viewers`
+does not. Upgrading to auth schema 3 gives `camera:read` to every group and
+user that already held `security:write` — people trusted with the front door —
+and to no token.
 
 ### How a scope is enforced
 

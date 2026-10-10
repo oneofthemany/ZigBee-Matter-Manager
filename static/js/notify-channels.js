@@ -108,6 +108,10 @@ function renderMine(el) {
                 <label class="form-check-label small" for="nc_kind_rule">Notification rules</label>
             </div>
             <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="nc_kind_alarm" ${s.kinds.alarm !== false ? 'checked' : ''}>
+                <label class="form-check-label small" for="nc_kind_alarm">Alarm</label>
+            </div>
+            <div class="form-check">
                 <input class="form-check-input" type="checkbox" id="nc_kind_msg" ${s.kinds.message_created ? 'checked' : ''}>
                 <label class="form-check-label small" for="nc_kind_msg">Chat messages
                     <span class="text-muted">— the service can read them, unlike push</span></label>
@@ -124,7 +128,8 @@ function renderMine(el) {
 function collectMine() {
     const val = id => document.getElementById(id)?.value?.trim();
     const on = id => !!document.getElementById(id)?.checked;
-    const body = { kinds: { notification_rule: on('nc_kind_rule'), message_created: on('nc_kind_msg') } };
+    const body = { kinds: { notification_rule: on('nc_kind_rule'), message_created: on('nc_kind_msg'),
+                            alarm: on('nc_kind_alarm') } };
     for (const ch of view.available) body[ch] = { enabled: on(`nc_${ch}_on`) };
     if (body.ntfy) body.ntfy.topic = val('nc_ntfy_topic') ?? '';
     if (body.pushover) body.pushover.user_key = val('nc_pushover_key') ?? '';

@@ -14,7 +14,7 @@ import yaml
 
 from harness import Checker
 
-from modules.auth import AuthManager, scope_matches
+from modules.auth import AUTH_SCHEMA, AuthManager, scope_matches
 from modules.auth_scopes import scope_for_path
 
 # A store as a hub had it before AUTH_SCHEMA 2: no schema key, old groups.
@@ -93,7 +93,7 @@ def run() -> Checker:
 
         c.section("the upgrade is saved, with MFA intact")
         disk = yaml.safe_load(store.read_text())
-        c.check("schema 2 is recorded", disk.get("schema") == 2, disk.get("schema"))
+        c.check("the current schema is recorded", disk.get("schema") == AUTH_SCHEMA, disk.get("schema"))
         c.check("the mfa section survived the save", bool(disk.get("mfa")))
 
         c.section("it runs once")
@@ -103,7 +103,44 @@ def run() -> Checker:
         c.check("a scope removed after the upgrade stays removed",
                 "heating:write" not in a.groups["users"].scopes,
                 a.groups["users"].scopes)
+
+    with tempfile.TemporaryDirectory() as td:
+        store = Path(td) / "auth.yaml"
+        store.write_text(yaml.safe_dump({**SCHEMA_2, "schema": 2}))
+        a = _load(store)
+
+        c.section("schema 3: cameras for those who can already unlock the doors")
+        c.check("the household group can see cameras", _can(a, "resident", "GET", "/api/cameras"))
+        c.check("a user granted security:write directly can too", _can(a, "direct", "GET", "/api/cameras"))
+        c.check("viewers can't", not _can(a, "guest", "GET", "/api/cameras"))
+        tok = next(t for t in a.tokens.values() if t.label == "home-assistant")
+        c.check("tokens gain nothing", "camera:read" not in tok.scopes, tok.scopes)
+        c.check("seeing cameras isn't setting them up", not _can(a, "resident", "POST", "/api/cameras"))
+        a.groups["users"].scopes.remove("camera:read")
+        a._save_locked()
+        a = _load(store)
+        c.check("camera:read removed after the upgrade stays removed",
+                "camera:read" not in a.groups["users"].scopes)
     return c
+
+
+SCHEMA_2 = {
+    "groups": [
+        {"name": "admins", "scopes": ["admin"]},
+        {"name": "users", "scopes": ["device:read", "device:write", "security:read", "security:write"]},
+        {"name": "viewers", "scopes": ["device:read", "security:read"]},
+    ],
+    "users": [
+        {"username": "boss", "groups": ["admins"]},
+        {"username": "resident", "groups": ["users"]},
+        {"username": "guest", "groups": ["viewers"]},
+        {"username": "direct", "groups": [], "extra_scopes": ["security:write"]},
+    ],
+    "tokens": [
+        {"token_hash": "c" * 64, "label": "home-assistant", "user": "resident",
+         "scopes": ["device:read", "security:write"]},
+    ],
+}
 
 
 if __name__ == "__main__":

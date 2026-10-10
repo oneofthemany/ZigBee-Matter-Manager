@@ -86,8 +86,8 @@ def run() -> Checker:
         s = m.update("alex", {"telegram": {"enabled": True, "chat_id": 999}})
         c.check("a client can't set a Telegram chat — only linking does",
                 s["telegram"]["chat_id"] is None and not s["telegram"]["enabled"], s)
-        c.check("chat messages are off by default, rules on",
-                s["kinds"] == {"notification_rule": True, "message_created": False}, s["kinds"])
+        c.check("chat messages are off by default, rules and alarms on",
+                s["kinds"] == {"notification_rule": True, "message_created": False, "alarm": True}, s["kinds"])
         f = Path(tmp) / "nc.json"
         c.check("the settings file is 0600", stat.S_IMODE(f.stat().st_mode) == 0o600)
 

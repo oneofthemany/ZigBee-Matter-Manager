@@ -29,7 +29,7 @@ USERS_PATH = Path("./data/notify_channels.json")
 
 CHANNELS = ("ntfy", "telegram", "signal", "pushover", "email")
 # What a user's channels carry unless they choose otherwise.
-KIND_DEFAULTS = {"notification_rule": True, "message_created": False}
+KIND_DEFAULTS = {"notification_rule": True, "message_created": False, "alarm": True}
 SEND_TIMEOUT_S = 15
 LINK_TTL_S = 600
 # Each code costs a message from the hub's number to a stranger's, if mistyped.

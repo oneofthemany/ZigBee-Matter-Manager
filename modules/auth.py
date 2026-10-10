@@ -53,7 +53,10 @@ KNOWN_SCOPES: Dict[str, str] = {
     # capability as switching a lamp, and a token should be able to hold one
     # without the other.
     "security:read":          "View lock state.",
-    "security:write":         "Lock and unlock.",
+    "security:write":         "Lock and unlock, arm and disarm the alarm.",
+    # Live video of the inside of a home is its own grant, not part of device:*.
+    "camera:read":            "View camera streams and snapshots.",
+    "camera:write":           "Control cameras (reserved; setup is admin).",
     "presence:read":          "Read all presence users' state.",
     "presence:write":         "Update any presence user's location.",
     # Per-user presence scopes are checked dynamically as
@@ -63,8 +66,8 @@ KNOWN_SCOPES: Dict[str, str] = {
 }
 
 #: auth.yaml layout version. 2 = heating/media/energy/security split out of
-#: device:*; a store written before that is upgraded once on load.
-AUTH_SCHEMA = 2
+#: device:*; 3 = camera:read added. A store written before is upgraded once on load.
+AUTH_SCHEMA = 3
 
 #: Areas that were reachable through device:* (in practice, by any signed-in
 #: user) before scopes were enforced, and now carry their own scopes.
@@ -84,6 +87,7 @@ DEFAULT_GROUPS: Dict[str, List[str]] = {
                  "media:read", "media:write",
                  "energy:read", "energy:write",
                  "security:read", "security:write",
+                 "camera:read",
                  "system:read",
                  "presence:read", "presence:write:*"],
     "viewers":  ["device:read", "automation:read", "group:read",
@@ -331,8 +335,12 @@ class AuthManager:
                     f"Auth loaded: {len(self.users)} users, "
                     f"{len(self.groups)} groups, {len(self.tokens)} tokens"
                 )
-                if int(raw.get("schema") or 1) < 2:
+                schema = int(raw.get("schema") or 1)
+                if schema < 2:
                     self._migrate_split_scopes()
+                    self._dirty = True
+                if schema < 3:
+                    self._migrate_camera_scope()
                     self._dirty = True
             except Exception as e:
                 logger.error(f"Failed to load auth.yaml: {e}")
@@ -380,6 +388,25 @@ class AuthManager:
             logger.warning(
                 "[auth] upgraded to schema 2: granted the heating/media/energy/"
                 "security scopes split out of device:* to " + ", ".join(changed))
+
+    def _migrate_camera_scope(self) -> None:
+        """AUTH_SCHEMA 3: camera:read to groups and users that can already
+        unlock the doors (security:write). Viewers and device tokens are left
+        out — a phone token that can see inside the house is a bigger leak
+        than one that can see its state."""
+        changed = []
+        for g in self.groups.values():
+            if "admin" not in g.scopes and scope_matches("security:write", set(g.scopes)) \
+                    and "camera:read" not in g.scopes:
+                g.scopes = g.scopes + ["camera:read"]
+                changed.append(f"group {g.name}")
+        for u in self.users.values():
+            if scope_matches("security:write", set(u.extra_scopes)) and "camera:read" not in u.extra_scopes \
+                    and "admin" not in u.extra_scopes:
+                u.extra_scopes = u.extra_scopes + ["camera:read"]
+                changed.append(f"user {u.username}")
+        if changed:
+            logger.warning("[auth] upgraded to schema 3: granted camera:read to " + ", ".join(changed))
 
     def _bootstrap(self) -> None:
         """First-run setup: default groups only. The first admin user is

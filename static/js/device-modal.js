@@ -55,6 +55,11 @@ export async function openDeviceModal(d) {
         const { openHomekitModal } = await import('./modal/homekit-modal.js');
         return openHomekitModal(d.homekit_device_id);
     }
+    // Cameras: the live view
+    if (d?.camera_id) {
+        const { openCameraFromDevice } = await import('./cameras-page.js');
+        return openCameraFromDevice(d.camera_id);
+    }
     // Nuki bridge locks likewise (matter-commissioned locks fall through
     // to the standard modal, whose Control tab has lock/unlock/unlatch)
     if (d?.nuki_lock_id) {

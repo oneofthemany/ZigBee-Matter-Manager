@@ -902,6 +902,76 @@ async def lifespan(app: FastAPI):
         logger.info("Wired %d worker(s) into automation engine",
                     len(worker_manager.workers))
 
+        # House mode (a designated mode worker) and the alarm panel.
+        # See docs/house-mode-and-alarm.md.
+        from modules.house_mode import HouseMode, set_house_mode
+        from modules.alarm import AlarmPanel, set_alarm, IEEE as ALARM_IEEE
+        from modules.auth import get_auth_manager
+        house_mode = HouseMode(lambda: worker_manager, lambda: presence_manager)
+        set_house_mode(house_mode)
+
+        async def _alarm_notify(users, payload):
+            for user in users:
+                try:
+                    await push_manager.send_to_user(user, {
+                        "title": payload["title"], "body": payload["body"],
+                        "tag": "zmm-alarm", "kind": "alarm",
+                        "requireInteraction": payload["urgent"]})
+                except Exception as e:
+                    logger.warning(f"[alarm] push to {user} failed: {e}")
+                await channel_manager.send_to_user(user, payload, kind="alarm")
+
+        alarm_panel = AlarmPanel(
+            get_devices=zigbee_service.automation._get_all_devices,
+            get_names=zigbee_service.automation._get_all_names,
+            notify=_alarm_notify,
+            broadcast=broadcast_event,
+            evaluate=zigbee_service.automation.evaluate,
+            get_users=lambda: sorted((get_auth_manager().users if get_auth_manager() else {}).keys()),
+        )
+
+        async def _alarm_sets_mode(mode, source):
+            if house_mode.worker() is None:
+                return
+            # Disarming returns the house to home only from away or night.
+            if mode == "home" and (house_mode.current() or "").lower() not in ("away", "night"):
+                return
+            try:
+                await house_mode.set(mode, source=source)
+            except ValueError as e:
+                logger.info(f"[alarm] house mode not changed: {e}")
+        alarm_panel.set_mode_hook(_alarm_sets_mode)
+
+        def _house_listener(ieee, changed):
+            hw = house_mode.worker()
+            if hw is not None and ieee == hw.ieee and "value" in changed:
+                alarm_panel.on_house_mode(str(changed["value"]))
+            house_mode.observe(ieee, changed)
+            alarm_panel.observe(ieee, changed)
+        zigbee_service.automation.add_state_listener(_house_listener)
+        zigbee_service.automation.add_device_getter(lambda: {ALARM_IEEE: alarm_panel.device})
+        await alarm_panel.start()
+        set_alarm(alarm_panel)
+        app.state.alarm_panel = alarm_panel
+
+        # Cameras: go2rtc streams, ONVIF motion as a device signal.
+        # See docs/cameras.md.
+        from modules.cameras import CameraManager, set_camera_manager
+        from modules.go2rtc import start_if_installed as start_go2rtc
+        camera_manager = CameraManager(evaluate=zigbee_service.automation.evaluate)
+        zigbee_service.automation.add_device_getter(camera_manager.automation_devices)
+        set_camera_manager(camera_manager)
+        app.state.camera_manager = camera_manager
+
+        async def _camera_entries():
+            return camera_manager.device_entries()
+        app.state.camera_device_entries = _camera_entries
+
+        async def _start_cameras():
+            await start_go2rtc()
+            await camera_manager.start()
+        asyncio.create_task(_start_cameras())
+
         # Journeys: its own DuckDB file and worker thread — DuckDB is
         # single-writer per file, so journeys never share a database.
         journey_manager = JourneyManager()
@@ -1069,6 +1139,12 @@ async def lifespan(app: FastAPI):
     presence_manager = getattr(app.state, "presence_manager", None)
     if presence_manager:
         await presence_manager.stop()
+    alarm_panel = getattr(app.state, "alarm_panel", None)
+    if alarm_panel:
+        await alarm_panel.stop()
+    camera_manager = getattr(app.state, "camera_manager", None)
+    if camera_manager:
+        await camera_manager.stop()
     journey_manager = getattr(app.state, "journey_manager", None)
     if journey_manager:
         await journey_manager.stop()
@@ -1282,6 +1358,10 @@ from routes import register_homekit_routes
 register_homekit_routes(app)
 register_adblock_routes(app)
 register_worker_routes(app, lambda: zigbee_service.automation)
+from routes.house_routes import register_house_routes
+register_house_routes(app)
+from routes.camera_routes import register_camera_routes
+register_camera_routes(app)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
 register_wiki_routes(app)
