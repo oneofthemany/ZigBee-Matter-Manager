@@ -1337,6 +1337,14 @@ push_manager.load()
 set_push_manager(push_manager)
 register_push_routes(app)
 
+# ntfy / Telegram / Pushover / email — reach people without a trusted origin.
+from modules.notify_channels import ChannelManager, set_channel_manager
+from routes.notify_channel_routes import register_notify_channel_routes
+channel_manager = ChannelManager()
+channel_manager.load()
+set_channel_manager(channel_manager)
+register_notify_channel_routes(app)
+
 async def _message_notifier(event: str, payload: dict):
     """
     Fan a message out: websocket for anyone with the app open, web push for
@@ -1365,6 +1373,10 @@ async def _message_notifier(event: str, payload: dict):
         })
     except Exception as e:
         logger.warning(f"[messages] push failed: {e}")
+    await channel_manager.send_to_user(payload.get("to_user") or "", {
+        "title": payload.get("from_user") or "Message",
+        "body": payload.get("body") or "",
+    }, kind="message_created")
 
 
 from modules.messages_store import MessageStore, set_message_store, get_message_store
@@ -1392,7 +1404,10 @@ async def _deliver_rule_notification(owner: str, payload: dict):
         "requireInteraction": payload["persistent"],
         "data": {"ieee": payload["ieee"]},
     })
-    return {"pages": pages, **push}
+    channels = await channel_manager.send_to_user(owner, {
+        "title": payload["title"], "body": payload["body"], "urgent": payload["persistent"],
+    }, kind="notification_rule")
+    return {"pages": pages, **push, "channels": channels}
 
 
 _notification_rule_store = NotificationRuleStore()

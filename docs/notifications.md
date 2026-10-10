@@ -337,6 +337,82 @@ primitives (`cryptography`) is standard practice and costs one dependency
 instead of three. The round-trip is unit-tested by decrypting our own output,
 which is the property that actually matters.
 
+## Other channels
+
+ntfy, Telegram, Signal, Pushover and email reach a person from a hub that is only on
+the LAN — none of them needs a secure context, which is what stops Web Push
+there. `modules/notify_channels.py`; Settings → Notifications → **Other
+channels**.
+
+### Two halves
+
+| | Who | Where it is stored |
+|---|---|---|
+| Hub setup: ntfy server and token, Telegram bot token, Signal API and number, Pushover app token, SMTP server | admin | `config/secrets.yaml` → `notify_channels` (0600) |
+| Destinations: ntfy topic, linked Telegram chat, verified Signal number, Pushover user key, email address, and what to send | each user, for themselves | `data/notify_channels.json` (0600) |
+
+Hub settings live in `secrets.yaml` rather than `config.yaml` because
+`config.yaml` is tracked — even the SMTP username and from-address are personal.
+The admin API returns secrets only as `<name>_set`; a blank field keeps the
+stored value and `null` clears it. The ntfy server is a hub setting, not a
+per-user one, so no user can point the hub at an arbitrary URL.
+
+A channel appears for users only once the hub has it set up.
+
+### What gets sent
+
+Notification rules by default. Chat messages only if the user ticks them:
+Web Push is end-to-end encrypted (RFC 8291) and these services are not —
+ntfy, Telegram, Pushover and the mail server all read the text. Signal is
+end-to-end encrypted in transit, but the signal-cli container on the hub sees it.
+
+Delivery runs alongside Web Push and the websocket, on every enabled channel at
+once, each capped at 20 s, so one slow service holds up nothing else. A failure
+is logged and reported, never retried. Errors have the hub's tokens scrubbed
+out: httpx puts the URL in its errors, and Telegram's URL contains the bot token.
+
+### Per channel
+
+- **ntfy** — JSON publish to the hub's server. On public `ntfy.sh` a topic is
+  readable by anyone who guesses it, so the UI generates a random one and warns
+  about short ones. A self-hosted server with auth takes the hub's access token.
+  An urgent rule (persistent) is priority 4.
+- **Telegram** — one bot per hub (create it with @BotFather). A user links by
+  opening `t.me/<bot>?start=<code>`; the hub finds that one-time code in
+  `getUpdates` and stores the chat it came from. The chat can only be set by
+  linking, never through the API, so nobody can direct their alerts into
+  someone else's chat. Linking does not work while the bot has a webhook set
+  (Telegram answers 409, and the UI says so).
+- **Signal** — Signal has no bot API, so the hub sends through a
+  [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
+  container with one number registered (or linked as a secondary device) to it;
+  the hub posts to its `/v2/send`. That container has no login of its own: keep
+  it on the LAN, never on the tunnel. A user's number is saved only after they
+  type back a six-digit code the hub sent to it by Signal — so nobody can aim
+  alerts at someone else's phone. Three codes per user per ten minutes, five
+  guesses per code.
+- **Pushover** — one application token per hub, a 30-character user key per
+  person. Urgent rules are priority 1.
+- **Email** — SMTP with STARTTLS, implicit TLS or none; sent off the event loop.
+  The rule title is the subject.
+
+### API
+
+| | |
+|---|---|
+| `GET /api/notify-channels` | your destinations, which channels the hub offers, warnings |
+| `PUT /api/notify-channels` | change yours (`{"telegram": {"unlink": true}}` or `{"signal": {"unlink": true}}` removes one) |
+| `POST /api/notify-channels/test` | send yourself a test on every enabled channel; per-channel result |
+| `POST /api/notify-channels/telegram/link` | start linking: `{bot, code, url}`, valid 10 minutes |
+| `POST /api/notify-channels/telegram/check` | `{linked}` once the code has reached the bot |
+| `POST /api/notify-channels/signal/verify` | `{number}`: send a code to it by Signal |
+| `POST /api/notify-channels/signal/confirm` | `{code}`: save the number once it matches |
+| `GET /api/notify-channels/hub` | hub setup, secrets as `*_set` (admin) |
+| `PUT /api/notify-channels/hub` | change it (admin) |
+
+A rule's **Test** (`POST /api/notification-rules/{id}/test`) also reports
+`channels`, so the toast says which of them it reached.
+
 ## Messages
 
 `modules/messages_store.py` backs person-to-person conversations inside ZMM:

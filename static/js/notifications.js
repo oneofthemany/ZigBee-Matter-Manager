@@ -5,6 +5,7 @@
 
 import { state } from './state.js';
 import { escapeHtml, timeAgo } from './utils.js';
+import { channelCardsHtml, renderChannelCards } from './notify-channels.js';
 
 const log = zmmLog('notifications');
 
@@ -252,7 +253,20 @@ function lastFiredLine(last) {
 /** Say where a test went, so a missing phone notification has an explanation. */
 function testOutcome(r) {
     const n = (count, what) => `${count} ${what}${count === 1 ? '' : 's'}`;
+    const chans = Object.entries(r.channels || {});
+    const okChans = chans.filter(([, c]) => c.ok).map(([ch]) => ch);
+    const badChans = chans.filter(([, c]) => !c.ok).map(([ch]) => ch);
+    const chanNote = (okChans.length ? ` Also sent via ${okChans.join(', ')}.` : '')
+        + (badChans.length ? ` Failed: ${badChans.join(', ')} — see Other channels.` : '');
+    const [kind, text] = pushOutcome(r, n, okChans.length > 0);
+    return [badChans.length && kind === 'success' ? 'warning' : kind, text + chanNote];
+}
+
+function pushOutcome(r, n, viaChannels) {
     if (!('sent' in r) && !r.no_subscriptions) return ['info', 'Test sent.'];
+    if (r.no_subscriptions && viaChannels) {
+        return ['success', 'Test sent (no device has web push enabled).'];
+    }
     if (r.no_subscriptions) {
         return ['warning', 'Test sent, but no phone or browser has push enabled for your account, so it only shows on open ZMM pages. '
             + 'Enable push under "Delivery on this device".'];
@@ -552,6 +566,7 @@ function renderNotificationsPane() {
                 <div id="notif-push-panel"></div>
             </div>
         </div>
+        ${channelCardsHtml()}
         <div class="card shadow-sm">
             <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
                 <span class="fw-bold"><i class="fas fa-bell me-1"></i> Notification Rules</span>
@@ -581,6 +596,7 @@ function renderNotificationsPane() {
     }
 
     pane.dataset.rendered = '1';
+    renderChannelCards();
     refreshRules()
         .catch(e => window.toast?.error(`Couldn't load notification rules: ${e.message}`))
         .finally(renderRulesList);
