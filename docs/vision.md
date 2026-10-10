@@ -42,6 +42,35 @@ Per camera, in `vision/worker.py`:
 The motion gate is also what keeps a Coral cool: on a quiet scene it does
 nothing.
 
+## Zones
+
+A zone is a polygon on the camera's picture with a name: the drive, the porch,
+the lawn. Cameras → Manage → edit a camera → **Zones → Add zone**, then tap the
+picture to place corners. A tap near an edge adds a corner to that edge; drag
+a corner to move it. Up to 8 zones per camera, 3–24 corners each, any shape.
+
+- **In a zone** means the object's feet are: the middle of the bottom edge of
+  its box. Someone standing on the drive counts even when their head is in
+  front of the street.
+- Each zone adds its own signals beside the camera's: a zone created as
+  "Front drive" gives `person_front_drive`, `vehicle_front_drive` and so on,
+  for whichever of person / vehicle / animal it is ticked for.
+- A zone's id is fixed when it is first saved and its signals are named for
+  the id, not the name. Rename a zone as often as you like: its signals, and
+  every rule or alarm zone using them, carry on. Notifications show the
+  current name.
+- **Ignore anything outside the zones** makes the camera's own `person` /
+  `vehicle` / `animal` mean "in at least one zone". It also stops the detector
+  looking at movement that is nowhere near a zone, so a busy street costs
+  nothing.
+- A notification about a camera names the zones the object is in.
+
+Zones are drawn on the frame the detector sees (640×360, letterboxed if the
+camera isn't 16:9), not on the live view, so what you draw is exactly what is
+tested — which is why the camera needs detection switched on and saved, and
+the sidecar watching it, before a zone can be drawn. Points are stored as
+fractions of that frame.
+
 ## One connection per camera
 
 go2rtc already holds a connection to each camera for live view. Detection
@@ -101,8 +130,12 @@ Loopback only (`127.0.0.1:8556`), bearer token from `data/vision/token`
 | | |
 |---|---|
 | `GET /status[?after=<version>&wait=<s>]` | backend, per-camera health and presence; with `after`, waits for a change |
-| `PUT /config` | `{cameras: [{id, url, labels, threshold, fps?}]}` — held in memory only, since URLs carry go2rtc's password |
-| `GET /snapshot/<id>.jpg` | the latest detection's frame, boxes drawn |
+| `PUT /config` | `{cameras: [{id, url, labels, threshold, fps?, zones?, zones_only?}]}` — held in memory only, since URLs carry go2rtc's password |
+| `GET /snapshot/<id>.jpg` | the latest detection's frame, boxes and zones drawn |
+| `GET /frame/<id>.jpg` | the frame the detector sees now, zones outlined |
+
+Presence is keyed `person`, and `person:<zone>` for a zone; the app stores the
+latter as `person_<zone>`.
 
 The app (`modules/vision.py`) long-polls `/status`, re-sends the camera list
 whenever the sidecar's config hash isn't the one it was given (a restarted
@@ -112,8 +145,8 @@ sidecar has none), and clears every object signal if the sidecar goes away.
 
 | | |
 |---|---|
-| `PUT /api/cameras/{id}` | `detect: {enabled, labels, threshold, url?}` |
-| `GET /api/cameras/{id}/detection` | latest detection frame (JPEG), `camera:read` |
+| `PUT /api/cameras/{id}` | `detect: {enabled, labels, threshold, url?, zones_only?, zones?: [{id?, name, points: [[x, y]…], labels?}]}`; leaving `zones` out keeps them, and sending a zone's `id` back keeps its signals through a rename |
+| `GET /api/cameras/{id}/detection` | latest detection frame (JPEG), `camera:read`; `?view=frame` for what the detector sees now |
 | `GET /api/cameras/vision` | sidecar reachability, backend, per-camera health (admin) |
 
 In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
@@ -122,7 +155,7 @@ In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 
 ## Not yet
 
-Zones within a frame, clips and recordings, per-object counts, GPU and Hailo backends, and larger models.
+Clips and recordings, per-object counts, a zone picker on notification rules, GPU and Hailo backends, and larger models.
 
 ## Hardware
 

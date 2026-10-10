@@ -45,11 +45,59 @@ NOTIFY_IMAGE_TIMEOUT_S = 8
 # Cameras that only ever send "motion on" are cleared after this long quiet.
 MOTION_HOLD_S = 120
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+MAX_ZONES = 8
+ZONE_POINTS = (3, 24)
 RESERVED_IDS = ("go2rtc", "discover", "probe", "vision")      # fixed API paths under /api/cameras/
 
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:32] or "camera"
+
+
+def _zones(raw: Any, labels: List[str], existing: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Validate the zone editor's polygons: points are 0-1 of the detection
+    frame, so they hold whatever size that frame is.
+
+    A zone's id is fixed when it is created and is what its signals are named
+    for (`person_<id>`), so renaming one never breaks a rule that uses it."""
+    if not isinstance(raw, list) or len(raw) > MAX_ZONES:
+        raise ValueError(f"At most {MAX_ZONES} zones per camera")
+    known = {z["id"] for z in existing}
+    kept = {str((z or {}).get("id") or "") for z in raw} & known
+    out, ids, names = [], set(kept), set()
+    for z in raw:
+        name = str((z or {}).get("name") or "").strip()
+        if not name or len(name) > 40:
+            raise ValueError("A zone needs a name (up to 40 characters)")
+        if name.lower() in names:
+            raise ValueError(f"Two zones are called '{name}'")
+        names.add(name.lower())
+        zid = str(z.get("id") or "")
+        if zid not in known or any(o["id"] == zid for o in out):
+            # New: named for what it's called now, clear of every id in use.
+            base = zid = _slug(name)[:24]
+            n = 2
+            while zid in ids:
+                zid = f"{base[:21]}_{n}"
+                n += 1
+        ids.add(zid)
+        pts = z.get("points")
+        if not isinstance(pts, list) or not ZONE_POINTS[0] <= len(pts) <= ZONE_POINTS[1]:
+            raise ValueError(f"Zone '{name}' needs {ZONE_POINTS[0]}-{ZONE_POINTS[1]} points")
+        try:
+            points = [[round(min(max(float(p[0]), 0.0), 1.0), 4), round(min(max(float(p[1]), 0.0), 1.0), 4)]
+                      for p in pts]
+        except (TypeError, ValueError, IndexError, KeyError):
+            raise ValueError(f"Zone '{name}' has a point that isn't a pair of numbers")
+        # A sliver has no inside to stand in.
+        area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1]))) / 2
+        if area < 0.001:
+            raise ValueError(f"Zone '{name}' is too small to stand in")
+        zl = [g for g in OBJECT_GROUPS if g in (z.get("labels") or labels) and g in labels]
+        if not zl:
+            raise ValueError(f"Zone '{name}' has nothing to look for")
+        out.append({"id": zid, "name": name, "points": points, "labels": zl})
+    return out
 
 
 # Credentials
@@ -124,18 +172,28 @@ class CameraDevice:
         self.state: Dict[str, Any] = {"motion": False, "occupancy": False, "available": True}
         self.online: Optional[bool] = None
         self.motion_at = 0.0
+        self.object_keys: List[str] = []
         self.sync_objects()
+
+    @property
+    def zone_names(self) -> Dict[str, str]:
+        """Zone id -> what it is called now, for text shown to people."""
+        return {z["id"]: z["name"] for z in (self.cfg.get("detect") or {}).get("zones") or []}
 
     def sync_objects(self) -> None:
         """Object keys exist only for what the camera is asked to detect, so
-        rule pickers don't offer signals that can never fire."""
+        rule pickers don't offer signals that can never fire. A zone adds
+        `<group>_<zone>` beside the camera-wide `<group>`."""
         d = self.cfg.get("detect") or {}
-        want = d.get("labels", []) if d.get("enabled") else []
-        for g in OBJECT_GROUPS:
-            if g in want:
-                self.state.setdefault(g, False)
-            else:
-                self.state.pop(g, None)
+        want = list(d.get("labels", [])) if d.get("enabled") else []
+        if want:
+            want += [f"{g}_{z['id']}" for z in d.get("zones") or [] for g in z["labels"]]
+        for k in self.object_keys:
+            if k not in want:
+                self.state.pop(k, None)
+        for k in want:
+            self.state.setdefault(k, False)
+        self.object_keys = want
 
     def is_available(self) -> bool:
         return self.online is not False
@@ -195,7 +253,7 @@ class CameraManager:
                 "username": creds.get("username", ""),
                 "online": dev.online if dev else None,
                 "motion": bool(dev and dev.state["motion"]),
-                "objects": {g: dev.state[g] for g in OBJECT_GROUPS if dev and g in dev.state},
+                "objects": {k: dev.state[k] for k in (dev.object_keys if dev else [])},
                 "ieee": IEEE_PREFIX + cam["id"]}
 
     def list(self) -> List[Dict[str, Any]]:
@@ -249,8 +307,13 @@ class CameraManager:
                 raise ValueError("Detection confidence must be between 30% and 95%")
             # A second, smaller stream of the same camera; it uses the same login.
             url = split_url(str(d["url"]))["url"] if d.get("url") else ""
+            prev = (current or {}).get("detect") or {}
+            zones = _zones(d["zones"], labels, prev.get("zones") or []) if "zones" in d else \
+                [z for z in ({**z, "labels": [g for g in z["labels"] if g in labels]}
+                              for z in prev.get("zones") or []) if z["labels"]]
             cam["detect"] = {"enabled": bool(d.get("enabled")) and bool(labels), "labels": labels,
-                             "threshold": round(threshold, 2), "url": url}
+                             "threshold": round(threshold, 2), "url": url, "zones": zones,
+                             "zones_only": bool(d.get("zones_only", prev.get("zones_only", False))) and bool(zones)}
         return cam
 
     def _set_creds(self, cid: str, data: Dict[str, Any], url_creds: Dict[str, str]) -> None:
@@ -402,7 +465,7 @@ class CameraManager:
             return None
 
         async def fetch() -> bytes:
-            if self.detection_snapshot and any(dev.state.get(g) for g in OBJECT_GROUPS):
+            if self.detection_snapshot and any(dev.state.get(k) for k in dev.object_keys):
                 try:
                     return await self.detection_snapshot(cid)
                 except Exception as e:                    # noqa: BLE001
@@ -462,7 +525,10 @@ class CameraManager:
                 continue
             name = (DETECT_PREFIX if d.get("url") else STREAM_PREFIX) + cid
             out.append({"id": cid, "labels": list(d.get("labels") or []), "threshold": d.get("threshold", 0.5),
-                        "url": self.go2rtc.stream_url(name)})
+                        "url": self.go2rtc.stream_url(name),
+                        "zones": [{"id": z["id"], "points": z["points"], "labels": z["labels"]}
+                                  for z in d.get("zones") or []],
+                        "zones_only": bool(d.get("zones_only"))})
         return out
 
     async def apply_objects(self, cid: str, objects: Dict[str, bool]) -> None:
@@ -481,8 +547,8 @@ class CameraManager:
                 logger.warning("[cameras] evaluating %s failed: %s", dev.ieee, e)
 
     async def clear_objects(self) -> None:
-        for cid in list(self.devices):
-            await self.apply_objects(cid, {g: False for g in OBJECT_GROUPS})
+        for cid, dev in list(self.devices.items()):
+            await self.apply_objects(cid, {k: False for k in dev.object_keys})
 
     async def clear_stale_motion(self) -> None:
         for cid, dev in list(self.devices.items()):

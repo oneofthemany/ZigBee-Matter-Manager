@@ -94,6 +94,18 @@ def _crossed(p: Dict[str, Any], c: Dict[str, Any], rule: Dict[str, Any], above: 
     return (pt <= thr < t) if above else (pt >= thr > t)
 
 
+ZONE_NAMES = "_zone_names"
+
+
+def _zones_of(c: Dict[str, Any], group: str) -> str:
+    """' (Drive, Porch)' for the camera zones the object is in. Signals are
+    keyed by a zone's fixed id (`person_drive`); the names come alongside."""
+    names = c.get(ZONE_NAMES) or {}
+    ids = [k[len(group) + 1:] for k, v in c.items() if v is True and k.startswith(group + "_")]
+    zones = sorted(names.get(i) or i.replace("_", " ") for i in ids)
+    return f" ({', '.join(zones)})" if zones else ""
+
+
 @dataclass(frozen=True)
 class Trigger:
     match: Callable[[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]], bool]
@@ -157,13 +169,13 @@ TRIGGERS: Dict[str, Trigger] = {
         "Temperature drops below threshold", needs_threshold=True),
     "person_detected": Trigger(
         lambda p, c, r, ch: not p.get("person") and bool(c.get("person")),
-        lambda n, c, r: f"Person seen — {n}", "Person seen on camera"),
+        lambda n, c, r: f"Person seen — {n}{_zones_of(c, 'person')}", "Person seen on camera"),
     "vehicle_detected": Trigger(
         lambda p, c, r, ch: not p.get("vehicle") and bool(c.get("vehicle")),
-        lambda n, c, r: f"Vehicle seen — {n}", "Vehicle seen on camera"),
+        lambda n, c, r: f"Vehicle seen — {n}{_zones_of(c, 'vehicle')}", "Vehicle seen on camera"),
     "animal_detected": Trigger(
         lambda p, c, r, ch: not p.get("animal") and bool(c.get("animal")),
-        lambda n, c, r: f"Animal seen — {n}", "Animal seen on camera"),
+        lambda n, c, r: f"Animal seen — {n}{_zones_of(c, 'animal')}", "Animal seen on camera"),
     "valve_alarm": Trigger(
         lambda p, c, r, ch: not p.get("valve_alarm") and bool(c.get("valve_alarm")),
         lambda n, c, r: f"Valve alarm — {n}", "Valve alarm (TRV)", persistent=True),
@@ -441,8 +453,9 @@ class NotificationRuleEngine:
             try:
                 if not trigger.match(prev, curr, rule, changed):
                     continue
+                zone_names = getattr(device, "zone_names", None)
                 body = (rule["message"].replace("{device}", name) if rule.get("message")
-                        else trigger.body(name, curr, rule))
+                        else trigger.body(name, {**curr, ZONE_NAMES: zone_names} if zone_names else curr, rule))
             except Exception as e:
                 logger.debug("[notification_rules] %s on %s: %s", rule["id"], ieee, e)
                 continue

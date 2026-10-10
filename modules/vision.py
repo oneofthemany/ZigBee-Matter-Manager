@@ -86,8 +86,10 @@ class VisionClient:
     async def configure(self, cameras: List[Dict[str, Any]]) -> str:
         return str((await self._call("PUT", "/config", body={"cameras": cameras})).get("config") or "")
 
-    async def snapshot(self, cid: str) -> bytes:
-        body = await self._call("GET", f"/snapshot/{cid}.jpg", raw=True)
+    async def snapshot(self, cid: str, kind: str = "snapshot") -> bytes:
+        """`snapshot`: the latest detection, boxes drawn. `frame`: what the
+        detector sees now, zones outlined — what zones are drawn on."""
+        body = await self._call("GET", f"/{kind}/{cid}.jpg", raw=True)
         if not isinstance(body, (bytes, bytearray)) or not body.startswith(b"\xff\xd8"):
             raise VisionError("nothing detected on this camera yet")
         return bytes(body)
@@ -125,8 +127,9 @@ class VisionBridge:
         self.status, self.error = st, None
         for cid, cam in (st.get("cameras") or {}).items():
             objects = cam.get("objects") or {}
-            await self.cameras.apply_objects(cid, {g: bool((objects.get(g) or {}).get("present"))
-                                                   for g in objects})
+            # The sidecar's "person:drive" is the device's `person_drive`.
+            await self.cameras.apply_objects(cid, {k.replace(":", "_"): bool((objects.get(k) or {}).get("present"))
+                                                   for k in objects})
 
     async def _loop(self) -> None:
         while True:

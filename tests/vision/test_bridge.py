@@ -54,7 +54,9 @@ class FakeSidecar:
     async def status(self, after=None, wait=25):
         self._check()
         cams = {c["id"]: {"online": True, "error": None, "frames": 5, "looks": 2, "last_at": None,
-                          "objects": {g: {"present": self.present.get((c["id"], g), False)} for g in c["labels"]}}
+                          "objects": {g: {"present": self.present.get((c["id"], g), False)}
+                                      for g in c["labels"] + [f"{g}:{z['id']}" for z in c.get("zones") or []
+                                                              for g in z["labels"]]}}
                 for c in self.config or []}
         return {"version": self.version, "config": self.hash, "ready": True, "backend": "coral", "wanted": "coral",
                 "note": None, "inference_ms": 12.0, "cameras": cams}
@@ -96,13 +98,14 @@ def run() -> Checker:
             c.check("…and the sidecar is asked to watch nothing", m.detect_config() == [])
             cam = await m.update("front", {"detect": {"enabled": True, "labels": ["person", "animal", "teapot"]}})
             c.check("switching it on keeps only labels that exist",
-                    cam["detect"] == {"enabled": True, "labels": ["person", "animal"], "threshold": 0.5, "url": ""}, cam["detect"])
+                    cam["detect"] == {"enabled": True, "labels": ["person", "animal"], "threshold": 0.5, "url": "",
+                                      "zones": [], "zones_only": False}, cam["detect"])
             c.check("the device gains exactly those signals, off",
                     dev.state.get("person") is False and dev.state.get("animal") is False and "vehicle" not in dev.state, dev.state)
             c.check("changing a camera nudges the bridge", len(kicks) == 2, kicks)
             cfg = m.detect_config()
             c.check("with no sub-stream, detection shares go2rtc's copy of the main stream",
-                    cfg == [{"id": "front", "labels": ["person", "animal"], "threshold": 0.5,
+                    cfg == [{"id": "front", "labels": ["person", "animal"], "threshold": 0.5, "zones": [], "zones_only": False,
                              "url": "http://zmm:apipw@127.0.0.1:1984/api/stream.mp4?src=zmm_front"}], cfg)
             c.check("…so the camera's own login is never sent to the sidecar", "secret" not in str(cfg))
             c.check("…and go2rtc holds one stream for it", set(g.streams_) == {"zmm_front"}, g.streams_)
@@ -158,6 +161,75 @@ def run() -> Checker:
             c.check("status for the UI: reachable, backend, per-camera health, and no stream URLs",
                     pub["reachable"] and pub["backend"] == "coral" and pub["cameras"]["front"]["online"]
                     and "apipw" not in str(pub), pub)
+
+            c.section("zones")
+            tri = [[0, 0.5], [0.5, 0.5], [0.25, 1.2]]
+            cam = await m.update("front", {"detect": {"enabled": True, "labels": ["person", "vehicle"], "zones_only": True,
+                                                      "zones": [{"name": "Front Drive", "points": tri, "labels": ["person", "animal"]}]}})
+            z = cam["detect"]["zones"][0]
+            c.check("a zone gets an id from its name, points clamped to the frame, labels limited to the camera's",
+                    z == {"id": "front_drive", "name": "Front Drive", "points": [[0, 0.5], [0.5, 0.5], [0.25, 1.0]],
+                          "labels": ["person"]} and cam["detect"]["zones_only"] is True, cam["detect"])
+            c.check("the device gains the zone's signal beside the camera's",
+                    dev.state.get("person_front_drive") is False and "vehicle_front_drive" not in dev.state, dev.state)
+            c.check("the sidecar is sent the polygon", m.detect_config()[0]["zones"] ==
+                    [{"id": "front_drive", "points": z["points"], "labels": ["person"]}] and m.detect_config()[0]["zones_only"])
+            await bridge.step()
+            side.present[("front", "person:front_drive")] = True
+            side.present[("front", "person")] = True
+            side.version += 1
+            events.clear()
+            await bridge.step()
+            c.check("a person in the zone arrives as one change carrying both signals",
+                    events == [("camera::front", {"person": True, "person_front_drive": True})], events)
+            from modules.notification_rules import TRIGGERS
+            c.check("a notification about it names the zone",
+                    TRIGGERS["person_detected"].body("Front door", dev.state, {}) == "Person seen — Front door (front drive)")
+
+            cam = await m.update("front", {"detect": {"enabled": True, "labels": ["person", "vehicle"], "zones_only": True,
+                                                      "zones": [{"id": "front_drive", "name": "Driveway", "points": tri, "labels": ["person"]},
+                                                                {"name": "Front drive", "points": tri, "labels": ["person"]}]}})
+            ids = [(z["id"], z["name"]) for z in cam["detect"]["zones"]]
+            c.check("renaming a zone keeps its id, so its signal and any rule on it survive",
+                    ids[0] == ("front_drive", "Driveway") and dev.state.get("person_front_drive") is True, (ids, dev.state))
+            c.check("a new zone that would have had that id gets another", ids[1] == ("front_drive_2", "Front drive"), ids)
+            from modules.notification_rules import ZONE_NAMES
+            c.check("…and people are shown its current name, not the id",
+                    TRIGGERS["person_detected"].body("Front door", {**dev.state, ZONE_NAMES: dev.zone_names}, {})
+                    == "Person seen — Front door (Driveway)")
+            cam = await m.update("front", {"detect": {"enabled": True, "labels": ["person", "vehicle"], "zones_only": True, "zones": [
+                {"id": "nope", "name": "Lawn", "points": tri}, {"id": "front_drive", "name": "A", "points": tri},
+                {"id": "front_drive", "name": "B", "points": tri}]}})
+            ids = [z["id"] for z in cam["detect"]["zones"]]
+            c.check("an id the camera doesn't have is not taken on trust, and one can't be claimed twice",
+                    ids == ["lawn", "front_drive", "b"], ids)
+            await m.update("front", {"detect": {"enabled": True, "labels": ["person", "vehicle"], "zones_only": True,
+                                                "zones": [{"id": "front_drive", "name": "Front Drive", "points": tri, "labels": ["person"]}]}})
+            await m.update("front", {"name": "Front"})
+            c.check("an edit that doesn't mention detection keeps the zones", len(m.cameras["front"]["detect"]["zones"]) == 1)
+            await m.update("front", {"detect": {"enabled": True, "labels": ["person", "vehicle"]}})
+            c.check("…as does a detect edit without them (the add form has no zone editor)",
+                    len(m.cameras["front"]["detect"]["zones"]) == 1 and m.cameras["front"]["detect"]["zones_only"] is True)
+            await m.update("front", {"detect": {"enabled": True, "labels": ["vehicle"]}})
+            c.check("a zone left with nothing to look for is dropped, and its signal with it",
+                    m.cameras["front"]["detect"]["zones"] == [] and "person_front_drive" not in dev.state
+                    and m.cameras["front"]["detect"]["zones_only"] is False, m.cameras["front"]["detect"])
+            for bad, what in (([{"name": "A", "points": [[0, 0], [1, 1]]}], "two points"),
+                              ([{"name": "", "points": tri}], "no name"),
+                              ([{"name": "A", "points": tri}, {"name": "a", "points": tri}], "two zones with one name"),
+                              ([{"name": "A", "points": [[0, 0], [0.5, 0.5], [1, 1]]}], "a shape with no area"),
+                              ([{"name": "A", "points": [[0, 0], [1, 0], ["x", 1]]}], "a point that isn't numbers"),
+                              ([{"name": f"Z{i}", "points": tri} for i in range(9)], "nine zones")):
+                try:
+                    await m.update("front", {"detect": {"enabled": True, "labels": ["person"], "zones": bad}})
+                    ok = False
+                except ValueError:
+                    ok = True
+                c.check(f"refused: {what}", ok)
+            await m.update("front", {"name": "Front door", "detect": {"enabled": True, "labels": ["person", "vehicle"], "zones": []}})
+            side.present.clear()
+            side.version += 1
+            await bridge.step()
 
             c.section("pictures for notifications")
             async def boxed(cid):

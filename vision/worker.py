@@ -15,6 +15,7 @@ import numpy as np
 from . import GROUPS, LABEL_GROUP
 from .motion import MotionDetector, from_input, region_for, to_input
 from .tracker import Presence
+from . import zones as Z
 
 logger = logging.getLogger("vision.worker")
 
@@ -46,11 +47,18 @@ class Analyser:
     """Frame in, presence changes out. No I/O, so it can be driven by tests."""
 
     def __init__(self, detector: Any, groups: List[str], threshold: float = 0.5,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 zones: Any = None, zones_only: bool = False):
         self.detector, self.threshold, self._clock = detector, threshold, clock
         self.groups = [g for g in groups if g in GROUPS]
         self.motion = MotionDetector()
-        self.presence = Presence(self.groups)
+        self.zones = Z.prepare(zones or [], WIDTH, HEIGHT, self.groups)
+        # With nothing drawn there is nothing to be "only" inside.
+        self.zones_only = bool(zones_only and self.zones)
+        self._area = Z.bounds(self.zones, WIDTH, HEIGHT) if self.zones_only else None
+        # A group in a zone is its own presence, "person:drive".
+        self.presence = Presence(self.groups + [f"{g}:{z['id']}" for z in self.zones for g in z["labels"]])
+        self.latest: Optional[np.ndarray] = None         # what the zone editor draws on
         self.frames = self.looks = 0
         self._looked_at = 0.0
         self.last: Optional[Dict[str, Any]] = None       # frame and boxes of the latest hit
@@ -59,9 +67,12 @@ class Analyser:
         now = self._clock()
         self.frames += 1
         h, w = frame.shape[:2]
+        self.latest = frame
         moved = self.motion.update(frame)
         if not getattr(self.detector, "ready", True):
             return []
+        if moved is not None and self._area and not Z.touches(moved, self._area):
+            moved = None                                 # the street, not the drive
         held = self.presence.boxes()
         if moved is not None:
             target = union([moved] + held)
@@ -77,12 +88,20 @@ class Analyser:
         found: Dict[str, Tuple[float, Tuple[int, int, int, int], str]] = {}
         for label, score, box in self.detector.detect(inp, min_score=self.threshold):
             group = LABEL_GROUP.get(label)
-            if group in self.groups and score > found.get(group, (0,))[0]:
-                found[group] = (score, from_input(box, region, size, scale, ox, oy), label)
+            if group not in self.groups:
+                continue
+            fbox = from_input(box, region, size, scale, ox, oy)
+            at = Z.foot(fbox)
+            keys = [f"{group}:{z['id']}" for z in self.zones if group in z["labels"] and Z.inside(at, z["poly"])]
+            if keys or not self.zones_only:
+                keys.append(group)
+            for key in keys:
+                if score > found.get(key, (0,))[0]:
+                    found[key] = (score, fbox, label)
         changed = self.presence.looked(now, found)
         if found:
             self.last = {"frame": frame.copy(), "at": time.time(),
-                         "boxes": [(g, *v) for g, v in found.items()]}
+                         "boxes": [(g, *v) for g, v in found.items() if ":" not in g]}
         return changed + self.presence.expire(now)
 
 
@@ -90,7 +109,8 @@ class CameraWorker(threading.Thread):
     def __init__(self, cfg: Dict[str, Any], detector: Any, on_change: Callable[[], None]):
         super().__init__(name=f"cam-{cfg['id']}", daemon=True)
         self.cfg, self.detector, self._on_change = cfg, detector, on_change
-        self.analyser = Analyser(detector, list(cfg.get("labels") or GROUPS), float(cfg.get("threshold") or 0.5))
+        self.analyser = Analyser(detector, list(cfg.get("labels") or GROUPS), float(cfg.get("threshold") or 0.5),
+                                 zones=cfg.get("zones"), zones_only=bool(cfg.get("zones_only")))
         self.online = False
         self.error: Optional[str] = None
         self._halt = threading.Event()
@@ -166,6 +186,22 @@ class CameraWorker(threading.Thread):
             img[y1 - 2:y1, x0:x1] = c
             img[y0:y1, x0:x0 + 2] = c
             img[y0:y1, x1 - 2:x1] = c
+        return self._outline(img)
+
+    def frame_rgb(self) -> Optional[np.ndarray]:
+        """The latest frame as the detector sees it, zones outlined."""
+        latest = self.analyser.latest
+        return None if latest is None else self._outline(latest.copy())
+
+    def _outline(self, img: np.ndarray) -> np.ndarray:
+        h, w = img.shape[:2]
+        for z in self.analyser.zones:
+            poly = z["poly"]
+            for (xa, ya), (xb, yb) in zip(poly, poly[1:] + poly[:1]):
+                n = int(max(abs(xb - xa), abs(yb - ya))) + 1
+                xs = np.clip(np.linspace(xa, xb, n).astype(np.intp), 0, w - 1)
+                ys = np.clip(np.linspace(ya, yb, n).astype(np.intp), 0, h - 1)
+                img[ys, xs] = (255, 220, 0)
         return img
 
 

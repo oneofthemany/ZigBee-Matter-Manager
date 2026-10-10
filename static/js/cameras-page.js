@@ -4,10 +4,12 @@
 
 import { escapeHtml } from './utils.js';
 import { attachPlayer } from './camera-player.js';
+import { mountZoneEditor } from './camera-zones.js';
 
 let cameras = [];
 const players = new Map();            // id -> player, only for cards on screen
 let observer = null;
+let zoneEditor = null;                // set while a camera with detection is being edited
 
 async function api(method, url, body) {
     const res = await fetch(url, {
@@ -130,7 +132,13 @@ function cameraForm(c = {}) {
                        value="${escapeHtml(Math.round((c.detect?.threshold || 0.5) * 100))}"></div>
         </div>
         <div class="small text-muted mt-1">Left blank, detection shares the stream above: one connection to the camera
-            however many people are watching. A sub-stream is a second connection, but far less work for the hub's CPU.</div>`;
+            however many people are watching. A sub-stream is a second connection, but far less work for the hub's CPU.</div>
+        ${c.id ? `<div id="cf_zones"></div>
+        <div class="form-check mt-1">
+            <input class="form-check-input" type="checkbox" id="cf_zonly" ${c.detect?.zones_only ? 'checked' : ''}>
+            <label class="form-check-label small" for="cf_zonly">Ignore anything outside the zones
+                <span class="text-muted">— the camera's person / vehicle / animal then mean "in a zone"</span></label>
+        </div>` : '<div class="small text-muted mt-1">Zones can be drawn once the camera is added.</div>'}`;
 }
 
 function visionCard(v) {
@@ -173,11 +181,14 @@ function collectForm() {
             enabled: document.getElementById('cf_detect').checked,
             labels: [...document.querySelectorAll('.cf-obj:checked')].map(b => b.value),
             url: v('cf_durl'), threshold: (Number(v('cf_dconf')) || 50) / 100,
+            // Absent keeps what's stored: the add form has no zone editor.
+            ...(zoneEditor ? { zones: zoneEditor.value(), zones_only: !!document.getElementById('cf_zonly')?.checked } : {}),
         },
     };
 }
 
 async function renderManage(root) {
+    zoneEditor = null;
     const el = root.querySelector('#cam-manage');
     el.innerHTML = '<div class="text-muted small">Loading…</div>';
     let g;
@@ -332,6 +343,8 @@ function editCamera(root, id) {
     const c = cameras.find(x => x.id === id);
     const form = document.getElementById('cam_form');
     form.innerHTML = cameraForm(c);
+    zoneEditor = mountZoneEditor(document.getElementById('cf_zones'), id, c.detect?.zones || [],
+                                 c.detect?.labels?.length ? c.detect.labels : Object.keys(OBJECTS));
     form.scrollIntoView({ behavior: 'smooth', block: 'center' });
     const btn = document.getElementById('cam_add');
     btn.textContent = `Save ${c.name}`;

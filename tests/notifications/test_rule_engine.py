@@ -163,6 +163,11 @@ def run() -> Checker:
                 len(sent) == 1 and sent[0][1]["body"] == "Person seen — Front door" and sent[0][1]["ieee"] == "camera::front", sent)
         c.check("…with no camera of its own chosen: delivery uses the one it fired on", sent[0][1]["camera"] is None)
         c.check("still there is not a new sighting", rig.change("camera::front", person=True) == [])
+        rig.change("camera::front", person=False)
+        rig.devices["camera::front"].zone_names = {"z1": "Driveway"}
+        sent = rig.change("camera::front", person=True, person_z1=True)
+        c.check("a sighting in a zone names it as it is called now, whatever its id",
+                len(sent) == 1 and sent[0][1]["body"] == "Person seen — Front door (Driveway)", sent)
         sent = rig.change("aa", contact=False)
         c.check("a door rule can name a camera to send a snapshot from", len(sent) == 1 and sent[0][1]["camera"] == "front", sent)
         from modules.notification_rules import normalise_rule

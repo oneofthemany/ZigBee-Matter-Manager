@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 from . import GROUPS
+from . import zones as Z
 from .worker import CameraWorker, encode_jpeg
 
 logger = logging.getLogger("vision.server")
@@ -73,8 +74,15 @@ class Hub:
             cid, url = str(c.get("id") or ""), str(c.get("url") or "")
             if not _ID_RE.match(cid) or not url or url.startswith("-") or any(ch in url for ch in "\r\n "):
                 raise ValueError(f"bad camera entry '{cid}'")
-            want[cid] = {"id": cid, "url": url,
-                         "labels": [g for g in (c.get("labels") or list(GROUPS)) if g in GROUPS],
+            labels = [g for g in (c.get("labels") or list(GROUPS)) if g in GROUPS]
+            zones = [{"id": str(z.get("id") or ""), "labels": [g for g in (z.get("labels") or labels) if g in labels],
+                      "points": [[float(p[0]), float(p[1])] for p in z.get("points") or []]}
+                     for z in c.get("zones") or []]
+            if any(not _ID_RE.match(z["id"]) for z in zones):
+                raise ValueError(f"bad zone id on '{cid}'")
+            Z.prepare(zones, 1, 1, labels)                # rejects a malformed polygon now, not in the worker
+            want[cid] = {"id": cid, "url": url, "labels": labels,
+                         "zones": zones, "zones_only": bool(c.get("zones_only")),
                          "threshold": min(max(float(c.get("threshold") or 0.5), 0.3), 0.95),
                          "fps": min(max(float(c.get("fps") or 2), 0.5), 5)}
         for cid in list(self.workers):
@@ -133,12 +141,13 @@ def make_handler(hub: Hub, token: str):
                     except ValueError:
                         return self._json(400, {"error": "bad after/wait"})
                 return self._json(200, hub.status())
-            m = re.fullmatch(r"/snapshot/([a-z0-9_-]+)\.jpg", u.path)
+            m = re.fullmatch(r"/(snapshot|frame)/([a-z0-9_-]+)\.jpg", u.path)
             if m:
-                w = hub.workers.get(m.group(1))
-                rgb = w.snapshot_rgb() if w else None
+                w = hub.workers.get(m.group(2))
+                rgb = (w.snapshot_rgb() if m.group(1) == "snapshot" else w.frame_rgb()) if w else None
                 if rgb is None:
-                    return self._json(404, {"error": "nothing detected yet"})
+                    return self._json(404, {"error": "nothing detected yet" if m.group(1) == "snapshot"
+                                            else "no frame from this camera yet"})
                 try:
                     return self._send(200, encode_jpeg(rgb), "image/jpeg")
                 except Exception as e:                    # noqa: BLE001
@@ -155,7 +164,7 @@ def make_handler(hub: Hub, token: str):
                 if not 0 < n <= MAX_BODY:
                     raise ValueError("body too large or empty")
                 hub.configure(json.loads(self.rfile.read(n)).get("cameras"))
-            except (ValueError, AttributeError, TypeError) as e:
+            except (ValueError, AttributeError, TypeError, IndexError) as e:
                 return self._json(400, {"error": str(e)})
             self._json(200, {"config": hub.config_hash})
 

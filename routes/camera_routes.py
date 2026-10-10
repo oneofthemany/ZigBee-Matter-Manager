@@ -84,8 +84,9 @@ def register_camera_routes(app: FastAPI) -> None:
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.get("/api/cameras/{cid}/detection")
-    async def detection_snapshot(cid: str, _=Depends(require_scope("camera:read"))):
-        """The frame of the camera's latest detection, boxes drawn."""
+    async def detection_snapshot(cid: str, view: str = "", _=Depends(require_scope("camera:read"))):
+        """The frame of the camera's latest detection, boxes drawn; or with
+        ?view=frame what the detector sees now, zones outlined."""
         from modules.vision import VisionError, get_vision_bridge
         b = get_vision_bridge()
         if cid not in _mgr().cameras:
@@ -93,7 +94,7 @@ def register_camera_routes(app: FastAPI) -> None:
         if b is None:
             raise HTTPException(503, "Detection not initialised")
         try:
-            img = await b.client.snapshot(cid)
+            img = await b.client.snapshot(cid, "frame" if view == "frame" else "snapshot")
         except VisionError as e:
             raise HTTPException(404, str(e))
         return Response(img, media_type="image/jpeg",

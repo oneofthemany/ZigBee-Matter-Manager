@@ -43,6 +43,9 @@ class FakeWorker:
     def snapshot_rgb(self):
         return None
 
+    def frame_rgb(self):
+        return None
+
 
 def call(port, method, path, token=None, body=None, timeout=10):
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
@@ -103,6 +106,19 @@ def run() -> Checker:
                               ({"cameras": "all"}, "not a list")):
                 c.check(f"{what} is refused", call(port, "PUT", "/config", tok, bad)[0] == 400)
             c.check("…leaving what was running alone", list(hub.workers) == ["yard"])
+            zone = {"id": "drive", "points": [[0, 0.5], [0.5, 0.5], [0.5, 1]], "labels": ["person", "teapot"]}
+            call(port, "PUT", "/config", tok, {"cameras": [{**cams[1], "zones": [zone], "zones_only": 1}]})
+            cfg = hub.workers["yard"].cfg
+            c.check("zones reach the worker, labels limited to the camera's",
+                    cfg["zones"] == [{"id": "drive", "labels": ["person"], "points": zone["points"]}]
+                    and cfg["zones_only"] is True, cfg)
+            for bad, what in (({**zone, "points": [[0, 0], [1, 1]]}, "a two-point zone"),
+                              ({**zone, "id": "../x"}, "a bad zone id"),
+                              ({**zone, "points": [[0], [1, 1], [0, 1]]}, "a point with one coordinate")):
+                c.check(f"{what} is refused",
+                        call(port, "PUT", "/config", tok, {"cameras": [{**cams[1], "zones": [bad]}]})[0] == 400)
+            c.check("no frame yet: the zone editor's picture is a 404", call(port, "GET", "/frame/yard.jpg", tok)[0] == 404)
+            call(port, "PUT", "/config", tok, {"cameras": cams[1:]})
             c.check("unknown paths are 404", call(port, "GET", "/nope", tok)[0] == 404)
             c.check("no detection yet: the snapshot is a 404, not an error",
                     call(port, "GET", "/snapshot/yard.jpg", tok)[0] == 404)

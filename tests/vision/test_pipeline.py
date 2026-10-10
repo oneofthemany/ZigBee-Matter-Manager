@@ -9,7 +9,8 @@ from harness import Checker
 
 from vision.motion import MotionDetector, from_input, region_for, to_input
 from vision.tracker import Presence
-from vision.worker import Analyser, ffmpeg_cmd
+from vision import zones as Z
+from vision.worker import Analyser, CameraWorker, ffmpeg_cmd
 
 W, H = 640, 360
 
@@ -138,6 +139,68 @@ def run() -> Checker:
     a2 = Analyser(det, ["person"], clock=clock)
     a2.frame(scene())
     c.check("frames before the model has loaded are not sent to it", a2.frame(scene(walker)) == [] and a2.looks == 0)
+
+    c.section("zones")
+    square = [(100, 100), (300, 100), (300, 300), (100, 300)]
+    c.check("a point inside a polygon is inside, one outside is not",
+            Z.inside((200, 200), square) and not Z.inside((50, 200), square) and not Z.inside((200, 350), square))
+    ell = [(0, 0), (300, 0), (300, 100), (100, 100), (100, 300), (0, 300)]
+    c.check("a concave shape's notch is outside", Z.inside((50, 250), ell) and Z.inside((250, 50), ell)
+            and not Z.inside((200, 200), ell))
+    c.check("an object is where its feet are, not its head", Z.foot((100, 50, 140, 250)) == (120.0, 248))
+    zs = Z.prepare([{"id": "drive", "points": [[0, 0.5], [0.5, 0.5], [0.5, 1], [0, 1]], "labels": ["person", "teapot"]}],
+                   W, H, ["person", "vehicle"])
+    c.check("config points are fractions of the frame, labels limited to the camera's",
+            zs == [{"id": "drive", "poly": [(0, 180), (320, 180), (320, 360), (0, 360)], "labels": ["person"]}], zs)
+    for bad in ([{"id": "a", "points": [[0, 0], [1, 1]]}], [{"id": "", "points": [[0, 0], [1, 0], [1, 1]]}], "x",
+                [{"id": "a", "points": [[0, 0], [1, 0], ["x", 1]]}]):
+        try:
+            Z.prepare(bad, W, H, ["person"])
+            ok = False
+        except (ValueError, TypeError):
+            ok = True
+        c.check(f"malformed zones are refused: {str(bad)[:40]}", ok)
+
+    drive = {"id": "drive", "points": [[0, 0.5], [0.5, 0.5], [0.5, 1], [0, 1]]}        # bottom-left quarter
+    on_drive, on_street = (100, 200, 140, 300), (500, 60, 540, 160)
+
+    def watch(zones_only, where, detected=("person", 0.9, (0.3, 0.2, 0.7, 0.8))):
+        clock, det = Clock(), ScriptedDetector()
+        a = Analyser(det, ["person", "vehicle"], clock=clock, zones=[drive], zones_only=zones_only)
+        a.frame(scene())
+        det.say = [detected]
+        for dx in (0, 8):
+            clock.t += 0.5
+            a.frame(scene((where[0] + dx, where[1], where[2] + dx, where[3])))
+        return a
+
+    a = watch(False, on_drive)
+    p = a.presence.public()
+    c.check("someone standing in a zone sets the zone's signal and the camera's",
+            p["person:drive"]["present"] and p["person"]["present"], p)
+    c.check("a zone has a signal per thing it looks for", set(p) == {"person", "vehicle", "person:drive", "vehicle:drive"}, set(p))
+    a = watch(False, on_street)
+    p = a.presence.public()
+    c.check("outside the zone: the camera sees them, the zone doesn't",
+            p["person"]["present"] and not p["person:drive"]["present"], p)
+    a = watch(True, on_street)
+    c.check("with 'ignore outside the zones', movement nowhere near a zone isn't even looked at", a.looks == 0)
+    c.check("…and the camera's own signal stays off", not a.presence.public()["person"]["present"])
+    a = watch(True, on_drive)
+    c.check("…while someone in the zone still counts", a.presence.public()["person"]["present"] and a.looks == 2)
+    # Movement near the zone, but the detector puts their feet outside it.
+    a = watch(True, (300, 150, 340, 250), detected=("person", 0.9, (0.0, 0.6, 0.3, 0.9)))
+    c.check("near the zone but not standing in it: looked at, not counted",
+            a.looks > 0 and not a.presence.public()["person"]["present"], (a.looks, a.presence.public()))
+    a = Analyser(ScriptedDetector(), ["person"], zones=[], zones_only=True)
+    c.check("'only zones' with no zones drawn doesn't blind the camera", a.zones_only is False)
+
+    w = CameraWorker({"id": "x", "url": "rtsp://c", "labels": ["person"], "zones": [drive]}, ScriptedDetector(), lambda: None)
+    c.check("before a frame arrives there is no picture to draw zones on", w.frame_rgb() is None)
+    w.analyser.frame(scene())
+    f = w.frame_rgb()
+    c.check("the frame handed to the zone editor has the zones outlined, the original untouched",
+            tuple(f[180, 100]) == (255, 220, 0) and tuple(w.analyser.latest[180, 100]) == (90, 90, 90), f[180, 100])
 
     c.section("ffmpeg")
     cmd = ffmpeg_cmd("rtsp://u:p@cam/s", 2)
