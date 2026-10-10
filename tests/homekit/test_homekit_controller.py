@@ -242,6 +242,27 @@ def _real_library(c: Checker) -> None:
                 (("up", "ARROW_UP"), ("select", "SELECT"), ("back", "BACK"),
                  ("play_pause", "PLAY_PAUSE"), ("info", "INFORMATION"))))
 
+    async def real_start():
+        # The real Controller and real zeroconf: the fakes below never start
+        # a transport, so only this catches a missing mDNS browser.
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = H.HomeKitController({"enabled": True})
+            ctl._pairings_file = str(Path(tmp) / "p.json")
+            try:
+                await ctl._ensure_started()
+            except OSError as e:
+                return None, str(e)                  # no multicast socket here
+            kinds = [str(k) for k in ctl._ctl.transports]
+            types = sorted(ctl._browser.types)
+            await ctl.stop()
+            return kinds, types
+    kinds, types = _run(real_start())
+    if kinds is None:
+        print(f"    skipped real start ({types})")
+    else:
+        c.check("the real controller's IP transport starts — it needs a browser for _hap._tcp",
+                "TransportType.IP" in kinds and "_hap._tcp.local." in types, (kinds, types))
+
     acc = Accessory.create_with_info(1, "Living room", "Sky", "LT055", "SN1", "1.0")
     tv = acc.add_service(ST.TELEVISION)
     active = tv.add_char(CT.ACTIVE, value=0)

@@ -30,7 +30,15 @@ HttpFn = Callable[..., Awaitable[Tuple[int, Any]]]
 
 
 class Go2rtcError(Exception):
-    pass
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
+
+def _mask(text: str) -> str:
+    """go2rtc's errors can quote a stream URL, credentials and all."""
+    import re
+    return re.sub(r"://[^@/\s]+@", "://***@", text)
 
 
 # Settings: where go2rtc is and the API credentials ZMM generated for it.
@@ -105,7 +113,9 @@ def config_yaml(s: Dict[str, Any]) -> str:
         "webrtc": {"listen": ""},
         "srtp": {"listen": ""},
         "log": {"level": "warn"},
-        "streams": {},          # ZMM puts its cameras through the API
+        # No `streams:` key. go2rtc saves each stream ZMM puts by text-patching
+        # this file, and can't patch under an inline `{}` — it answers 400.
+        # With no key it appends its own block.
     }, sort_keys=False)
 
 
@@ -152,7 +162,9 @@ class Go2rtc:
         if status == 401:
             raise Go2rtcError("go2rtc refused ZMM's credentials")
         if status >= 400:
-            raise Go2rtcError(f"go2rtc answered {status}")
+            detail = body.decode(errors="replace") if isinstance(body, (bytes, bytearray)) else body
+            detail = _mask(str(detail).strip())[:200] if isinstance(detail, str) else ""
+            raise Go2rtcError(f"go2rtc answered {status}" + (f": {detail}" if detail else ""), status)
         return body
 
     async def healthy(self) -> bool:
@@ -167,14 +179,26 @@ class Go2rtc:
         return body if isinstance(body, dict) else {}
 
     async def put_stream(self, name: str, src: str) -> None:
-        await self._call("PUT", "/api/streams", params={"name": name, "src": src})
+        try:
+            await self._call("PUT", "/api/streams", params={"name": name, "src": src})
+        except Go2rtcError as e:
+            # go2rtc creates the stream, then saves it to its config; a failed
+            # save is a 400 for a stream that is nonetheless live.
+            if e.status != 400 or name not in await self.streams():
+                raise
+            logger.info("[go2rtc] %s is live but go2rtc couldn't save it: %s", name, e)
 
     async def restart(self) -> None:
         """Re-read the config ZMM just wrote."""
         await self._call("POST", "/api/restart")
 
     async def delete_stream(self, name: str) -> None:
-        await self._call("DELETE", "/api/streams", params={"src": name})
+        try:
+            await self._call("DELETE", "/api/streams", params={"src": name})
+        except Go2rtcError as e:
+            # Same shape as put: removed from go2rtc, the config save refused.
+            if e.status != 400 or name in await self.streams():
+                raise
 
     async def snapshot(self, name: str, width: Optional[int] = None) -> bytes:
         params: Dict[str, Any] = {"src": name}

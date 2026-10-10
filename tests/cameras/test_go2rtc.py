@@ -55,6 +55,8 @@ def run() -> Checker:
             c.check("go2rtc's RTSP, WebRTC and HomeKit servers are switched off",
                     cfg["rtsp"]["listen"] == "" and cfg["webrtc"]["listen"] == "" and cfg["srtp"]["listen"] == "")
             c.check("the config (with the password) is 0600", stat.S_IMODE(path.stat().st_mode) == 0o600)
+            c.check("there is no inline `streams: {}` for go2rtc's config patcher to choke on",
+                    "streams" not in cfg and "{}" not in path.read_text(), path.read_text())
             for bad in ({"url": "file:///etc/passwd"}, {"listen": "1984; rm -rf"}, {"listen": ""}):
                 try:
                     G.save_settings(bad)
@@ -91,6 +93,42 @@ def run() -> Checker:
                 c.check("refused credentials say so", False)
             except G.Go2rtcError as e:
                 c.check("refused credentials say so", "credentials" in str(e), str(e))
+
+            c.section("go2rtc can't save a stream to its config")
+
+            class SaveFails(FakeApi):
+                """go2rtc's PUT/DELETE: acts in memory, then 400s on the config save."""
+                def __init__(self):
+                    super().__init__()
+                    self.live = {}
+
+                async def __call__(self, method, url, params=None, auth=None, raw=False):
+                    self.calls.append((method, url, params, auth))
+                    if url.endswith("/api/streams") and method == "GET":
+                        return 200, dict(self.live)
+                    if method == "PUT":
+                        if params["src"].startswith("exec:"):
+                            return 400, "streams: source from insecure producer: rtsp://admin:hunter2@cam/1"
+                        self.live[params["name"]] = {}
+                        return 400, "yaml: line 12: mapping values are not allowed in this context"
+                    if method == "DELETE":
+                        self.live.pop(params["src"], None)
+                        return 400, "yaml: path not exist"
+                    return 200, {}
+            sf = SaveFails()
+            g2 = G.Go2rtc(G.load_settings(), http=sf)
+            asyncio.run(g2.put_stream("zmm_front", "rtsp://cam/1"))
+            c.check("a stream that is live despite the 400 counts as added", "zmm_front" in sf.live)
+            asyncio.run(g2.delete_stream("zmm_front"))
+            c.check("and one that is gone despite the 400 counts as removed", "zmm_front" not in sf.live)
+            try:
+                asyncio.run(g2.put_stream("zmm_bad", "exec:rm"))
+                c.check("a stream go2rtc really refused is still an error", False)
+            except G.Go2rtcError as e:
+                c.check("a stream go2rtc really refused is still an error", e.status == 400, str(e))
+                c.check("the error carries go2rtc's reason with credentials masked",
+                        "insecure producer" in str(e) and "hunter2" not in str(e) and "***@" in str(e), str(e))
+
             url, headers = g.ws_target("zmm_front door")
             c.check("the stream websocket carries Basic auth and an encoded name",
                     url == "ws://127.0.0.1:1984/api/ws?src=zmm_front%20door"

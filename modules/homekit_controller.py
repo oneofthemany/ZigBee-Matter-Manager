@@ -36,6 +36,8 @@ STATUS_MAX_AGE = 15.0
 # abandoned pair-setup does not hold the accessory's pairing slot.
 PENDING_PAIRING_SECONDS = 300.0
 DISCOVERY_SETTLE_SECONDS = 4.0
+# What aiohomekit's IP and CoAP transports look for a browser of.
+HAP_TYPES = ("_hap._tcp.local.", "_hap._udp.local.")
 
 
 def _u(short: str) -> str:
@@ -229,6 +231,7 @@ class HomeKitController:
         self._pairings_file = pairings_file
         self._ctl: Any = None
         self._zc: Any = None
+        self._browser: Any = None
         self._started_at = 0.0
         self._pairings: Dict[str, Dict[str, Any]] = {}
         self._maps: Dict[str, Dict[str, Any]] = {}
@@ -254,6 +257,10 @@ class HomeKitController:
             raise HomeKitError("aiohomekit library not installed — "
                                "add 'aiohomekit' to requirements") from e
         self._zc = AsyncZeroconf()
+        # aiohomekit doesn't browse for itself: its transports attach to a
+        # browser already running on this instance, and refuse to start
+        # ("no zeroconf browser for _hap._tcp.local.") without one.
+        self._browser = self._make_browser(self._zc)
         ctl = Controller(async_zeroconf_instance=self._zc)
         await ctl.async_start()
         self._pairings = await asyncio.to_thread(load_pairings, self._pairings_file)
@@ -266,9 +273,16 @@ class HomeKitController:
         self._started_at = time.monotonic()
         logger.info(f"HomeKit controller started with {len(self._pairings)} pairing(s)")
 
+    @staticmethod
+    def _make_browser(zc: Any) -> Any:
+        from aiohomekit.zeroconf import ZeroconfServiceListener
+        from zeroconf.asyncio import AsyncServiceBrowser
+        return AsyncServiceBrowser(zc.zeroconf, list(HAP_TYPES), listener=ZeroconfServiceListener())
+
     async def stop(self) -> None:
         async with self._lock:
             ctl, zc = self._ctl, self._zc
+            browser, self._browser = self._browser, None
             self._ctl = self._zc = None
             self._pending.clear()
             self._maps.clear()
@@ -283,6 +297,11 @@ class HomeKitController:
                     await ctl.async_stop()
                 except Exception as e:                    # noqa: BLE001
                     logger.debug(f"HomeKit controller stop: {e}")
+            if browser is not None:
+                try:
+                    await browser.async_cancel()
+                except Exception as e:                    # noqa: BLE001
+                    logger.debug(f"HomeKit browser cancel: {e}")
             if zc is not None:
                 await zc.async_close()
 
