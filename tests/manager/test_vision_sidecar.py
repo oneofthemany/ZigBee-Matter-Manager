@@ -25,7 +25,7 @@ def _coral(root: Path, bound: bool) -> None:
         drv = root / "sys/bus/pci/drivers/apex"
         drv.mkdir(parents=True, exist_ok=True)
         os.symlink(drv, d / "driver")
-        (root / "dev/apex_0").write_text("")
+        (d / "apex/apex_0").mkdir(parents=True)          # the manager's /dev has no node to find
 
 
 def run() -> Checker:

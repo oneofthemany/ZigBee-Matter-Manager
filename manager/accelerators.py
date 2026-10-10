@@ -117,7 +117,10 @@ def _pci() -> List[Dict[str, Any]]:
         vendor, device, cls = _read(f"{d}/vendor"), _read(f"{d}/device"), _read(f"{d}/class")
         addr, driver = os.path.basename(d), _driver(d)
         if (vendor, device) in CORAL_PCI:
-            nodes = sorted(glob.glob(os.path.join(DEV, "apex_*")))
+            # From sysfs, not /dev: this runs in a container whose /dev has none of
+            # the host's device nodes, and the node is what gets passed to detection.
+            nodes = sorted(glob.glob(os.path.join(d, "apex", "apex_*"))) \
+                or sorted(glob.glob(os.path.join(DEV, "apex_*")))
             out.append({"kind": "coral", "bus": "pci", "address": addr, "name": CORAL_PCI[(vendor, device)],
                         "driver": driver, "ready": driver == "apex",
                         "device_nodes": [os.path.basename(n) for n in nodes],

@@ -35,6 +35,28 @@ recorder through the app, so an event that happens while the app is down gets
 no clip of its own — on a camera set to keep everything it is still in the
 footage.
 
+### Open question: clips across an app restart
+
+**To investigate — nothing decided or built.** Events that happen while the app
+is restarting or upgrading get no clip, because motion and detection reach the
+recorder through the app; on a camera set to *clips of events* only fifteen
+minutes of footage is kept, so a longer outage loses the event outright.
+Directions to weigh:
+
+- **Signals straight to the recorder.** The vision sidecar posts
+  `/signal` to the recorder as well as reporting to the app, and the recorder
+  subscribes to ONVIF motion itself. Removes the app from the path entirely;
+  duplicates the ONVIF pull-point code and the zone/label config.
+- **Catch-up after restart.** The recorder keeps footage while the app is down
+  regardless of mode (extend the buffer while the app is unreachable), and
+  the app or vision sidecar replays what it saw — detection could re-scan the
+  gap's footage after the fact.
+- **Pre-upgrade hand-off.** Before an upgrade, switch every recording camera
+  to continuous until the app is back, then cut clips from the gap by
+  re-running detection on it.
+- **Measure first.** How long a real upgrade leaves the app down on the hub,
+  and how often events land in that window.
+
 ## How it works
 
 - **No re-encoding.** ffmpeg copies the camera's stream as it is into

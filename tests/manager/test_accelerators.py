@@ -107,6 +107,13 @@ def run() -> Checker:
             c.check("the host's report is passed through", st["known"] and st["installed"] and not st["pending"], st)
 
         with tempfile.TemporaryDirectory() as t:
+            _tree(Path(t), pci=[(*CORAL, "apex")])          # nothing in /dev, as inside a container
+            (Path(t) / "sys/bus/pci/devices/0000:02:00.0/apex/apex_0").mkdir(parents=True)
+            coral = _probe(Path(t))["devices"][0]
+            c.check("the device node is found from sysfs when this container's /dev doesn't have it",
+                    coral["ready"] and coral["device_nodes"] == ["apex_0"], coral)
+
+        with tempfile.TemporaryDirectory() as t:
             _tree(Path(t), usb=[("2-1", "1a6e", "089a", "480"), ("1-4", "046d", "c52b", "12")])
             p = _probe(Path(t))
             c.check("a USB Coral is found, before or after its firmware loads, and other USB devices aren't",

@@ -73,6 +73,19 @@ tested — which is why the camera needs detection switched on and saved, and
 the sidecar watching it, before a zone can be drawn. Points are stored as
 fractions of that frame.
 
+## Metrics
+
+The sidecar appends a sample every 30 s to `data/vision/metrics.jsonl`: the
+backend, looks since the last sample, time per look, cameras online and, for an
+M.2 Coral, the chip's temperature and throttle step. A file rather than the
+telemetry database, which has a single writer in the app. Kept for a week.
+
+System Overview shows it as **Object detection**, under System History and
+following its time range: TPU temperature, ms per look and looks per minute,
+with throttled stretches shaded — so "it got slow" lines up with "it got hot".
+The card appears only once detection has run.
+`GET /api/telemetry/system/detector?hours=&bucket=` serves the series.
+
 ## One connection per camera
 
 go2rtc already holds a connection to each camera for live view. Detection
