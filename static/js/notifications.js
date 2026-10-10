@@ -32,9 +32,9 @@ const TRIGGERS = {
     temp_target_reached: { label: 'Heating target reached',            icon: 'fa-thermometer-half',     category: 'heating' },
     temp_above:          { label: 'Temperature rises above threshold', icon: 'fa-temperature-high',     category: 'heating', needsThreshold: true },
     temp_below:          { label: 'Temperature drops below threshold', icon: 'fa-temperature-low',      category: 'heating', needsThreshold: true },
-    person_detected:     { label: 'Person seen on camera',             icon: 'fa-person',               category: 'camera' },
-    vehicle_detected:    { label: 'Vehicle seen on camera',            icon: 'fa-car-side',             category: 'camera' },
-    animal_detected:     { label: 'Animal seen on camera',             icon: 'fa-paw',                  category: 'camera' },
+    person_detected:     { label: 'Person seen on camera',             icon: 'fa-person',               category: 'camera', object: 'person' },
+    vehicle_detected:    { label: 'Vehicle seen on camera',            icon: 'fa-car-side',             category: 'camera', object: 'vehicle' },
+    animal_detected:     { label: 'Animal seen on camera',             icon: 'fa-paw',                  category: 'camera', object: 'animal' },
     valve_alarm:         { label: 'Valve alarm (TRV)',                 icon: 'fa-exclamation-triangle', category: 'heating' },
     window_open_trv:     { label: 'Window-open detected (TRV)',        icon: 'fa-window-maximize',      category: 'heating' },
 };
@@ -51,6 +51,14 @@ const COOLDOWN_OPTIONS = [
 // Persistence — the hub's /api/notification-rules, cached for rendering
 
 let rulesCache = [];
+// For naming a rule's zone in the list; empty for an account that can't view cameras.
+let camerasCache = [];
+
+function zoneOf(rule) {
+    const cam = camerasCache.find(c => c.id === rule.zone?.camera);
+    const zone = cam?.detect?.zones?.find(z => z.id === rule.zone?.id);
+    return zone ? `${cam.name} — ${zone.name}` : null;
+}
 
 async function api(method, url, body) {
     const res = await fetch(url, {
@@ -65,6 +73,9 @@ async function api(method, url, body) {
 
 async function refreshRules() {
     rulesCache = (await api('GET', '/api/notification-rules')).rules || [];
+    if (rulesCache.some(r => r.zone)) {
+        try { camerasCache = (await api('GET', '/api/cameras')).cameras || []; } catch (e) { /* no camera:read */ }
+    }
     return rulesCache;
 }
 
@@ -165,6 +176,8 @@ function renderRulesList() {
         } else if (rule.scope === 'tab') {
             scopeText = `Tab: ${rule.tab}`;
         }
+        // A zone is one camera's; it replaces the device scope.
+        if (rule.zone) scopeText = zoneOf(rule) ? `Zone: ${zoneOf(rule)}` : 'Zone no longer exists';
 
         let extras = '';
         if (rule.threshold != null && rule.threshold !== '') {
@@ -384,7 +397,13 @@ async function openRuleEditor(ruleId) {
                             <small class="text-muted">The rule fires when the temperature crosses this value.</small>
                         </div>
 
-                        <div class="mb-3">
+                        <div class="mb-3" id="notifRuleZoneWrap" style="display:none;">
+                            <label class="form-label fw-bold" for="notifRuleZone">Where</label>
+                            <select class="form-select" id="notifRuleZone"></select>
+                            <small class="text-muted" id="notifRuleZoneHint"></small>
+                        </div>
+
+                        <div class="mb-3" id="notifRuleScopeWrap">
                             <label class="form-label fw-bold">For which devices</label>
                             <div class="btn-group w-100" role="group">
                                 <input type="radio" class="btn-check" name="notifRuleScope" id="scopeAll" value="all" ${rule.scope === 'all' ? 'checked' : ''}>
@@ -481,6 +500,32 @@ async function openRuleEditor(ruleId) {
     document.getElementById('notifRuleTrigger').addEventListener('change', syncThresholdVisibility);
     syncThresholdVisibility();
 
+    // Zone picker: only for camera triggers, listing zones that look for that
+    // kind of thing. Choosing one hides the device scope — a zone is one camera's.
+    const zoneSel = document.getElementById('notifRuleZone');
+    let zoneWanted = rule.zone ? `${rule.zone.camera}/${rule.zone.id}` : '';
+    function syncZone(ev) {
+        const object = TRIGGERS[document.getElementById('notifRuleTrigger').value]?.object;
+        const options = !object ? [] : cams.flatMap(c => (c.detect?.enabled ? c.detect.zones || [] : [])
+            .filter(z => z.labels.includes(object))
+            .map(z => ({ value: `${c.id}/${z.id}`, text: `${c.name} — ${z.name}` })));
+        // A zone that doesn't look for the newly chosen thing isn't "gone", just not a choice.
+        if (ev && !options.some(o => o.value === zoneWanted)) zoneWanted = '';
+        const gone = zoneWanted && !options.some(o => o.value === zoneWanted);
+        zoneSel.innerHTML = '<option value="">Anywhere a camera sees one</option>'
+            + options.map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.text)}</option>`).join('')
+            + (gone && object ? `<option value="${escapeHtml(zoneWanted)}">A zone that no longer exists</option>` : '');
+        zoneSel.value = object ? zoneWanted : '';
+        document.getElementById('notifRuleZoneWrap').style.display = object ? 'block' : 'none';
+        document.getElementById('notifRuleZoneHint').textContent = !object ? ''
+            : options.length ? 'Zones are drawn on each camera under Cameras → Manage.'
+            : 'No camera has a zone for this yet — draw one under Cameras → Manage.';
+        document.getElementById('notifRuleScopeWrap').style.display = object && zoneSel.value ? 'none' : 'block';
+    }
+    zoneSel.addEventListener('change', () => { zoneWanted = zoneSel.value; syncZone(); });
+    document.getElementById('notifRuleTrigger').addEventListener('change', syncZone);
+    syncZone();
+
     // Scope radio handling
     modalEl.querySelectorAll('input[name="notifRuleScope"]').forEach(radio => {
         radio.addEventListener('change', () => {
@@ -529,6 +574,8 @@ async function openRuleEditor(ruleId) {
             title:   document.getElementById('notifRuleTitle').value.trim()   || null,
             message: document.getElementById('notifRuleMessage').value.trim() || null,
             camera:  document.getElementById('notifRuleCamera')?.value || null,
+            zone: trigger?.object && zoneSel.value
+                ? { camera: zoneSel.value.split('/')[0], id: zoneSel.value.split('/')[1] } : null,
             threshold: trigger?.needsThreshold
                 ? document.getElementById('notifRuleThreshold').value
                 : undefined,

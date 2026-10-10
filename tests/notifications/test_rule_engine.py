@@ -170,13 +170,48 @@ def run() -> Checker:
                 len(sent) == 1 and sent[0][1]["body"] == "Person seen — Front door (Driveway)", sent)
         sent = rig.change("aa", contact=False)
         c.check("a door rule can name a camera to send a snapshot from", len(sent) == 1 and sent[0][1]["camera"] == "front", sent)
+        c.section("camera zones")
+        rig = Rig(Path(tmp) / "zone", {
+            "camera::front": FD("Front door", {"person": False, "person_drive": False, "person_porch": False, "vehicle_drive": False}),
+            "camera::yard": FD("Yard", {"person": False, "person_drive": False})})
+        rig.devices["camera::front"].zone_names = {"drive": "Driveway", "porch": "Porch"}
+        rig.rule("alice", trigger="person_detected", zone={"camera": "front", "id": "drive"},
+                 scope="devices", devices=["camera::yard"])
+        c.check("a person on the camera but outside the rule's zone doesn't fire it",
+                rig.change("camera::front", person=True, person_porch=True) == [])
+        sent = rig.change("camera::front", person_drive=True)
+        c.check("walking into the zone does, though they were already in view",
+                len(sent) == 1 and sent[0][1]["body"] == "Person seen — Front door (Driveway)", sent)
+        c.check("…naming only that zone, not the others they are in", "Porch" not in sent[0][1]["body"])
+        c.check("staying there doesn't fire again", rig.change("camera::front", person_drive=True) == [])
+        c.check("another kind of thing in the zone doesn't fire a person rule", rig.change("camera::front", vehicle_drive=True) == [])
+        c.check("a zone with the same id on another camera is a different zone — and the rule's device list is ignored",
+                rig.change("camera::yard", person=True, person_drive=True) == [])
+        rig.change("camera::front", person_drive=False)
+        rig.devices["camera::front"].zone_names = {"drive": "Front drive", "porch": "Porch"}
+        sent = rig.change("camera::front", person_drive=True)
+        c.check("after the zone is renamed the rule still fires, with the new name",
+                len(sent) == 1 and sent[0][1]["body"] == "Person seen — Front door (Front drive)", sent)
         from modules.notification_rules import normalise_rule
+        c.check("a zone is kept only on a camera trigger",
+                normalise_rule({"trigger": "person_detected", "zone": {"camera": "front", "id": "drive"}})["zone"]
+                == {"camera": "front", "id": "drive"}
+                and normalise_rule({"trigger": "motion_detected", "zone": {"camera": "front", "id": "drive"}})["zone"] is None)
+        for bad in ("front/drive", {"camera": "front"}, {"camera": "../x", "id": "drive"}):
+            try:
+                normalise_rule({"trigger": "person_detected", "zone": bad})
+                ok = False
+            except ValueError:
+                ok = True
+            c.check(f"a malformed zone is refused: {bad}", ok)
+
         try:
             normalise_rule({"trigger": "contact_opened", "camera": "../etc"})
             ok = False
         except ValueError:
             ok = True
         c.check("a camera id that couldn't be one is refused", ok)
+        c.check("no zone is the default", normalise_rule({"trigger": "person_detected"})["zone"] is None)
         c.check("no camera is the default", normalise_rule({"trigger": "contact_opened"})["camera"] is None)
 
         c.section("robustness")

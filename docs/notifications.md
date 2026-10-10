@@ -428,6 +428,20 @@ would have to be fetched without the user's session.
 Notification rules also gained three camera triggers — **Person / Vehicle /
 Animal seen on camera** — which fire when that signal turns on.
 
+### Camera zones
+
+A rule on one of those triggers has a **Where**: anywhere a camera sees one
+(the default, using the rule's device scope), or one zone of one camera
+([vision.md](vision.md) §Zones). The picker lists the zones that look for that
+kind of thing.
+
+With a zone chosen the rule fires when that zone's signal turns on — so
+someone already in view who walks into the zone counts — and the device scope
+is ignored, since a zone belongs to one camera. The notification names that
+zone. The rule stores the zone's fixed id (`zone: {camera, id}`), so renaming
+the zone changes nothing; if the zone is deleted the rule stops firing and the
+list shows "Zone no longer exists".
+
 ### API
 
 | | |

@@ -63,7 +63,9 @@ a corner to move it. Up to 8 zones per camera, 3–24 corners each, any shape.
   `vehicle` / `animal` mean "in at least one zone". It also stops the detector
   looking at movement that is nowhere near a zone, so a busy street costs
   nothing.
-- A notification about a camera names the zones the object is in.
+- A notification about a camera names the zones the object is in, and a
+  notification rule can be limited to one zone
+  ([notifications.md](notifications.md) §Camera zones).
 
 Zones are drawn on the frame the detector sees (640×360, letterboxed if the
 camera isn't 16:9), not on the live view, so what you draw is exactly what is
@@ -155,7 +157,7 @@ In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 
 ## Not yet
 
-Clips and recordings, per-object counts, a zone picker on notification rules, GPU and Hailo backends, and larger models.
+Clips and recordings, per-object counts, GPU and Hailo backends, and larger models.
 
 ## Hardware
 

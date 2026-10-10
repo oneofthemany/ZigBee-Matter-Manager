@@ -113,6 +113,8 @@ class Trigger:
     label: str
     persistent: bool = False
     needs_threshold: bool = False
+    # The camera signal a trigger watches; such a rule can be narrowed to a zone.
+    object: Optional[str] = None
 
 
 # Keys and labels mirror TRIGGERS in static/js/notifications.js (the editor);
@@ -169,13 +171,13 @@ TRIGGERS: Dict[str, Trigger] = {
         "Temperature drops below threshold", needs_threshold=True),
     "person_detected": Trigger(
         lambda p, c, r, ch: not p.get("person") and bool(c.get("person")),
-        lambda n, c, r: f"Person seen — {n}{_zones_of(c, 'person')}", "Person seen on camera"),
+        lambda n, c, r: f"Person seen — {n}{_zones_of(c, 'person')}", "Person seen on camera", object="person"),
     "vehicle_detected": Trigger(
         lambda p, c, r, ch: not p.get("vehicle") and bool(c.get("vehicle")),
-        lambda n, c, r: f"Vehicle seen — {n}{_zones_of(c, 'vehicle')}", "Vehicle seen on camera"),
+        lambda n, c, r: f"Vehicle seen — {n}{_zones_of(c, 'vehicle')}", "Vehicle seen on camera", object="vehicle"),
     "animal_detected": Trigger(
         lambda p, c, r, ch: not p.get("animal") and bool(c.get("animal")),
-        lambda n, c, r: f"Animal seen — {n}{_zones_of(c, 'animal')}", "Animal seen on camera"),
+        lambda n, c, r: f"Animal seen — {n}{_zones_of(c, 'animal')}", "Animal seen on camera", object="animal"),
     "valve_alarm": Trigger(
         lambda p, c, r, ch: not p.get("valve_alarm") and bool(c.get("valve_alarm")),
         lambda n, c, r: f"Valve alarm — {n}", "Valve alarm (TRV)", persistent=True),
@@ -237,12 +239,21 @@ def normalise_rule(data: Dict[str, Any]) -> Dict[str, Any]:
     camera = _text(data.get("camera"))
     if camera and not _CAMERA_ID_RE.match(camera):
         raise ValueError("unknown camera")
+    zone = data.get("zone") if TRIGGERS[trigger].object else None
+    if zone:
+        if not isinstance(zone, dict) or not _CAMERA_ID_RE.match(str(zone.get("camera") or "")) \
+                or not _CAMERA_ID_RE.match(str(zone.get("id") or "")):
+            raise ValueError("unknown zone")
+        zone = {"camera": str(zone["camera"]), "id": str(zone["id"])}
     return {
         "enabled": data.get("enabled", True) is not False,
         "trigger": trigger,
         # A camera whose snapshot goes with the notification; a rule on a
         # camera device uses that camera without being told.
         "camera": camera,
+        # One zone of one camera, by its fixed id; the rule then fires on
+        # that zone's signal and its device scope is beside the point.
+        "zone": zone or None,
         "scope": scope,
         "devices": devices,
         "tab": tab,
@@ -441,9 +452,12 @@ class NotificationRuleEngine:
             trigger = TRIGGERS.get(rule["trigger"])
             if trigger is None:
                 continue
-            if rule["scope"] == "devices" and ieee not in rule["devices"]:
+            zone = rule.get("zone") if trigger.object else None
+            if zone and ieee != f"camera::{zone['camera']}":
                 continue
-            if rule["scope"] == "tab":
+            if not zone and rule["scope"] == "devices" and ieee not in rule["devices"]:
+                continue
+            if not zone and rule["scope"] == "tab":
                 if tabs is None:
                     tabs = self._safe_tabs()
                 if ieee not in tabs.get(rule["tab"], []):
@@ -451,11 +465,18 @@ class NotificationRuleEngine:
             if not self._in_window(rule) or not self._cooled(rule, ieee):
                 continue
             try:
-                if not trigger.match(prev, curr, rule, changed):
-                    continue
                 zone_names = getattr(device, "zone_names", None)
+                view = {**curr, ZONE_NAMES: zone_names} if zone_names else curr
+                if zone:
+                    # Its own edge: someone already in view walking into the zone counts.
+                    key = f"{trigger.object}_{zone['id']}"
+                    if prev.get(key) or not curr.get(key):
+                        continue
+                    view = {key: True, ZONE_NAMES: zone_names or {}}
+                elif not trigger.match(prev, curr, rule, changed):
+                    continue
                 body = (rule["message"].replace("{device}", name) if rule.get("message")
-                        else trigger.body(name, {**curr, ZONE_NAMES: zone_names} if zone_names else curr, rule))
+                        else trigger.body(name, view, rule))
             except Exception as e:
                 logger.debug("[notification_rules] %s on %s: %s", rule["id"], ieee, e)
                 continue
