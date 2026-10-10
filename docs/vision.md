@@ -67,11 +67,12 @@ a corner to move it. Up to 8 zones per camera, 3–24 corners each, any shape.
   notification rule can be limited to one zone
   ([notifications.md](notifications.md) §Camera zones).
 
-Zones are drawn on the frame the detector sees (640×360, letterboxed if the
-camera isn't 16:9), not on the live view, so what you draw is exactly what is
-tested — which is why the camera needs detection switched on and saved, and
-the sidecar watching it, before a zone can be drawn. Points are stored as
-fractions of that frame.
+Zones are drawn on the camera's live picture (go2rtc's snapshot), whether or
+not detection is on yet; they take effect once it is. Points are stored as
+fractions of the picture. The detector sees the same picture stretched to
+640×360 rather than letterboxed, so a fraction means the same spot in both —
+the model resizes to a square anyway, so the stretch costs it nothing. (A
+non-16:9 camera's **Last detection** frame looks stretched for the same reason.)
 
 ## Metrics
 

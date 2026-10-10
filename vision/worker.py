@@ -33,8 +33,10 @@ def ffmpeg_cmd(url: str, fps: float) -> List[str]:
     elif "://" not in url:
         cmd += ["-re", "-stream_loop", "-1"]             # a file (tests): pace it like a live source
     cmd += ["-fflags", "nobuffer", "-flags", "low_delay", "-threads", "1", "-i", url, "-an",
-            "-vf", f"fps={fps},scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
-                   f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2",
+            # Stretched, not letterboxed: a point as a fraction of this frame is
+            # the same fraction of the camera's own picture, which is what zones
+            # are drawn on. The detector resizes to a square regardless.
+            "-vf", f"fps={fps},scale={WIDTH}:{HEIGHT}",
             "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
     return cmd
 

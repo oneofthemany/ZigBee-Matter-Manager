@@ -1,6 +1,6 @@
-/* Zone editor for a camera's object detection: polygons drawn on the frame the
-   detector sees, so what is drawn is exactly what is tested. Points are stored
-   0-1 of that frame. Backend: modules/cameras.py, vision/zones.py —
+/* Zone editor for a camera's object detection: polygons drawn on the camera's
+   own picture. Points are stored 0-1 of it; the detector's frame is the same
+   picture stretched to a fixed size, so the fractions line up. Backend: modules/cameras.py, vision/zones.py —
    docs/vision.md §Zones. */
 
 import { escapeHtml } from './utils.js';
@@ -24,6 +24,7 @@ export function mountZoneEditor(host, cameraId, initial, cameraLabels) {
 
     host.innerHTML = `
         <div class="small fw-semibold mt-3 mb-1">Zones <span class="text-muted fw-normal">— only count what is standing inside a shape</span></div>
+        <div class="small text-muted mb-1">Draw them on the camera's picture. They take effect while object detection is on for this camera.</div>
         <div id="cz_list"></div>
         <button type="button" class="btn btn-sm btn-outline-primary mt-1" id="cz_add"><i class="fas fa-draw-polygon me-1"></i>Add zone</button>
         <div id="cz_draw" class="mt-2 d-none">
@@ -107,7 +108,9 @@ export function mountZoneEditor(host, cameraId, initial, cameraLabels) {
     async function loadFrame() {
         $('cz_msg').textContent = 'Getting the picture…';
         try {
-            const res = await fetch(`/api/cameras/${encodeURIComponent(cameraId)}/detection?view=frame&t=${Date.now()}`);
+            // The camera's live picture; the detector's frame if go2rtc can't give one.
+            let res = await fetch(`/api/cameras/${encodeURIComponent(cameraId)}/snapshot?t=${Date.now()}`);
+            if (!res.ok) res = await fetch(`/api/cameras/${encodeURIComponent(cameraId)}/detection?view=frame&t=${Date.now()}`);
             if (!res.ok) throw new Error();
             const next = new Image();
             const url = URL.createObjectURL(await res.blob());
@@ -119,9 +122,8 @@ export function mountZoneEditor(host, cameraId, initial, cameraLabels) {
             URL.revokeObjectURL(url);
             return true;
         } catch (e) {
-            $('cz_msg').innerHTML = `<span class="text-warning-emphasis">No picture from the detector for this camera yet.
-                Zones are drawn on what it sees: switch detection on for this camera, save, wait for it to show
-                as watching, then come back.</span>`;
+            $('cz_msg').innerHTML = `<span class="text-warning-emphasis">Couldn't get a picture from this camera.
+                Zones are drawn on its live view, which needs go2rtc running and the camera reachable.</span>`;
             return false;
         }
     }

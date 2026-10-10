@@ -208,6 +208,8 @@ def run() -> Checker:
             cmd[cmd.index("-rtsp_transport") + 1] == "tcp" and "-an" in cmd and "rawvideo" in cmd
             and "scale=640:360" in cmd[cmd.index("-vf") + 1] and "fps=2" in cmd[cmd.index("-vf") + 1], cmd)
     c.check("the URL is one argument, never a shell string", cmd[cmd.index("-i") + 1] == "rtsp://u:p@cam/s")
+    c.check("frames are stretched, not letterboxed, so zone fractions mean the camera's own picture",
+            "pad=" not in cmd[cmd.index("-vf") + 1] and "force_original_aspect_ratio" not in cmd[cmd.index("-vf") + 1])
     return c
 
 
