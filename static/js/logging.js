@@ -213,10 +213,12 @@ export function renderLogs() {
         else if (l.level === 'ERROR') color = '#F44336';
         else if (l.level === 'DEBUG') color = '#2196F3';
 
-        let content = l.message;
+        // Messages carry device names and reported values: escape, then
+        // highlight the search as a literal, not a regex.
+        let content = escapeHtml(l.message);
         if (keyword && !excludeMode) {
-            const reg = new RegExp(`(${keyword})`, 'gi');
-            content = content.replace(reg, '<span class="bg-warning text-dark px-1">$1</span>');
+            const safe = escapeHtml(keyword).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            content = content.replace(new RegExp(`(${safe})`, 'gi'), '<span class="bg-warning text-dark px-1">$1</span>');
         }
 
         return `<div class="border-bottom border-secondary log-entry py-1">` +

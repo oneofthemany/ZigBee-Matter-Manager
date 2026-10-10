@@ -103,7 +103,13 @@ manager = ConnectionManager()
 
 
 async def broadcast_event(event_type: str, data: dict):
-    """Helper to broadcast events via WebSocket."""
+    """Helper to broadcast events via WebSocket. Log lines are kept and given
+    an id here, so Debug ▸ Logs can trace them (docs/logbook.md)."""
+    if event_type == "log":
+        from modules.logbook import get_logbook
+        lb = get_logbook()
+        if lb is not None:
+            data = lb.record_log(data)
     await manager.broadcast({"type": event_type, "payload": data})
 
 

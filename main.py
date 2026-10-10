@@ -974,6 +974,17 @@ async def lifespan(app: FastAPI):
 
         await camera_manager.start()
 
+        # Logbook: keeps live-log lines and the automation chain behind each.
+        from modules.logbook import Logbook, set_logbook
+        from modules.automation import current_chain
+        logbook = Logbook(broadcast=broadcast_event, current_chain=current_chain,
+                          get_names=zigbee_service.automation._get_all_names)
+        await logbook.start()
+        zigbee_service.automation.add_state_listener(logbook.observe)
+        zigbee_service.automation.add_trace_listener(logbook.on_trace)
+        set_logbook(logbook)
+        app.state.logbook = logbook
+
         # Shelly and ESPHome on their local APIs. See docs/wifi-devices.md.
         from modules.shelly import ShellyHub, set_shelly_hub
         from modules.esphome import ESPHomeHub, set_esphome_hub
@@ -1161,6 +1172,9 @@ async def lifespan(app: FastAPI):
         await camera_manager.stop()
     for hub in getattr(app.state, "lan_hubs", []):
         await hub.stop()
+    logbook = getattr(app.state, "logbook", None)
+    if logbook:
+        await logbook.stop()
     journey_manager = getattr(app.state, "journey_manager", None)
     if journey_manager:
         await journey_manager.stop()

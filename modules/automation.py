@@ -55,6 +55,15 @@ _trigger_ieee: ContextVar[Optional[str]] = ContextVar("zmm_automation_trigger",
 # conditions pass only inside it, and message text reads {webhook.key} from it.
 _event: ContextVar[Optional[Dict[str, Any]]] = ContextVar("zmm_automation_event",
                                                           default=None)
+# The causal chain an evaluation belongs to, for the logbook's trace
+# (docs/logbook.md); a nested evaluation records the chain that caused it.
+_chain_id: ContextVar[Optional[str]] = ContextVar("zmm_automation_chain_id", default=None)
+_chain_parent: ContextVar[Optional[str]] = ContextVar("zmm_automation_chain_parent", default=None)
+
+
+def current_chain():
+    """(chain id, parent chain id) of the evaluation running now."""
+    return _chain_id.get(), _chain_parent.get()
 
 # Virtual source for clock-driven rules ("play radio at 07:00"), which fire from
 # the time-boundary scheduler rather than any device update.
@@ -233,6 +242,7 @@ class AutomationEngine:
         self._extra_device_getters: List[Callable[[], Dict]] = []
         # Sync observers of every state change (notification rules); see add_state_listener.
         self._state_listeners: List[Callable[[str, Dict[str, Any]], None]] = []
+        self._trace_listeners: List[Callable[[Dict[str, Any]], None]] = []
         # Injected post-construction via set_media_service_getter, since the media
         # service is built after the engine.
         self._get_media_service: Optional[Callable] = None
@@ -299,6 +309,10 @@ class AutomationEngine:
         evaluate() is the one place Zigbee, Matter and extra providers all reach;
         listeners run before its no-rules early return and must not block."""
         self._state_listeners.append(listener)
+
+    def add_trace_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
+        """Call listener(entry) for every trace entry; must not block."""
+        self._trace_listeners.append(listener)
 
     def add_device_getter(self, getter: Callable) -> None:
         """Merge another device registry into the engine's view (see __init__).
@@ -661,11 +675,19 @@ class AutomationEngine:
     # TRACING
 
     def _trace(self, rule_id, phase, result, message, level="INFO", **extra):
+        rule = self._find_rule(rule_id) if rule_id != "-" else None
         entry = {
             "timestamp": time.time(), "rule_id": rule_id,
+            "rule_name": (rule or {}).get("name") or (rule_id if rule else None),
+            "chain_id": _chain_id.get(),
             "phase": phase, "result": result, "message": message,
             "level": level, **extra,
         }
+        for listener in getattr(self, "_trace_listeners", ()):
+            try:
+                listener(entry)
+            except Exception as e:
+                logger.debug(f"Trace listener failed: {e}")
         self._trace_log.append(entry)
         if len(self._trace_log) > self._max_trace_entries:
             self._trace_log = self._trace_log[-self._max_trace_entries:]
@@ -1326,6 +1348,17 @@ class AutomationEngine:
     # STATE MACHINE EVALUATION
 
     async def evaluate(self, source_ieee: str, changed_data: Dict[str, Any]):
+        import secrets as _secrets
+        parent = _chain_id.get()
+        t_id = _chain_id.set(_secrets.token_hex(6))
+        t_parent = _chain_parent.set(parent)
+        try:
+            await self._evaluate(source_ieee, changed_data)
+        finally:
+            _chain_id.reset(t_id)
+            _chain_parent.reset(t_parent)
+
+    async def _evaluate(self, source_ieee: str, changed_data: Dict[str, Any]):
         for listener in self._state_listeners:
             try:
                 listener(source_ieee, changed_data)
@@ -2876,7 +2909,8 @@ class AutomationEngine:
             return
 
         self._trace(rule_id, "step", "SENDING",
-                    f"{tag} → {tname} {command}={value} EP={endpoint_id}")
+                    f"{tag} → {tname} {command}={value} EP={endpoint_id}",
+                    target_ieee=target_ieee)
         try:
             result = await target.send_command(command, value, endpoint_id=endpoint_id)
             success = True
