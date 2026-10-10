@@ -7,7 +7,7 @@ set -euo pipefail
 # =============================================================================
 # WATCHER SCHEMA VERSION
 # =============================================================================
-WATCHER_SCHEMA_VERSION=10
+WATCHER_SCHEMA_VERSION=11
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 BOLD='\033[1m'; NC='\033[0m'
@@ -156,7 +156,17 @@ else
     warn "sidecar_service.sh not found — Beekeeper and go2rtc won't get boot-time services."
 fi
 
-mkdir -p "${DATA_DIR}/data/os_updates"
+# Builds and loads the kernel driver an M.2 Coral needs; only acts when asked.
+HAVE_CORAL=false
+if src=$(find_script "coral_driver.sh"); then
+    install_file "$src" "${SCRIPTS_DIR}/coral_driver.sh"
+    HAVE_CORAL=true
+    ok "Installed coral_driver.sh -> ${SCRIPTS_DIR}/coral_driver.sh"
+else
+    warn "coral_driver.sh not found — an M.2 Coral's driver can't be set up from the manager."
+fi
+
+mkdir -p "${DATA_DIR}/data/os_updates" "${DATA_DIR}/data/coral"
 mkdir -p "${DATA_DIR}/data/beekeeper" "${DATA_DIR}/data/go2rtc"
 
 if build_src=$(find_build_sh); then
@@ -396,6 +406,37 @@ WantedBy=multi-user.target
 PATHUNIT
     fi
 
+    if $HAVE_CORAL; then
+        sudo tee "$unit_dir/zmm-coral-action.service" >/dev/null <<SERVICE
+[Unit]
+Description=ZMM Coral driver helper (oneshot — build/load/remove the M.2 Coral driver)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/coral_driver.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1
+# A first build pulls a distro image and kernel headers.
+TimeoutStartSec=1800
+SERVICE
+
+        sudo tee "$unit_dir/zmm-coral-action.path" >/dev/null <<PATHUNIT
+[Unit]
+Description=Watch for ZMM Coral driver triggers
+
+[Path]
+# The :8001 manager writes this to set up, re-check or remove the driver.
+PathChanged=${DATA_DIR}/data/coral/driver_action
+Unit=zmm-coral-action.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now zmm-upgrade.path
     ok "systemd system path unit enabled (event-driven)"
@@ -414,6 +455,10 @@ PATHUNIT
     if $HAVE_BK_SERVICE; then
         sudo systemctl enable --now zmm-beekeeper-service.path zmm-go2rtc-service.path
         ok "Beekeeper and go2rtc autostart helpers enabled (run as root via system units)"
+    fi
+    if $HAVE_CORAL; then
+        sudo systemctl enable --now zmm-coral-action.path
+        ok "Coral driver helper enabled (runs as root via system unit)"
     fi
 }
 
@@ -438,6 +483,7 @@ OS_REBOOT_TRIGGER="${DATA_DIR}/data/os_updates/reboot"
 BK_FIREWALL_SH="${DATA_DIR}/scripts/beekeeper_firewall.sh"
 BK_FIREWALL_TRIGGER="${DATA_DIR}/data/beekeeper/firewall_action"
 SIDECAR_SERVICE_SH="${DATA_DIR}/scripts/sidecar_service.sh"
+CORAL_SH="${DATA_DIR}/scripts/coral_driver.sh"
 OS_INTERVAL=21600   # re-check the OS for updates every 6h
 INTERVAL=5
 
@@ -466,6 +512,9 @@ while true; do
             ZMM_DATA_DIR="$DATA_DIR" bash "$SIDECAR_SERVICE_SH" "$sc" || true
         fi
     done
+    if [[ -x "$CORAL_SH" && -f "${DATA_DIR}/data/coral/driver_action" ]]; then
+        ZMM_DATA_DIR="$DATA_DIR" bash "$CORAL_SH" || true
+    fi
     sleep "$INTERVAL"
 done
 POLL

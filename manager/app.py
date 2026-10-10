@@ -17,8 +17,8 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import (backups, beekeeper, containers, go2rtc, host, images, logs,
-                     ollama, recovery, upgrade, watchdog)
+from manager import (accelerators, backups, beekeeper, containers, go2rtc, host, images,
+                     logs, ollama, recovery, upgrade, watchdog)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -362,6 +362,30 @@ async def go2rtc_restart(authorization: str = Header(default="")):
 # bearer token and just writes the trigger file the host-side path units
 # watch — scripts/os_apply.sh does the actual package-manager work (and the
 # reboot) as root.
+
+@app.get("/host/accelerators")
+async def host_accelerators():
+    """Coral / GPU / CPU available for object detection (read-only probe)."""
+    return accelerators.probe()
+
+
+@app.post("/host/coral/driver")
+async def host_coral_driver(data: dict = Body(default={}), authorization: str = Header(default="")):
+    """Install / remove / re-check the M.2 Coral's kernel driver on the host."""
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    res = accelerators.request_driver(str((data or {}).get("action") or "install"))
+    return JSONResponse(res, status_code=200 if res.get("success") else 400)
+
+
+@app.post("/host/coral/throttle")
+async def host_coral_throttle(data: dict = Body(default={}), authorization: str = Header(default="")):
+    """Set the temperature at which the Coral starts slowing its clock."""
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    res = accelerators.set_throttle((data or {}).get("celsius"))
+    return JSONResponse(res, status_code=200 if res.get("success") else 400)
+
 
 @app.get("/host/os-updates")
 async def host_os_updates():

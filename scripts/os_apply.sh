@@ -125,7 +125,16 @@ case "$ACTION" in
 esac
 write_status "running" "$ACTION" "$RUNNING_MSG"
 
+# A staged kernel needs the Coral driver built for it before the reboot into
+# it; a no-op where the driver isn't installed.
+coral_prebuild() {
+    local coral="${DATA_DIR}/scripts/coral_driver.sh"
+    [[ -x "$coral" ]] && ZMM_DATA_DIR="$DATA_DIR" bash "$coral" prebuild >> "$LOG_FILE" 2>&1
+    return 0
+}
+
 reboot_host() {   # detail
+    coral_prebuild
     write_status "rebooting" "$ACTION" "$1"
     log "rebooting: $1"
     sync
@@ -242,6 +251,8 @@ else
     log "$ACTION FAILED (exit $RC)"
     write_status "failed" "$ACTION" "exit $RC — see os_apply.log for details"
 fi
+
+[[ $RC -eq 0 ]] && coral_prebuild
 
 [[ -x "$COLLECTOR" ]] && ZMM_DATA_DIR="$DATA_DIR" bash "$COLLECTOR" || true
 exit 0

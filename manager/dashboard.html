@@ -444,6 +444,10 @@ dialog .remember input{accent-color:var(--honey)}
   </table></div>
   <div id="hoFoot" class="muted" style="margin-top:.4rem"></div>
 </section>
+<section class="card"><h2>Detection hardware <span class="hint">&mdash; what camera object detection can run on</span></h2>
+  <div id="accRows" class="muted">&hellip;</div>
+  <div id="accFoot" class="muted" style="font-size:.76rem;margin-top:.5rem"></div>
+</section>
   <section class="card"><h2>Logs <span class="hint">&mdash; what the host-side update helpers actually did</span></h2>
     <div class="chips muted" id="logbtnsHost">&hellip;</div>
     <pre id="logviewHost" class="term"></pre>
@@ -1107,6 +1111,71 @@ async function releaseUpgradeHost(btn){
    {title:'Upgrade host OS',confirmText:'Upgrade & reboot',danger:true}))return;
  const d=await act('/host/os-updates/release-upgrade',{target:hoRelTarget},false,btn);
  if(d&&d.success){hoFast=60;toast('OS release upgrade started','ok');}}
+/* Detection hardware: a read-only probe of the bus. "On the bus" and "usable"
+   are different answers, so each row says which. */
+const ACC_NAMES={coral:'Coral Edge TPU',hailo:'Hailo',nvidia_gpu:'NVIDIA GPU',intel_gpu:'Intel graphics',
+                 amd_gpu:'AMD graphics',cpu:'CPU'};
+/* An M.2 Coral's driver is built and loaded by the host helper; the chip's
+   own driver slows its clock as it heats, and this shows and moves that point. */
+function coralExtra(x){
+ const h=x.host_driver||{},t=x.thermal,line=(c,html)=>'<div style="flex-basis:100%;font-size:.76rem">'+dot(c)+html+'</div>';
+ let out='';
+ if(h.pending||h.state==='running')
+  return line('s-warn','driver: '+esc(h.pending?'setting up…':h.detail||'working…'));
+ if(h.state==='failed')out+=line('s-bad','driver: '+esc(h.detail||'failed'));
+ if(!x.ready)
+  out+=line('s-mut','<button class="btn" onclick="coralDriver(\'install\',this)">Set up driver</button>'+
+   (h.known?'':' <span class="muted">'+esc(h.detail||'')+'</span>'));
+ else if(!h.installed)
+  out+=line('s-warn','driver loaded for now &mdash; it won&rsquo;t come back after a reboot. '+
+   '<button class="btn" onclick="coralDriver(\'install\',this)">Load at every boot</button>');
+ else out+=line('s-ok','driver: '+esc(h.detail||'loads at every boot')+
+   ' <button class="btn" onclick="coralDriver(\'remove\',this)">Remove</button>');
+ if(t){
+  const at=(t.throttle_at_c||[])[0],step=t.throttle_step||0;
+  out+=line(step?'s-warn':'s-ok','chip <strong>'+esc(t.temp_c)+' &deg;C</strong>'+
+   (step?' &mdash; <b>slowed to 1/'+(1<<step)+' speed to cool down</b>':'')+
+   ' <span class="muted">&middot; cuts out at '+esc(t.shutdown_at_c??'?')+' &deg;C</span>');
+  out+='<div style="flex-basis:100%;font-size:.76rem;display:flex;flex-wrap:wrap;align-items:center;gap:.4rem">'+
+   '<label for="coralThr">Start slowing down at</label>'+
+   '<input id="coralThr" type="number" min="50" max="85" step="1" inputmode="numeric" value="'+esc(Math.round(at||85))+'" style="width:4.5rem">'+
+   '<span>&deg;C</span><button class="btn" onclick="coralThrottle(this)">Set</button>'+
+   '<span class="muted">Lower runs cooler and, once reached, slower. 85 is the driver&rsquo;s default.</span></div>';}
+ return out;}
+let accFast=0;
+async function coralDriver(action,btn){
+ if(action==='remove'&&!await confirmM('Remove the Coral driver from the host?\n\nObject detection falls back to the next device.',
+   {title:'Remove Coral driver',confirmText:'Remove',danger:true}))return;
+ const d=await act('/host/coral/driver',{action},false,btn);
+ if(d&&d.success){accFast=120;loadAccelerators(true);}}
+async function coralThrottle(btn){
+ const d=await act('/host/coral/throttle',{celsius:Number($('coralThr').value)},true,btn);
+ if(!d)return;
+ toast(d.success?'Throttle temperature set':(d.error||'Failed'),d.success?'ok':'err');
+ if(d.success){accFast=6;setTimeout(()=>loadAccelerators(true),2500);}}
+async function loadAccelerators(force){
+ const rows=$('accRows'),foot=$('accFoot');if(!rows)return;
+ // Don't redraw under someone typing a temperature.
+ if(!force&&rows.contains(document.activeElement))return;
+ try{
+  const r=await fetch('/host/accelerators');if(!r.ok)throw 0;const d=await r.json();
+  const devs=d.devices||[];
+  rows.classList.remove('muted');
+  rows.innerHTML=devs.map(x=>'<div class="rowline" style="flex-wrap:wrap">'+dot(x.ready?'s-ok':'s-warn')+
+    '<span>'+esc(x.name)+'</span><code>'+esc(x.address)+'</code>'+
+    '<span class="muted">'+(x.driver?'driver '+esc(x.driver):(x.bus==='usb'?'usb':'no driver bound'))+'</span>'+
+    (x.note?'<div class="muted" style="flex-basis:100%;font-size:.76rem">'+esc(x.note)+'</div>':'')+
+    (x.kind==='coral'&&x.bus==='pci'?coralExtra(x):'')+'</div>').join('')
+   +'<div class="rowline">'+dot('s-mut')+'<span>CPU</span><span class="muted">'+esc((d.cpu||{}).model||'')+
+    ' · '+esc((d.cpu||{}).cores||'?')+' cores</span></div>';
+  foot.innerHTML='Detection would use: <strong>'+esc(ACC_NAMES[d.recommended]||d.recommended)+'</strong>'+
+   (d.could_use?' &mdash; <strong>'+esc(ACC_NAMES[d.could_use]||d.could_use)+'</strong> is fitted but not usable yet (see above).':'');
+ }catch(e){rows.innerHTML='<span class="muted">unavailable</span>';foot.textContent='';}}
+loadAccelerators();
+// Temperature moves; a driver build is watched more closely.
+setInterval(()=>{if(document.hidden)return;if(accFast>0){accFast--;loadAccelerators();}},5000);
+setInterval(()=>{if(!document.hidden&&accFast<=0)loadAccelerators();},20000);
+
 async function loadHost(){
  let delay=60000;
  try{
