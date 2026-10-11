@@ -288,6 +288,10 @@ def _segment_overlaps_polygon_edge(
 #: rooms sit inside the wall's thickness and a little askew, not on its line.
 OPENING_ROOM_REACH_M = 0.75
 
+# Output given to a radiator created only to carry a TRV bound in the manual
+# config; a placeholder until the user sizes it in the editor.
+DEFAULT_UNPLACED_RADIATOR_W = 1000.0
+
 
 def _point_in_polygon(x: float, y: float, poly: List[Tuple[float, float]]) -> bool:
     inside = False
@@ -648,6 +652,9 @@ def _clean_room(raw: Any, existing_ids: set) -> Optional[dict]:
     etm = str(raw.get("external_temp_mode") or "").lower()
     if etm in ("off", "advisory", "push"):
         out["external_temp_mode"] = etm
+    fresh = _as_float(raw.get("freshness_threshold_minutes"))
+    if fresh is not None and fresh > 0:
+        out["freshness_threshold_minutes"] = int(_clamp(fresh, 3, 120))
     eti = _as_float(raw.get("external_temp_push_interval_sec"))
     if eti is not None and eti > 0:
         out["external_temp_push_interval_sec"] = int(_clamp(eti, 30, 86400))
@@ -713,6 +720,9 @@ def _clean_radiator(raw: Any) -> Optional[dict]:
             fv = _as_bool(raw.get(flag), None)
             if fv is not None:
                 out[flag] = fv
+        min_sp = _as_float(raw.get("min_setpoint"))
+        if min_sp is not None and 4.0 <= min_sp <= 30.0:
+            out["min_setpoint"] = round(min_sp, 1)
     return out
 
 
@@ -750,18 +760,23 @@ def _clean_contact(raw: Any) -> Optional[dict]:
         return None
     cid = _valid_id(raw.get("id")) or _slugify(raw.get("id") or "")
     opening_id = _valid_id(raw.get("opening_id"))
+    room_id = _valid_id(raw.get("room_id"))
     ieee = raw.get("ieee")
-    if not cid or not opening_id or not isinstance(ieee, str) or not ieee.strip():
+    # A contact bound in the manual config has a room but no opening yet; it
+    # keeps working there until it is placed on one.
+    if not cid or not (opening_id or room_id) or not isinstance(ieee, str) or not ieee.strip():
         return None
     out: Dict[str, Any] = {
         "id": cid,
-        "opening_id": opening_id,
+        "opening_id": opening_id or "",
         "ieee": ieee.strip().lower(),
         "debounce_open_seconds": int(_clamp(_as_float(raw.get("debounce_open_seconds"), 30) or 30, 0, 3600)),
         "require_temp_drop_c": round(_clamp(_as_float(raw.get("require_temp_drop_c"), 0.5) or 0.5, 0.0, 10.0), 2),
         "max_close_minutes": int(_clamp(_as_float(raw.get("max_close_minutes"), 60) or 60, 1, 1440)),
         "enabled": bool(_as_bool(raw.get("enabled"), True)),
     }
+    if room_id:
+        out["room_id"] = room_id
     name = raw.get("name")
     if name:
         out["name"] = str(name)[:80]
@@ -1023,7 +1038,7 @@ def _clean_level(raw: Any, existing_level_ids: set) -> Optional[dict]:
         sens_clean.append(cs)
     out["sensors"] = sens_clean
 
-    # Contacts (require a valid opening_id)
+    # Contacts: on a real opening, or failing that in a real room
     con_ids: set = set()
     cons_clean = []
     for c in raw.get("contacts") or []:
@@ -1031,6 +1046,10 @@ def _clean_level(raw: Any, existing_level_ids: set) -> Optional[dict]:
         if not cc:
             continue
         if cc["opening_id"] not in valid_opening_ids:
+            cc["opening_id"] = ""
+        if cc.get("room_id") not in valid_room_ids:
+            cc.pop("room_id", None)
+        if not cc["opening_id"] and not cc.get("room_id"):
             continue
         if cc["id"] in con_ids:
             base = cc["id"]; k = 2
@@ -1317,6 +1336,7 @@ def _opening_to_dimension_entry(
             "area_m2": area,
             "glazing": opening.get("glazing", "double"),
             "orientation": bearing_to_compass8(bearing),
+            "facing_deg": round(bearing % 360.0, 1),
             "wall": bin_name,
         }
     elif opening.get("kind") == "door":
@@ -1627,6 +1647,22 @@ def _legacy_primary_sensor_ieee(level_sensors: List[dict], room_id: str) -> Opti
     return primary.get("ieee")
 
 
+TRV_FLAGS = ("window_detection", "child_lock", "valve_detection", "min_setpoint")
+
+# Controller behaviour a plan room carries alongside its geometry, kept in step
+# with the manual config (docs/heating-controller.md § Config modes).
+ROOM_SETTINGS = ("target_temp", "night_setback", "min_temp", "schedule",
+                 "external_temp_mode", "external_temp_push_interval_sec",
+                 "out_of_hours_action", "night_setback_offset_c",
+                 "freshness_threshold_minutes")
+CIRCUIT_SETTINGS = ("receiver_ieee", "receiver_command", "receiver_endpoint",
+                    "operating_hours", "weather_suppression",
+                    "receiver_call_setpoint", "receiver_idle_setpoint")
+ROOM_DEFAULTS = {"target_temp": 20.0, "night_setback": 17.0, "min_temp": 16.0,
+                 "external_temp_mode": "advisory",
+                 "external_temp_push_interval_sec": 300, "schedule": []}
+
+
 def _trvs_for_room(level_radiators: List[dict], room_id: str) -> List[dict]:
     """Collect TRV ieees from radiators bound to this room."""
     seen = set()
@@ -1639,22 +1675,28 @@ def _trvs_for_room(level_radiators: List[dict], room_id: str) -> List[dict]:
             continue
         seen.add(ieee)
         t = {"ieee": ieee}
-        for flag in ("window_detection", "child_lock", "valve_detection"):
+        for flag in TRV_FLAGS:
             if r.get(flag) is not None:
                 t[flag] = r[flag]
         out.append(t)
     return out
 
 
+def contact_rooms(level: dict, contact: dict) -> List[str]:
+    """Rooms a contact guards: every room its opening opens into (an internal
+    door opens into two), or its own room_id while it has no opening."""
+    op = next((o for o in level.get("openings") or []
+               if contact.get("opening_id") and o.get("id") == contact["opening_id"]), None)
+    if op is None:
+        return [contact["room_id"]] if contact.get("room_id") else []
+    return [r["id"] for r in level.get("rooms") or [] if opening_borders_room(level, r, op)]
+
+
 def _contacts_for_room(level: dict, room_id: str) -> List[dict]:
-    """All contacts whose opening belongs to this room."""
-    op_by_id = {o["id"]: o for o in level.get("openings", []) or []}
+    """All contacts guarding this room."""
     out = []
     for c in level.get("contacts", []) or []:
-        op = op_by_id.get(c.get("opening_id"))
-        if not op:
-            continue
-        if op.get("room_id") != room_id:
+        if not c.get("ieee") or room_id not in contact_rooms(level, c):
             continue
         out.append({
             "ieee": c["ieee"],
@@ -1663,9 +1705,13 @@ def _contacts_for_room(level: dict, room_id: str) -> List[dict]:
             "require_temp_drop_c": c["require_temp_drop_c"],
             "max_close_minutes": c["max_close_minutes"],
             "enabled": c["enabled"],
-            "opening_id": c["opening_id"],   # NEW; ignored by legacy code
+            "opening_id": c.get("opening_id") or "",
         })
     return out
+
+
+def _norm_ieee(v: Any) -> str:
+    return str(v or "").strip().lower()
 
 
 def project_floor_plan_to_circuits(
@@ -1674,19 +1720,18 @@ def project_floor_plan_to_circuits(
     """
     Apply a cleaned floor_plan to produce a controller-ready circuits list.
 
-    Two modes:
+    **Plan-native mode** (``floor_plan["circuits"]`` non-empty): the plan is
+    authoritative for circuits, room membership, geometry and device bindings
+    (TRVs, sensors, contacts, radiators); a plan room's controller settings
+    win over the passed-in ``circuits``, which only fill settings the plan
+    lacks and per-TRV flags its radiators lack. A room in ``circuits`` that the
+    plan never drew (no ``floor_plan_ref``, no id or name match) is kept in its
+    circuit as an unplaced room; one the plan drew and has since deleted is
+    dropped.
 
-    **Plan-native mode** (new): used when ``floor_plan["circuits"]`` is
-    non-empty.  Derives circuits entirely from the plan — each plan circuit
-    becomes a controller circuit, and each plan room with a matching
-    ``circuit_id`` is projected into that circuit.  The passed-in
-    ``circuits`` list is used only to carry over per-room settings that
-    can't be derived from the plan (target_temp, night_setback, min_temp,
-    schedules) and are otherwise defaulted.
-
-    **Legacy / reconcile mode** (original): used when ``floor_plan["circuits"]``
-    is absent.  Walks the existing ``circuits`` list and overwrites per-room
-    geometry/sensor/radiator/contact data from the matching plan room.
+    **Legacy / reconcile mode** (no plan circuits): walks ``circuits`` and
+    overwrites per-room geometry/sensor/radiator/contact data from the
+    matching plan room.
 
     Returns ``(updated_circuits, warnings)``.
     """
@@ -1697,7 +1742,6 @@ def project_floor_plan_to_circuits(
     levels = floor_plan.get("levels") or []
     warnings: List[str] = []
 
-    # Build room lookup for both modes
     room_index: Dict[str, Tuple[dict, dict]] = {}   # plan_room_id -> (level, room)
     name_index: Dict[str, Tuple[dict, dict]] = {}   # lower_name -> (level, room)
     for level in levels:
@@ -1707,14 +1751,12 @@ def project_floor_plan_to_circuits(
             if nm:
                 name_index.setdefault(nm, (level, room))
 
-    # Pre-compute per-level dimensions
     dims_by_level: Dict[str, Dict[str, dict]] = {}
     for level in levels:
         dims_by_level[level["id"]] = project_level_to_room_dimensions(level, north)
 
-    # Helper: project one plan room onto a controller room dict
-    def _project_room(fp_room: dict, level: dict,
-                      base_room: Optional[dict] = None) -> dict:
+    def _project_room(fp_room: dict, level: dict, base_room: Optional[dict] = None,
+                      authoritative: bool = False) -> dict:
         """Build a controller room dict from a floor-plan room + level."""
         r2: Dict[str, Any] = dict(base_room) if base_room else {}
         r2["id"] = fp_room["id"]
@@ -1726,42 +1768,66 @@ def project_floor_plan_to_circuits(
             r2["dimensions"] = dim
 
         level_radiators = level.get("radiators") or []
-        level_sensors   = level.get("sensors") or []
+        level_sensors = level.get("sensors") or []
 
-        rich_rads = [rd for rd in level_radiators if rd.get("room_id") == fp_room["id"]]
-        r2["radiators"] = rich_rads
+        r2["radiators"] = [rd for rd in level_radiators if rd.get("room_id") == fp_room["id"]]
         legacy_rad = _legacy_radiator_for_room(level_radiators, fp_room["id"], warnings)
         if legacy_rad:
             r2["radiator"] = legacy_rad
+        elif authoritative:
+            r2.pop("radiator", None)
 
-        sensors_in_room = [s for s in level_sensors if s.get("room_id") == fp_room["id"]]
-        r2["temperature_sensors"] = sensors_in_room
+        r2["temperature_sensors"] = [s for s in level_sensors if s.get("room_id") == fp_room["id"]]
         primary_ieee = _legacy_primary_sensor_ieee(level_sensors, fp_room["id"])
         if primary_ieee:
             r2["temperature_sensor_ieee"] = primary_ieee
+        elif authoritative:
+            r2.pop("temperature_sensor_ieee", None)
 
         r2["contact_sensors"] = _contacts_for_room(level, fp_room["id"])
-        r2["trvs"] = _trvs_for_room(level_radiators, fp_room["id"]) or r2.get("trvs", [])
+        plan_trvs = _trvs_for_room(level_radiators, fp_room["id"])
+        if authoritative:
+            # Flags the radiator doesn't carry fall back to the room's last copy.
+            prior = {_norm_ieee(t.get("ieee")): t for t in (r2.get("trvs") or [])
+                     if isinstance(t, dict)}
+            for t in plan_trvs:
+                for flag in TRV_FLAGS:
+                    old = (prior.get(_norm_ieee(t["ieee"])) or {}).get(flag)
+                    if flag not in t and old is not None:
+                        t[flag] = old
+            r2["trvs"] = plan_trvs
+            r2.pop("trv_ieees", None)
+        else:
+            r2["trvs"] = plan_trvs or r2.get("trvs", [])
         r2["floor_plan_ref"] = {"level_id": level_id, "room_id": fp_room["id"]}
         return r2
 
-    # Plan-native mode
     plan_circuits = floor_plan.get("circuits") or []
     if plan_circuits:
-        # Build a lookup of existing controller rooms keyed by plan room id
-        # so we can carry over user-set fields (target_temp etc.).
-        existing_room_by_plan_id: Dict[str, dict] = {}
-        existing_circuit_by_id: Dict[str, dict] = {}
-        for c in circuits:
-            if isinstance(c, dict) and c.get("id"):
-                existing_circuit_by_id[c["id"]] = c
+        # Settings and unplaced rooms come from the passed-in circuits.
+        base_by_plan_id: Dict[str, dict] = {}
+        base_circuit_by_id: Dict[str, dict] = {}
+        unplaced_by_circuit: Dict[str, List[dict]] = {}
+        for c in circuits or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("id"):
+                base_circuit_by_id[c["id"]] = c
             for r in (c.get("rooms") or []):
-                ref = (r.get("floor_plan_ref") or {})
-                pid = ref.get("room_id") or r.get("id")
-                if pid:
-                    existing_room_by_plan_id[pid] = r
+                if not isinstance(r, dict):
+                    continue
+                ref = (r.get("floor_plan_ref") or {}).get("room_id")
+                match = (room_index.get(ref) if ref else None) or room_index.get(r.get("id"))
+                if match is None and not ref:
+                    match = name_index.get((r.get("name") or "").strip().lower())
+                if match is not None:
+                    base_by_plan_id.setdefault(match[1]["id"], r)
+                elif ref:
+                    warnings.append(f"room '{r.get('name') or ref}' was deleted from "
+                                    f"the floor plan; removed from the controller")
+                else:
+                    unplaced_by_circuit.setdefault(c.get("id"), []).append(r)
 
-        # Group plan rooms by circuit_id
         rooms_by_circuit: Dict[str, List[Tuple[dict, dict]]] = {}
         unassigned: List[str] = []
         for level in levels:
@@ -1782,46 +1848,29 @@ def project_floor_plan_to_circuits(
         out_circuits: List[dict] = []
         for pc in plan_circuits:
             cid = pc["id"]
-            c2: Dict[str, Any] = {
-                "id": cid,
-                "name": pc["name"],
-            }
-            if pc.get("receiver_ieee"):
-                c2["receiver_ieee"] = pc["receiver_ieee"]
-            c2["receiver_command"] = pc.get("receiver_command", "thermostat")
-            if "receiver_endpoint" in pc:
-                c2["receiver_endpoint"] = pc["receiver_endpoint"]
-
-            # Circuit-level settings: prefer the plan circuit, fall back to an
-            # existing controller circuit so migration from manual config keeps
-            # operating-hours / weather-suppression / receiver setpoints.
-            existing_c = existing_circuit_by_id.get(cid, {})
-            for k in ("operating_hours", "weather_suppression",
-                      "receiver_call_setpoint", "receiver_idle_setpoint"):
+            c2: Dict[str, Any] = {"id": cid, "name": pc["name"]}
+            existing_c = base_circuit_by_id.get(cid, {})
+            for k in CIRCUIT_SETTINGS:
                 if pc.get(k) is not None:
                     c2[k] = pc[k]
                 elif existing_c.get(k) is not None:
                     c2[k] = existing_c[k]
+            c2.setdefault("receiver_command", "thermostat")
 
             new_rooms = []
             for fp_room, level in rooms_by_circuit.get(cid, []):
-                base = existing_room_by_plan_id.get(fp_room["id"])
-                room_dict = _project_room(fp_room, level, base)
-                # Carry schedule/temp fields from floor-plan room definition
-                for k in ("target_temp", "night_setback", "min_temp",
-                          "out_of_hours_action", "night_setback_offset_c",
-                          "external_temp_mode", "external_temp_push_interval_sec"):
-                    if k not in room_dict and fp_room.get(k) is not None:
+                base = base_by_plan_id.get(fp_room["id"])
+                room_dict = _project_room(fp_room, level, base, authoritative=True)
+                for k in ROOM_SETTINGS:
+                    if fp_room.get(k) is not None:
                         room_dict[k] = fp_room[k]
-                if "schedule" not in room_dict and fp_room.get("schedule"):
-                    room_dict["schedule"] = fp_room["schedule"]
-                room_dict.setdefault("target_temp", 20.0)
-                room_dict.setdefault("night_setback", 17.0)
-                room_dict.setdefault("min_temp", 16.0)
-                room_dict.setdefault("external_temp_mode", "advisory")
-                room_dict.setdefault("external_temp_push_interval_sec", 300)
-                room_dict.setdefault("schedule", [])
+                for k, v in ROOM_DEFAULTS.items():
+                    room_dict.setdefault(k, v)
                 new_rooms.append(room_dict)
+            for r in unplaced_by_circuit.pop(cid, []):
+                warnings.append(f"room '{r.get('name') or r.get('id')}' isn't drawn on "
+                                f"the floor plan yet; kept with its manual settings")
+                new_rooms.append(dict(r))
 
             if not new_rooms:
                 warnings.append(
@@ -1830,6 +1879,10 @@ def project_floor_plan_to_circuits(
 
             c2["rooms"] = new_rooms
             out_circuits.append(c2)
+
+        for cid, rooms in unplaced_by_circuit.items():
+            warnings.append(f"circuit '{cid}' is not in the floor plan; its unplaced "
+                            f"room(s) {', '.join(r.get('name') or '?' for r in rooms)} were dropped")
 
         return out_circuits, warnings
 
@@ -1861,6 +1914,305 @@ def project_floor_plan_to_circuits(
         out_circuits.append(c2)
 
     return out_circuits, warnings
+
+
+RADIATOR_SPECS = ("watts_at_dt50", "flow_temperature_c", "type", "placement",
+                  "reflective_panel", "description")
+
+
+def _unique_id(prefix: str, seed: str, taken: set) -> str:
+    base = f"{prefix}_{_slugify(seed)[-12:] or 'x'}"
+    rid, n = base, 2
+    while rid in taken:
+        rid, n = f"{base}_{n}", n + 1
+    taken.add(rid)
+    return rid
+
+
+def apply_circuits_to_plan(floor_plan: dict, circuits: List[dict]) -> Tuple[dict, List[str]]:
+    """
+    Write a manual circuits list into the plan, the inverse of
+    `project_floor_plan_to_circuits`: circuits, room membership and settings,
+    TRV bindings and flags, temperature sensors, contacts and radiator specs.
+    Geometry is never written — the plan's own drawing is the more accurate.
+
+    Rooms match by ``floor_plan_ref``, then id, then name. A plan room no
+    manual circuit claims keeps its geometry and loses its circuit. Returns
+    ``(new_plan, notes)``; the input is not mutated.
+    """
+    import copy
+    plan = copy.deepcopy(floor_plan)
+    notes: List[str] = []
+    levels = plan.get("levels") or []
+
+    by_id: Dict[str, Tuple[dict, dict]] = {}
+    by_name: Dict[str, Tuple[dict, dict]] = {}
+    for level in levels:
+        for room in level.get("rooms") or []:
+            by_id[room["id"]] = (level, room)
+            by_name.setdefault((room.get("name") or "").strip().lower(), (level, room))
+
+    plan_circuits = []
+    for c in circuits or []:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        pc = {"id": c["id"], "name": c.get("name") or c["id"]}
+        for k in CIRCUIT_SETTINGS:
+            if c.get(k) is not None:
+                pc[k] = c[k]
+        plan_circuits.append(pc)
+    plan["circuits"] = plan_circuits
+
+    claimed: set = set()
+    # Every manual room's devices, so a contact on an internal door is only
+    # dropped when neither room it guards still lists it.
+    wanted_contacts: Dict[str, set] = {}
+
+    for c in circuits or []:
+        for r in (c.get("rooms") or []) if isinstance(c, dict) else []:
+            if not isinstance(r, dict):
+                continue
+            ref = (r.get("floor_plan_ref") or {}).get("room_id")
+            match = (by_id.get(ref) if ref else None) or by_id.get(r.get("id")) \
+                or by_name.get((r.get("name") or "").strip().lower())
+            if match is None:
+                notes.append(f"room '{r.get('name')}' isn't on the floor plan — draw it "
+                             f"there to give it accurate geometry")
+                continue
+            level, fp_room = match
+            claimed.add(fp_room["id"])
+            fp_room["circuit_id"] = c["id"]
+            if r.get("name"):
+                fp_room["name"] = str(r["name"])
+            for k in ROOM_SETTINGS:
+                if r.get(k) is not None:
+                    fp_room[k] = copy.deepcopy(r[k])
+                else:
+                    fp_room.pop(k, None)
+            _apply_radiators(level, fp_room["id"], r, notes)
+            _apply_trvs(level, fp_room, r, notes)
+            _apply_sensors(level, fp_room["id"], r)
+            wanted_contacts[fp_room["id"]] = {
+                _norm_ieee(cs.get("ieee")) for cs in (r.get("contact_sensors") or [])
+                if isinstance(cs, dict) and cs.get("ieee")}
+            _apply_contacts(level, fp_room["id"], r)
+
+    for level in levels:
+        for room in level.get("rooms") or []:
+            if room["id"] not in claimed and room.get("circuit_id"):
+                notes.append(f"room '{room.get('name')}' removed from its circuit "
+                             f"(still drawn on the plan)")
+                room.pop("circuit_id", None)
+        kept = []
+        for con in level.get("contacts") or []:
+            rooms = [rid for rid in contact_rooms(level, con) if rid in wanted_contacts]
+            if rooms and not any(_norm_ieee(con.get("ieee")) in wanted_contacts[rid]
+                                 for rid in rooms):
+                continue
+            kept.append(con)
+        level["contacts"] = kept
+    return plan, notes
+
+
+def _apply_radiators(level: dict, room_id: str, room: dict, notes: List[str]) -> None:
+    """Radiator specs by id; a manual radiator without one is added unplaced."""
+    manual = room.get("radiators")
+    if not isinstance(manual, list):
+        manual = [room["radiator"]] if isinstance(room.get("radiator"), dict) else None
+    if manual is None:
+        return
+    rads = level.setdefault("radiators", [])
+    taken = {rd.get("id") for rd in rads}
+    mine = {rd["id"]: rd for rd in rads if rd.get("room_id") == room_id}
+    by_id = {m.get("id"): m for m in manual if isinstance(m, dict) and m.get("id")}
+    # A list that names no radiator by id predates the plan; it can't say
+    # which plan radiator it means, so it neither updates nor deletes.
+    if not by_id:
+        if not mine:
+            for m in manual:
+                if isinstance(m, dict) and _as_float(m.get("watts_at_dt50")):
+                    rd = {"id": _unique_id("rad", room_id, taken), "room_id": room_id}
+                    rd.update({k: m[k] for k in RADIATOR_SPECS if m.get(k) is not None})
+                    rads.append(rd)
+                    notes.append(f"radiator added to '{room.get('name')}' — position it "
+                                 f"in the floor plan editor")
+        return
+    for rid, rd in mine.items():
+        m = by_id.get(rid)
+        if m is None:
+            rads.remove(rd)
+            continue
+        for k in RADIATOR_SPECS:
+            if m.get(k) is not None:
+                rd[k] = m[k]
+    for m in manual:
+        if isinstance(m, dict) and not m.get("id") and _as_float(m.get("watts_at_dt50")):
+            rd = {"id": _unique_id("rad", room_id, taken), "room_id": room_id}
+            rd.update({k: m[k] for k in RADIATOR_SPECS if m.get(k) is not None})
+            rads.append(rd)
+            notes.append(f"radiator added to '{room.get('name')}' — position it "
+                         f"in the floor plan editor")
+
+
+def _apply_trvs(level: dict, fp_room: dict, room: dict, notes: List[str]) -> None:
+    """Bind the room's TRVs to its radiators: keep existing bindings, free the
+    rest, then fill unbound radiators; a TRV left over gets an unplaced one."""
+    room_id = fp_room["id"]
+    wanted: Dict[str, dict] = {}
+    for t in room.get("trvs") or []:
+        ieee = _norm_ieee(t.get("ieee") if isinstance(t, dict) else t)
+        if ieee:
+            wanted[ieee] = t if isinstance(t, dict) else {"ieee": ieee}
+    rads = level.setdefault("radiators", [])
+    mine = [rd for rd in rads if rd.get("room_id") == room_id]
+
+    def _bind(rd: dict, ieee: str) -> None:
+        rd["trv_ieee"] = ieee
+        for flag in TRV_FLAGS:
+            if wanted[ieee].get(flag) is not None:
+                rd[flag] = wanted[ieee][flag]
+            else:
+                rd.pop(flag, None)
+
+    def _unbind(rd: dict) -> None:
+        rd.pop("trv_ieee", None)
+        for flag in TRV_FLAGS:
+            rd.pop(flag, None)
+
+    bound = set()
+    for rd in mine:
+        ieee = _norm_ieee(rd.get("trv_ieee"))
+        if ieee and ieee in wanted and ieee not in bound:
+            _bind(rd, ieee)
+            bound.add(ieee)
+        elif ieee:
+            _unbind(rd)
+    # A TRV moved here from another room releases its old radiator.
+    for rd in rads:
+        if rd.get("room_id") != room_id and _norm_ieee(rd.get("trv_ieee")) in wanted:
+            _unbind(rd)
+    free = [rd for rd in mine if not rd.get("trv_ieee")]
+    taken = {rd.get("id") for rd in rads}
+    watts = _as_float((room.get("radiator") or {}).get("watts_at_dt50"))
+    for ieee in wanted:
+        if ieee in bound:
+            continue
+        if free:
+            _bind(free.pop(0), ieee)
+            continue
+        rd = {"id": _unique_id("rad", ieee, taken), "room_id": room_id,
+              "watts_at_dt50": watts or DEFAULT_UNPLACED_RADIATOR_W}
+        rads.append(rd)
+        _bind(rd, ieee)
+        notes.append(f"TRV {ieee} in '{fp_room.get('name')}' had no radiator on the plan — "
+                     f"added one; set its position and output in the editor")
+
+
+def _apply_sensors(level: dict, room_id: str, room: dict) -> None:
+    wanted: Dict[str, dict] = {}
+    for s in room.get("temperature_sensors") or []:
+        if isinstance(s, dict) and s.get("ieee"):
+            wanted[_norm_ieee(s["ieee"])] = s
+    if not wanted and room.get("temperature_sensor_ieee"):
+        wanted[_norm_ieee(room["temperature_sensor_ieee"])] = {"primary": True}
+    primary = next((i for i, s in wanted.items() if s.get("primary")), next(iter(wanted), None))
+
+    sensors = level.setdefault("sensors", [])
+    kept, have = [], set()
+    for s in sensors:
+        ieee = _norm_ieee(s.get("ieee"))
+        if s.get("room_id") == room_id and ieee not in wanted:
+            continue
+        if ieee in wanted:
+            s["room_id"] = room_id
+            have.add(ieee)
+            h = _as_float(wanted[ieee].get("height_m"))
+            if h is not None:
+                s["height_m"] = h
+            s["primary"] = ieee == primary
+        kept.append(s)
+    taken = {s.get("id") for s in kept}
+    placed = {_norm_ieee(d.get("ieee")): d for d in level.get("devices") or []}
+    for ieee, src in wanted.items():
+        if ieee in have:
+            continue
+        s = {"id": _unique_id("sen", ieee, taken), "room_id": room_id, "ieee": ieee,
+             "kind": "temp_sensor", "primary": ieee == primary}
+        h = _as_float(src.get("height_m"))
+        if h is not None:
+            s["height_m"] = h
+        # Already placed on the plan as a bare device: keep that position.
+        if ieee in placed:
+            s["x"], s["y"] = placed[ieee]["x"], placed[ieee]["y"]
+            if "height_m" not in s and placed[ieee].get("height_m") is not None:
+                s["height_m"] = placed[ieee]["height_m"]
+        kept.append(s)
+    level["sensors"] = kept
+
+
+def _apply_contacts(level: dict, room_id: str, room: dict) -> None:
+    """Tuning onto contacts already guarding the room; a new one is added to the
+    room without an opening until it is placed. Removal happens plan-wide."""
+    contacts = level.setdefault("contacts", [])
+    mine = {_norm_ieee(c.get("ieee")): c for c in contacts if room_id in contact_rooms(level, c)}
+    taken = {c.get("id") for c in contacts}
+    for cs in room.get("contact_sensors") or []:
+        if not isinstance(cs, dict) or not cs.get("ieee"):
+            continue
+        ieee = _norm_ieee(cs["ieee"])
+        con = mine.get(ieee)
+        if con is None:
+            con = next((c for c in contacts if _norm_ieee(c.get("ieee")) == ieee), None)
+            if con is None:
+                con = {"id": _unique_id("con", ieee, taken), "opening_id": "",
+                       "room_id": room_id, "ieee": ieee}
+                contacts.append(con)
+            else:
+                # Moved rooms: unplace it from its old opening.
+                con["opening_id"], con["room_id"] = "", room_id
+        for k in ("debounce_open_seconds", "require_temp_drop_c",
+                  "max_close_minutes", "enabled", "name"):
+            if cs.get(k) is not None:
+                con[k] = cs[k]
+
+
+def geometry_change_notes(before: List[dict], after: List[dict]) -> List[str]:
+    """What the plan changed in rooms the manual config already described."""
+    def _rooms(circuits):
+        return {r.get("id"): r for c in circuits or [] for r in (c.get("rooms") or [])
+                if isinstance(r, dict)}
+
+    def _summary(dim):
+        wins = dim.get("windows") or []
+        return {
+            "area": round(float(dim.get("floor_area_m2") or 0), 1),
+            "size": (round(float(dim.get("width_m") or 0), 1), round(float(dim.get("depth_m") or 0), 1)),
+            "ceiling": round(float(dim.get("ceiling_height_m") or 0), 2),
+            "windows": sorted((str(w.get("orientation")), round(float(w.get("area_m2") or 0), 1))
+                              for w in wins if isinstance(w, dict)),
+        }
+
+    old_rooms = _rooms(before)
+    notes = []
+    for rid, r in _rooms(after).items():
+        old = old_rooms.get(rid)
+        if not old or not isinstance(old.get("dimensions"), dict) \
+                or not isinstance(r.get("dimensions"), dict):
+            continue
+        a, b = _summary(old["dimensions"]), _summary(r["dimensions"])
+        changed = []
+        if a["area"] != b["area"]:
+            changed.append(f"floor area {a['area']} → {b['area']} m²")
+        if a["size"] != b["size"]:
+            changed.append(f"size {a['size'][0]}×{a['size'][1]} → {b['size'][0]}×{b['size'][1]} m")
+        if a["ceiling"] != b["ceiling"]:
+            changed.append(f"ceiling {a['ceiling']} → {b['ceiling']} m")
+        if a["windows"] != b["windows"]:
+            fmt = lambda ws: ", ".join(f"{o} {ar} m²" for o, ar in ws) or "none"
+            changed.append(f"windows [{fmt(a['windows'])}] → [{fmt(b['windows'])}]")
+        if changed:
+            notes.append(f"'{r.get('name')}' updated from the floor plan: " + "; ".join(changed))
+    return notes
 
 
 # self test

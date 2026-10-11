@@ -3,16 +3,22 @@ Heating Controller API — tick state and forcing, dry-run toggle, circuits conf
 device and sensor candidate lists, and per-TRV settings, calibration and
 config re-apply. See docs/heating-controller.md.
 """
+import copy
 import logging
 import os
 import yaml
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI
 
-# Used when switching config_mode → floor_plan with an existing saved plan
-from modules.floor_plan import project_floor_plan_to_circuits
-from modules.floor_plan_store import load_plan
+from modules.floor_plan import (
+    apply_circuits_to_plan,
+    clean_floor_plan,
+    geometry_change_notes,
+    project_floor_plan_to_circuits,
+)
+from modules.floor_plan_store import load_plan, save_plan
+from modules.heating_controller import circuits_for_mode
 
 logger = logging.getLogger("routes.heating_controller")
 
@@ -179,12 +185,12 @@ def _clean_dimensions(d: dict) -> Optional[dict]:
     y_m = _as_float(d.get("depth_m") or d.get("y_m"))
     ceiling_h = _as_float(d.get("ceiling_height_m"), 2.4) or 2.4
 
-    floor_area = None
-    if x_m and y_m and x_m > 0 and y_m > 0:
-        floor_area = round(x_m * y_m, 2)
+    # The plan's polygon area beats the bounding box for any non-rectangular room.
+    floor_area = _as_float(d.get("floor_area_m2"))
+    if not floor_area or floor_area <= 0:
+        floor_area = round(x_m * y_m, 2) if x_m and y_m and x_m > 0 and y_m > 0 else None
     else:
-        # Back-compat: accept raw floor_area_m2 if legacy config
-        floor_area = _as_float(d.get("floor_area_m2"))
+        floor_area = round(floor_area, 2)
 
     # Per-wall types: each wall is external | party | internal | unknown.
     # Default all-external on a detached; user overrides per-wall as needed.
@@ -220,12 +226,16 @@ def _clean_dimensions(d: dict) -> Optional[dict]:
         if orient.lower() == "unknown" or orient not in VALID_ORIENTATIONS:
             orient = "unknown"
         wall = _valid_wall(w.get("wall"))
-        windows.append({
+        entry = {
             "area_m2": round(area, 2),
             "glazing": glazing,
             "orientation": orient,
             "wall": wall,
-        })
+        }
+        facing = _as_float(w.get("facing_deg"))
+        if facing is not None:
+            entry["facing_deg"] = round(facing % 360.0, 1)
+        windows.append(entry)
 
     # Doors
     raw_doors = d.get("doors") if isinstance(d.get("doors"), list) else []
@@ -349,6 +359,9 @@ def _clean_trvs(room_in: dict) -> List[dict]:
                         b = _as_bool(t.get(k), None)
                         if b is not None:
                             entry[k] = b
+                min_sp = _as_float(t.get("min_setpoint"))
+                if min_sp is not None and 4.0 <= min_sp <= 30.0:
+                    entry["min_setpoint"] = round(min_sp, 1)
                 by_ieee[ieee_s] = entry
 
     return list(by_ieee.values())
@@ -426,16 +439,18 @@ def _clean_room(r: dict, existing_ids: Optional[set] = None) -> Optional[dict]:
     dimensions = _clean_dimensions(r.get("dimensions"))
 
     # Radiators (canonical: plural list; derive legacy single)
+    # The plural list carries plan ids and positions; the legacy single is
+    # derived from it, so it is only the source when no list exists.
     radiators_clean: List[dict] = []
-    if "radiator" in r:
-        single = _clean_radiator_dict(r.get("radiator"))
-        if single:
-            radiators_clean = [single]
-    elif isinstance(r.get("radiators"), list):
+    if isinstance(r.get("radiators"), list):
         for rd in r["radiators"]:
             c = _clean_radiator_dict(rd)
             if c:
                 radiators_clean.append(c)
+    elif "radiator" in r:
+        single = _clean_radiator_dict(r.get("radiator"))
+        if single:
+            radiators_clean = [single]
 
     out = {
         "id": rid,
@@ -536,7 +551,7 @@ def _clean_circuit(c: dict, existing_ids: Optional[set] = None) -> Optional[dict
     if receiver_command not in ("switch", "thermostat"):
         receiver_command = "thermostat"
 
-    return {
+    out = {
         "id": cid,
         "name": str(c["name"]),
         "receiver_ieee": (str(c.get("receiver_ieee")).strip() if c.get("receiver_ieee") else None) or None,
@@ -544,6 +559,16 @@ def _clean_circuit(c: dict, existing_ids: Optional[set] = None) -> Optional[dict
         "receiver_endpoint": c.get("receiver_endpoint"),
         "rooms": rooms,
     }
+    # Per-circuit overrides; absent means "follow the controller-wide setting".
+    for k in ("operating_hours", "weather_suppression"):
+        b = _as_bool(c.get(k), None)
+        if b is not None:
+            out[k] = b
+    for k in ("receiver_call_setpoint", "receiver_idle_setpoint"):
+        v = _as_float(c.get(k))
+        if v is not None and 4.0 <= v <= 90.0:
+            out[k] = round(v, 1)
+    return out
 
 
 def _clean_circuits(circuits: list) -> List[dict]:
@@ -563,10 +588,99 @@ def normalise_circuits(circuits: list) -> List[dict]:
     return _clean_circuits(circuits)
 
 
+_MERGE_SETTINGS = ("target_temp", "night_setback", "min_temp", "schedule")
+
+
+def _merge_inactive_devices(base: List[dict], inactive: List[dict],
+                            note_settings: bool = True) -> Tuple[List[dict], List[str]]:
+    """Union of TRVs, contacts and a missing primary sensor from `inactive`
+    into the same room of `base`; settings stay `base`'s, and each one that
+    differed is named so the user can choose."""
+    base = copy.deepcopy(base)
+    notes: List[str] = []
+    other = {r.get("id"): r for c in inactive for r in (c.get("rooms") or [])}
+    for c in base:
+        for r in c.get("rooms") or []:
+            o = other.get(r.get("id"))
+            if not o:
+                continue
+            have = {t["ieee"] for t in r.get("trvs") or []}
+            for t in o.get("trvs") or []:
+                if t["ieee"] not in have:
+                    r.setdefault("trvs", []).append(t)
+                    notes.append(f"'{r['name']}': kept TRV {t['ieee']} from the other config copy")
+            have = {x["ieee"] for x in r.get("contact_sensors") or []}
+            for x in o.get("contact_sensors") or []:
+                if x["ieee"] not in have:
+                    r.setdefault("contact_sensors", []).append(x)
+                    notes.append(f"'{r['name']}': kept contact {x['ieee']} from the other config copy")
+            if not r.get("temperature_sensor_ieee") and o.get("temperature_sensor_ieee"):
+                r["temperature_sensor_ieee"] = o["temperature_sensor_ieee"]
+                r["temperature_sensors"] = o.get("temperature_sensors") or []
+                notes.append(f"'{r['name']}': kept sensor {o['temperature_sensor_ieee']} "
+                             f"from the other config copy")
+            for k in _MERGE_SETTINGS if note_settings else ():
+                if o.get(k) is not None and r.get(k) != o.get(k):
+                    notes.append(f"'{r['name']}': {k} was {o.get(k)} in the other config "
+                                 f"copy; kept {r.get(k)}")
+    return base, notes
+
+
+def sync_heating_config(heating: Dict[str, Any], plan: Optional[dict],
+                        edited: Optional[list] = None) -> Tuple[Optional[dict], List[str]]:
+    """
+    Bring heating.circuits, heating.controller.circuits and the floor plan
+    into one state, so either config_mode reads the same rooms
+    (docs/heating-controller.md § Config modes).
+
+    `edited` is a circuits list the user just saved; it is written into the
+    plan first. Without it the current mode's circuits are the base. Mutates
+    `heating`; returns the plan to persist (None when unchanged or absent)
+    and notes for the user.
+    """
+    controller = heating.setdefault("controller", {})
+    base = _clean_circuits(edited if edited is not None else circuits_for_mode(heating))
+    notes: List[str] = []
+    plan_out = None
+
+    # Configs from before the sync kept two diverging copies, and the plan held
+    # devices neither copy had. Once, take every device any of the three knows;
+    # settings come from the user's edit, else from the plan. Afterwards the
+    # copies are equal and this is a no-op.
+    manual_list = heating.get("circuits") or []
+    plan_list = controller.get("circuits") or []
+    if manual_list and plan_list and _clean_circuits(manual_list) != _clean_circuits(plan_list):
+        floor_mode = (controller.get("config_mode") or "manual") == "floor_plan"
+        inactive = _clean_circuits(manual_list if floor_mode else plan_list)
+        fresh = _clean_circuits(project_floor_plan_to_circuits(plan, base)[0]) if plan else base
+        merged = base if edited is not None else fresh
+        merged, _ = _merge_inactive_devices(merged, fresh, note_settings=False)
+        merged, merge_notes = _merge_inactive_devices(merged, inactive)
+        notes.extend(merge_notes)
+        base = edited = merged
+    if plan:
+        source = plan
+        if edited is not None:
+            applied, apply_notes = apply_circuits_to_plan(plan, base)
+            notes.extend(apply_notes)
+            source = clean_floor_plan(applied) or plan
+            if source != plan:
+                plan_out = source
+        projected, proj_notes = project_floor_plan_to_circuits(source, base)
+        notes.extend(proj_notes)
+        circuits = _clean_circuits(projected)
+        notes.extend(geometry_change_notes(base, circuits))
+    else:
+        circuits = base
+    heating["circuits"] = circuits
+    controller["circuits"] = copy.deepcopy(circuits)
+    return plan_out, notes
+
+
 def _find_trv_in_config(cfg: Dict[str, Any], ieee: str):
-    """Locate a TRV inside the heating.circuits config. Returns (circuit, room, trv_dict) or None."""
+    """Locate a TRV in the active mode's circuits. Returns (circuit, room, trv_dict) or None."""
     heating = cfg.get("heating") or {}
-    for c in heating.get("circuits") or []:
+    for c in circuits_for_mode(heating):
         for r in c.get("rooms") or []:
             # Check new-style list
             for t in (r.get("trvs") or []):
@@ -661,29 +775,29 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
 
     @app.post("/api/heating/controller/dry-run")
     async def toggle_dry_run(data: dict):
+        """Persisted, so a restart keeps it; the live controller crosses the
+        dry-run boundary through set_dry_run (stand-down, cache reset)."""
         ctrl = _resolve()
         if not ctrl:
             return {"success": False, "error": "Controller not initialised"}
-        ctrl.dry_run = bool(data.get("dry_run", True))
-        logger.warning(f"Heating controller dry_run set to {ctrl.dry_run} via API")
+        dry_run = bool(data.get("dry_run", True))
+        cfg = _load_config()
+        cfg.setdefault("heating", {}).setdefault("controller", {})["dry_run"] = dry_run
+        _save_config(cfg)
+        await ctrl.set_dry_run(dry_run, reason="api")
         return {"success": True, "dry_run": ctrl.dry_run}
 
     @app.post("/api/heating/controller/config-mode")
     async def set_controller_config_mode(data: dict):
         """
-        Set the controller's configuration mode.
+        Set which editor owns the heating config.
 
         Body: {"mode": "floor_plan" | "manual"}
 
-        Side effects:
-          - mode == 'manual':     strips `floor_plan_ref` from all rooms so
-                                  the manual UI is fully editable. The saved
-                                  floor plan (data/floor_plan.json) is kept as
-                                  a backup; switching back re-projects it.
-          - mode == 'floor_plan': if a plan is saved, re-projects it onto
-                                  the circuits so room geometry/devices
-                                  reflect the plan. If no plan is saved, the
-                                  user will draw one in the editor.
+        Both modes read the same circuits (sync_heating_config keeps them and
+        the plan in one state), so switching copies and strips nothing. In
+        floor_plan mode the plan editor owns device bindings; in manual mode the
+        controller modal does, and its saves are written back into the plan.
         """
         mode = data.get("mode")
         if mode not in VALID_CONFIG_MODES:
@@ -696,62 +810,33 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
             heating = cfg.setdefault("heating", {})
             controller_block = heating.setdefault("controller", {})
             prev_mode = controller_block.get("config_mode")
+
+            # The mode being left holds the latest edits. Leaving manual, they
+            # are written into the plan; leaving floor_plan, the plan already
+            # has them.
+            plan = load_plan()
+            edited = heating.get("circuits") if (prev_mode or "manual") == "manual" else None
+            plan_out, warnings = sync_heating_config(heating, plan, edited=edited or None)
             controller_block["config_mode"] = mode
-
-            warnings: List[str] = []
-            stripped = 0
-            reprojected = False
-
-            if mode == "manual":
-                import copy
-                manual_circuits = copy.deepcopy(controller_block.get("circuits") or [])
-                for c in manual_circuits:
-                    for r in c.get("rooms") or []:
-                        if not isinstance(r, dict):
-                            continue
-                        if r.pop("floor_plan_ref", None):
-                            stripped += 1
-                        r.pop("radiators", None)
-                        r.pop("temperature_sensors", None)
-                heating["circuits"] = _clean_circuits(manual_circuits)
-
-            elif mode == "floor_plan":
-                plan = load_plan()
-                if plan:
-                    try:
-                        circuits = controller_block.get("circuits") or []
-                        updated, proj_warnings = project_floor_plan_to_circuits(plan, circuits)
-                        controller_block["circuits"] = updated
-                        warnings.extend(proj_warnings)
-                        reprojected = True
-                    except Exception as e:
-                        logger.exception("re-projection on mode switch failed")
-                        warnings.append(f"re-projection failed: {e}")
-
+            if plan_out is not None:
+                save_plan(plan_out)
             _save_config(cfg)
 
-            # Hot-apply to the running controller if possible
             ctrl = _resolve()
             if ctrl is not None and hasattr(ctrl, "apply_config"):
                 try:
-                    # Pass the full heating block so apply_config can resolve
-                    # mode-aware circuits (floor_plan → controller.circuits,
-                    # manual → heating.circuits).
-                    await ctrl.apply_config(heating)
+                    await ctrl.apply_config(heating, reason="config-mode")
                 except Exception as e:
                     logger.warning(f"controller hot-apply on mode switch failed: {e}")
                     warnings.append(f"controller hot-apply failed: {e}")
 
-            logger.info(
-                f"Heating controller config_mode set to {mode!r} "
-                f"(was {prev_mode!r}); stripped={stripped} reprojected={reprojected}"
-            )
+            logger.info(f"Heating controller config_mode set to {mode!r} (was {prev_mode!r})")
             return {
                 "success": True,
                 "mode": mode,
                 "previous_mode": prev_mode,
-                "stripped_floor_plan_refs": stripped,
-                "reprojected": reprojected,
+                "stripped_floor_plan_refs": 0,
+                "reprojected": bool(plan),
                 "warnings": warnings,
             }
         except Exception as e:
@@ -913,15 +998,16 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                     if a in ("setback", "off", "min_only"):
                         oh_out["out_of_hours_action"] = a
 
+            sync_notes: List[str] = []
             if "circuits" in incoming:
-                config_mode = controller_block.get("config_mode") or "manual"
-                if config_mode == "floor_plan":
-                    controller_block["circuits"] = _clean_circuits(incoming["circuits"])
-                else:
-                    heating["circuits"] = _clean_circuits(incoming["circuits"])
+                plan_out, sync_notes = sync_heating_config(
+                    heating, load_plan(), edited=incoming["circuits"])
+                if plan_out is not None:
+                    save_plan(plan_out)
 
             _save_config(cfg)
-            logger.info("Heating controller config saved via API")
+            logger.info("Heating controller config saved via API"
+                        + (f" ({'; '.join(sync_notes)})" if sync_notes else ""))
 
             # ── Diagnostic: what's about to be passed to apply_config? ─
             try:
@@ -985,6 +1071,7 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
             response = {
                 "success": True,
                 "persisted": True,
+                "warnings": sync_notes,
                 "applied": apply_result.get("applied", False),
                 "diff": apply_result.get("diff", {}),
                 "tick_triggered": apply_result.get("tick_triggered", False),
@@ -1060,12 +1147,9 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
             old_value = target_room.get("target_temp")
             target_room["target_temp"] = target_temp
 
-            # Re-clean before persisting to apply the standard sanitiser
-            # (clamps, type coercion, schedule normalisation).
-            if config_mode == "floor_plan":
-                controller_block["circuits"] = _clean_circuits(circuits)
-            else:
-                heating["circuits"] = _clean_circuits(circuits)
+            plan_out, _ = sync_heating_config(heating, load_plan(), edited=circuits)
+            if plan_out is not None:
+                save_plan(plan_out)
             _save_config(cfg)
 
             ctrl = _resolve()
@@ -1340,7 +1424,9 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
         Update a TRV's persistent config (window_detection, child_lock, valve_detection)
         both in the running controller and in config.yaml on disk, then apply to the device.
 
-        Body: { "ieee": "...", "window_detection": true, "child_lock": false, "valve_detection": true }
+        Body: { "ieee": "...", "window_detection": true, "child_lock": false,
+                "valve_detection": true, "min_setpoint": 5.0 }
+        min_setpoint null clears it back to the 5 °C default.
         """
         ieee = str(data.get("ieee") or "").strip()
         if not ieee:
@@ -1353,17 +1439,32 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                 if b is not None:
                     updates[k] = b
 
+        if "min_setpoint" in data:
+            v = _as_float(data.get("min_setpoint"))
+            if data.get("min_setpoint") is not None and (v is None or not 4.0 <= v <= 30.0):
+                return {"success": False, "error": "min_setpoint must be between 4 and 30 °C"}
+            updates["min_setpoint"] = None if v is None else round(v, 1)
+
         if not updates:
             return {"success": False, "error": "no valid settings in request"}
 
-        # 1) Persist to disk
+        # 1) Persist to disk, and through the sync into the plan's radiator
         try:
             cfg = _load_config()
+            heating = cfg.setdefault("heating", {})
             located = _find_trv_in_config(cfg, ieee)
             if not located:
                 return {"success": False, "error": f"TRV {ieee} not found in any room"}
             _, _, trv_dict = located
-            trv_dict.update(updates)
+            for k, v in updates.items():
+                if v is None:
+                    trv_dict.pop(k, None)
+                else:
+                    trv_dict[k] = v
+            plan_out, _ = sync_heating_config(heating, load_plan(),
+                                              edited=circuits_for_mode(heating))
+            if plan_out is not None:
+                save_plan(plan_out)
             _save_config(cfg)
         except Exception as e:
             logger.error(f"Failed to persist TRV settings: {e}", exc_info=True)

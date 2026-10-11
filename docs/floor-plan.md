@@ -63,7 +63,7 @@ A plan is levels; a level is what was drawn on it.
 | `levels[].openings[]` | windows and doors: `{id, wall_id, kind, offset_m, width_m, height_m, glazing \| door_type}` — positioned *along* their host wall |
 | `levels[].radiators[]` | wall-mounted or freestanding (below), with `trv_ieee` |
 | `levels[].sensors[]` | temperature sensors: position, room, height, `primary` |
-| `levels[].contacts[]` | bound to an opening by `opening_id` |
+| `levels[].contacts[]` | bound to an opening by `opening_id`; one bound in the manual config carries `room_id` and an empty `opening_id` until it is placed. A contact guards every room its opening opens into, so one on an internal door guards both (`contact_rooms`) |
 | `levels[].devices[]` | everything else placed by position alone |
 | `levels[].background` | the image's calibration — see [Background images](#background-images) |
 | `plan.circuits[]` | heating circuits and their receivers |
@@ -393,7 +393,7 @@ positions are structure.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/floor-plan` | read the saved plan, plus `home` (`{lat, lon}`) for the map |
-| `POST /api/floor-plan` | save plan, project into circuits, return warnings |
+| `POST /api/floor-plan` | save plan, sync both circuit lists from it ([heating-controller.md § Config modes](heating-controller.md#config-modes)), return warnings |
 | `GET /api/floor-plan/preview` | dry-run projection |
 | `DELETE /api/floor-plan` | clear the plan |
 | `POST /api/floor-plan/image/{level_id}` | upload a background image |

@@ -6403,18 +6403,17 @@ async function save() {
 }
 
 /**
- * Switch the heating controller back to manual configuration. Posts the
- * mode change directly — the backend strips floor_plan_ref from rooms so
- * the manual UI is fully editable. The saved plan stays on disk as a
- * backup; the user can switch back later and the plan will be re-applied.
+ * Switch the heating controller to manual configuration. Posts the mode change
+ * directly; both modes read the same rooms, so only device-binding editing
+ * moves to the manual UI.
  */
 async function switchToManual() {
     const confirmed = await window.zbmConfirm({
         title: 'Switch to manual configuration',
         message: 'Switch the heating controller to manual configuration?',
-        detail: 'Your floor plan stays saved as a backup. The rooms will become '
-            + 'freely editable in the manual UI. You can switch back later — '
-            + 'the plan will be re-applied to the rooms.',
+        detail: 'Rooms, settings and devices carry over unchanged. Sensors, TRVs '
+            + 'and contacts become editable in the manual UI and are written back '
+            + 'here; room layout keeps following this plan.',
         confirmText: 'Switch'
     });
     if (!confirmed) return;

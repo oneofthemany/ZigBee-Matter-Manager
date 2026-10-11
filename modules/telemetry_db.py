@@ -1062,8 +1062,11 @@ def write_heating_tick(
         circuits: List[Dict[str, Any]],
 ) -> None:
     """
-    Persist one controller tick for later analysis.
-    ... (docstring unchanged) ...
+    Persist one controller tick: one heating_tick_boiler row per circuit and
+    one heating_tick_rooms row per room. Blocking — worker thread only.
+
+    `receiver_command` is set only when a command actually went out (or would
+    have, in dry run); an unchanged receiver records NULL.
     """
     if not circuits:
         return
@@ -1085,7 +1088,9 @@ def write_heating_tick(
             continue
 
         recv = c.get("receiver_action") or {}
-        recv_cmd = recv.get("command") if isinstance(recv, dict) else None
+        recv_cmd = (recv.get("command")
+                    if isinstance(recv, dict) and recv.get("sent") else None)
+        outdoor = c.get("outdoor_temp")
 
         rooms = c.get("rooms") or []
         n_cold = sum(1 for r in rooms if r.get("status") == "cold")
@@ -1127,7 +1132,7 @@ def write_heating_tick(
                 "classification": r.get("status"),
                 "current_temp_c": r.get("current_temp"),
                 "setpoint_c": r.get("target_temp"),
-                "outdoor_temp_c": None,
+                "outdoor_temp_c": outdoor,
                 "calling_for_heat": bool(r.get("calling_for_heat")),
                 "trv_setpoint_c": trv_sp,
                 "trv_valve_open_pct": trv_open,
@@ -1335,6 +1340,26 @@ def query_last_report_age_sec(ieee: str, attributes: List[str],
     if not row or row[0] is None:
         return None
     return float(row[0])
+
+
+def query_distinct_values(ieee: str, attributes: List[str],
+                          hours: int = 12) -> Tuple[int, int]:
+    """(reports, distinct values) for `attributes` of this IEEE within the
+    lookback — how a sensor stuck on one re-reported value is told apart."""
+    if not attributes:
+        return 0, 0
+    db = _rcursor()
+    hours = int(hours)
+    placeholders = ", ".join("?" for _ in attributes)
+    row = db.execute(f"""
+        SELECT count(*), count(DISTINCT coalesce(CAST(numeric_val AS VARCHAR), value))
+        FROM device_states
+        WHERE ieee = ? AND attribute IN ({placeholders})
+          AND ts >= now() - INTERVAL '{hours} hours'
+    """, [ieee, *attributes]).fetchone()
+    if not row:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)
 
 
 def query_device_attributes(ieee: str, hours: int = 720) -> List[str]:

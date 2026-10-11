@@ -640,22 +640,22 @@ async function chooseConfigMode(suggested = null) {
 }
 
 /**
- * Explicit mode switch from an editor footer. Confirmed first: floor_plan ->
- * manual archives the plan and strips refs server-side, manual -> floor_plan
- * re-projects any saved plan and re-locks room geometry. Closes the open modal
- * and reloads the status panel.
+ * Explicit mode switch from an editor footer. Both modes read the same rooms
+ * (the server keeps the plan and both circuit lists in step), so the switch
+ * only moves device bindings between editors. Closes the open modal and
+ * reloads the status panel.
  */
 async function switchConfigMode(targetMode) {
     if (targetMode !== 'floor_plan' && targetMode !== 'manual') return;
     if (controllerConfigMode === targetMode) return;
 
     const confirmDetail = targetMode === 'manual'
-        ? 'Your floor plan stays saved as a backup, but the rooms will '
-          + 'become freely editable in the manual UI. You can switch back '
-          + 'later — the plan will be re-applied.'
+        ? 'Rooms, settings and devices carry over unchanged. Sensors, TRVs '
+          + 'and contacts become editable here and are written back to the '
+          + 'floor plan; room layout stays as the plan draws it.'
         : (await hasSavedFloorPlan()
-            ? 'Your saved floor plan will be re-applied to the rooms. '
-              + 'Geometry and device bindings will reflect the plan.'
+            ? 'Rooms, settings and devices carry over unchanged. Device '
+              + 'placement moves to the floor-plan editor.'
             : 'There is no floor plan saved yet. After switching, open '
               + 'the floor-plan editor to draw one.');
 
@@ -685,8 +685,7 @@ async function switchConfigMode(targetMode) {
             try { bootstrap.Modal.getInstance(m)?.hide(); } catch { /* ignore */ }
         });
 
-        // Refresh status; cached config is now stale (refs may have been
-        // stripped or re-added server-side).
+        // Refresh status; the cached config is stale after the server sync.
         controllerConfig = null;
         workingCircuits = [];
         await loadControllerStatus();
@@ -696,7 +695,7 @@ async function switchConfigMode(targetMode) {
                 ? (r.reprojected
                     ? 'Floor plan re-applied. Open the editor to make changes.'
                     : 'Mode switched. Open the editor to draw your plan.')
-                : `Now in manual mode. Stripped ${r.stripped_floor_plan_refs || 0} floor-plan references.`);
+                : 'Now in manual mode. Room layout still follows the floor plan.');
     } catch (e) {
         log.error('Mode switch failed:', e);
         fireToast('error', 'Switch failed', e.message);
@@ -1190,13 +1189,12 @@ function renderHcScheduleSlots(slots, ci, ri) {
 }
 
 function renderRoomCard(room, ci, ri) {
-    // A projected room has its bindings rewritten by the plan on every save, so
-    // those blocks are disabled here with a banner back to the editor.
-    // Projected: temperature sensor, TRVs, contact sensors, radiator block,
-    // dimensions geometry. Still editable: target/setback/min temp, schedule,
-    // external-temp mode, per-contact and per-TRV toggles — the plan does not
-    // carry that controller behaviour.
-    const projected = !!room.floor_plan_ref;
+    // In floor_plan mode the plan editor owns a drawn room's sensors, TRVs and
+    // contacts, so those blocks are disabled with a banner back to the editor.
+    // In manual mode they are edited here and written back into the plan.
+    // Settings (temps, schedule, external-temp mode, per-device toggles) are
+    // editable in both.
+    const projected = !!room.floor_plan_ref && controllerConfigMode === 'floor_plan';
     const projectedBlockBanner = (label) => projected ? `
         <div class="alert alert-info py-1 px-2 mb-2 d-flex justify-content-between align-items-center small">
             <div>
@@ -1658,10 +1656,8 @@ function renderDimensionsPanel(room, ci, ri) {
             </div>
         </div>`).join('');
 
-    // When the room is projected from a floor plan, the dimensions block is
-    // an auto-generated cache of plan geometry. Editing it here would be
-    // overwritten on the next floor-plan save. Show a banner that flags this
-    // and offers a button to open the floor-plan editor.
+    // A room drawn on the plan takes its layout and radiators from it in either
+    // mode — the plan is the more accurate — so this block is read-only here.
     const projected = !!room.floor_plan_ref;
     const projectedBanner = projected ? `
         <div class="alert alert-info py-2 px-3 mb-2 d-flex justify-content-between align-items-center small">

@@ -185,20 +185,14 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
         cfg = _load_config()
         heating = cfg.setdefault("heating", {})
         controller = heating.setdefault("controller", {})
+        had_circuits = bool(heating.get("circuits") or controller.get("circuits"))
 
-        # floor-plan save rather than being reset to defaults.
-        existing_circuits = (
-                controller.get("circuits")
-                or heating.get("circuits")
-                or []
-        )
-
+        # Plan geometry and bindings flow into both circuit lists; manual-only
+        # settings ride along from the current ones.
         try:
-            updated_circuits, warnings = project_floor_plan_to_circuits(
-                cleaned, existing_circuits
-            )
-            from routes.heating_controller_routes import normalise_circuits
-            updated_circuits = normalise_circuits(updated_circuits)
+            from routes.heating_controller_routes import sync_heating_config
+            _, warnings = sync_heating_config(heating, cleaned)
+            updated_circuits = heating["circuits"]
         except Exception as e:
             logger.exception("floor plan projection failed")
             return {"success": False, "error": f"projection failed: {e}"}
@@ -209,9 +203,10 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
             logger.exception("floor plan write failed")
             return {"success": False, "error": f"could not write floor plan: {e}"}
 
-        controller["circuits"] = updated_circuits
-        # Ensure the controller knows it is in floor-plan mode
-        controller.setdefault("config_mode", "floor_plan")
+        # A first plan on a fresh install becomes the editor of record; an
+        # existing manual config keeps its mode (both read the same rooms).
+        if not had_circuits:
+            controller.setdefault("config_mode", "floor_plan")
         floor_plan_store.drop_legacy_key(cfg)
 
         try:
@@ -389,7 +384,8 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
         cfg = _load_config()
         heating = cfg.get("heating") or {}
         plan = floor_plan_store.load_plan()
-        circuits = (heating.get("controller") or {}).get("circuits") or []
+        from modules.heating_controller import circuits_for_mode
+        circuits = circuits_for_mode(heating)
         if not plan:
             return {"success": False, "error": "no floor plan saved"}
         try:

@@ -147,6 +147,22 @@ def _window_gain_watts(
 
 # Room-level gain
 
+_COMPASS_DEG = {"N": 0.0, "NE": 45.0, "E": 90.0, "SE": 135.0,
+                "S": 180.0, "SW": 225.0, "W": 270.0, "NW": 315.0}
+
+
+def window_facing_deg(window: Dict[str, Any], wall_cfg: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Outward bearing of a window: its own exact bearing (floor plan), else its
+    wall's, else its 8-point compass orientation (manual config)."""
+    for v in (window.get("facing_deg"), (wall_cfg or {}).get("facing_deg")):
+        if v is not None:
+            try:
+                return float(v) % 360.0
+            except (TypeError, ValueError):
+                pass
+    return _COMPASS_DEG.get(str(window.get("orientation") or "").upper())
+
+
 def _room_gain_at_position(
         room_config: Dict[str, Any],
         sun_azimuth_deg: float,
@@ -172,11 +188,7 @@ def _room_gain_at_position(
         # Only windows on external walls contribute solar gain
         if wall_cfg and wall_cfg.get("type") not in ("external",):
             continue
-        facing_deg: Optional[float] = None
-        if wall_cfg:
-            fd = wall_cfg.get("facing_deg")
-            if fd is not None:
-                facing_deg = float(fd)
+        facing_deg = window_facing_deg(window, wall_cfg)
 
         total_watts += _window_gain_watts(
             window=window,
@@ -331,13 +343,13 @@ def solar_gain_window(
     for w in windows_cfg:
         wall_key = w.get("wall")
         wall_def = walls_cfg.get(wall_key) if wall_key else None
-        if wall_def and wall_def.get("facing_deg") is not None:
+        if window_facing_deg(w, wall_def) is not None:
             has_orientation = True
             break
 
     if not has_orientation:
         warnings.append(
-            "No wall facing_deg configured — beam component omitted; "
+            "No window or wall bearing configured — beam component omitted; "
             "solar gain estimates are diffuse-only and will be conservative."
         )
 
