@@ -198,12 +198,12 @@
                <li><button class="dropdown-item" type="button" data-bs-toggle="tab" data-bs-target="#wiki"><i class="fas fa-book fa-fw me-2"></i>Docs</button></li>
            </ul>
        </li>
-       <!-- Tabs that don't fit on one row are listed here by tab-overflow.js -->
-       <li class="nav-item dropdown d-none" id="mainTabsMore">
-           <button class="nav-link dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-               <i class="fas fa-ellipsis"></i> <span class="tab-more-label">More</span>
+       <!-- md and up the rail is a sidebar; this collapses it to icons (nav-sidebar.js) -->
+       <li class="nav-item d-none d-md-block" id="mainTabsCollapseItem">
+           <button class="nav-link" type="button" id="mainTabsCollapse" aria-expanded="true"
+                   aria-controls="mainTabs" aria-label="Collapse navigation" title="Collapse">
+               <i class="fas fa-angles-left"></i> <span class="tab-label">Collapse</span>
            </button>
-           <ul class="dropdown-menu dropdown-menu-end"></ul>
        </li>
    </ul>
 
@@ -1982,7 +1982,7 @@
 <script src="/static/js/device-search.js"></script>
 <script src="/static/js/mobile-helpers.js"></script>
 <script src="/static/js/tab-dropdowns.js"></script>
-<script src="/static/js/tab-overflow.js"></script>
+<script src="/static/js/nav-sidebar.js"></script>
 <script src="/static/js/deploy-animation.js"></script>
 <script src="/static/js/adblock.js"></script>
 <script type="module" src="/static/js/floor-plan.js"></script>
