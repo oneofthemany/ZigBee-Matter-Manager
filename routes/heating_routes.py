@@ -14,6 +14,12 @@ from fastapi import FastAPI, HTTPException
 
 from modules.floor_plan_store import load_plan
 
+# A measured heat loss replaces the assumed one only at this fit confidence
+# (sample count × R², thermal_profile.compute_measured) — the controller's
+# "high" — and inside this W/m² range; anything else is noise, not data.
+HEAT_LOSS_MIN_CONFIDENCE = 0.7
+HEAT_LOSS_PLAUSIBLE_WM2 = (10.0, 150.0)
+
 logger = logging.getLogger("routes.heating")
 
 CONFIG_PATH = "./config/config.yaml"
@@ -1069,6 +1075,87 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+
+    @app.get("/api/heating/rooms/heat-loss")
+    async def rooms_heat_loss(days: int = 14):
+        """
+        Per-room design heat loss in W/m², from each room's *measured* thermal
+        profile — only where the measurement is tangible (see
+        HEAT_LOSS_MIN_CONFIDENCE). Rooms without one return flux null and the
+        caller keeps its own assumption. Keyed by room id, which is the plan
+        room id for drawn rooms. Drives the floor plan's cold zones.
+        """
+        adv = _resolve_advisor()
+        cfg = _load_config()
+        heating = cfg.get("heating") or {}
+        insulation = (heating.get("property") or {}).get("insulation", "partial")
+        boiler = _with_defaults(heating.get("boiler"), _BOILER_DEFAULTS)
+        design_out = float(boiler.get("design_outdoor_c", -3.0))
+        hours = max(24, int(days) * 24)
+
+        def _outdoor_getter():
+            try:
+                from modules.telemetry_db import build_outdoor_temp_getter
+                return build_outdoor_temp_getter(hours)
+            except Exception as e:
+                logger.debug(f"outdoor history unavailable: {e}")
+                return None
+
+        outdoor_getter = await asyncio.to_thread(_outdoor_getter)
+        if outdoor_getter is None and adv and getattr(adv, "weather", None):
+            try:
+                now_out = adv.weather.get_outdoor_temperature()
+                if now_out is not None:
+                    outdoor_getter = lambda _ts, _v=now_out: _v
+            except Exception:
+                pass
+
+        from modules.thermal_profile import compute_profile
+        plan = load_plan()
+        rooms_out: Dict[str, Any] = {}
+        for c in _active_circuits(heating):
+            for r in (c.get("rooms") or []):
+                rid = str(r.get("id"))
+                dims = r.get("dimensions") or {}
+                area = float(dims.get("floor_area_m2") or 0.0)
+                sensor = r.get("temperature_sensor_ieee") or next(
+                    (t.get("ieee") for t in (r.get("trvs") or []) if isinstance(t, dict)), None)
+                entry = {"room_id": rid, "name": r.get("name"), "flux_wm2": None,
+                         "measured_w_per_k": None, "confidence": 0.0, "samples": 0,
+                         "reason": None}
+                rooms_out[rid] = entry
+                if not dims or area <= 0:
+                    entry["reason"] = "no room size"
+                    continue
+                if not sensor or outdoor_getter is None:
+                    entry["reason"] = "no temperature history" if not sensor else "no outdoor history"
+                    continue
+                try:
+                    series, _ = await _temp_series(sensor, hours)
+                    prof = compute_profile(
+                        room_id=rid, dimensions=dims, insulation=insulation,
+                        temperature_series=series, outdoor_temp_getter=outdoor_getter,
+                        floor_plan=plan, floor_plan_ref=r.get("floor_plan_ref"),
+                    )
+                except Exception as e:
+                    logger.debug(f"heat-loss profile failed for {rid}: {e}")
+                    entry["reason"] = "profile failed"
+                    continue
+                entry.update(measured_w_per_k=prof.measured_w_per_k,
+                             confidence=round(prof.measured_confidence, 2),
+                             samples=prof.measured_sample_count)
+                if prof.measured_w_per_k is None or prof.measured_confidence < HEAT_LOSS_MIN_CONFIDENCE:
+                    entry["reason"] = (f"not enough cool-down data yet "
+                                       f"(confidence {prof.measured_confidence:.2f})")
+                    continue
+                target = float(r.get("target_temp") or 20.0)
+                flux = prof.measured_w_per_k * (target - design_out) / area
+                if not HEAT_LOSS_PLAUSIBLE_WM2[0] <= flux <= HEAT_LOSS_PLAUSIBLE_WM2[1]:
+                    entry["reason"] = f"measured {flux:.0f} W/m² is implausible"
+                    continue
+                entry["flux_wm2"] = round(flux, 1)
+        return {"success": True, "design_outdoor_c": design_out,
+                "min_confidence": HEAT_LOSS_MIN_CONFIDENCE, "rooms": rooms_out}
 
     @app.get("/api/heating/circuits/{circuit_id}/rooms/{room_id}/thermal")
     async def circuit_room_thermal(circuit_id: str, room_id: str, days: int = 14):

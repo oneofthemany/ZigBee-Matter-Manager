@@ -880,3 +880,6 @@
         animation: none;
     }
 }
+
+/* Bound from the manual config with no position yet: drawn at the room's centre. */
+.fp-unplaced { stroke-dasharray: 0.06 0.04; opacity: 0.75; }

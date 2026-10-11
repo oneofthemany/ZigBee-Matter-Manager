@@ -1,0 +1,99 @@
+/* Heating controller — Circuits & rooms modal (static/js/heating-controller.js) */
+
+/* Sidebar + one detail pane, so only the selected circuit or room is on screen. */
+.hc-rooms {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+@media (max-width: 767.98px) {
+    .hc-rooms { grid-template-columns: minmax(0, 1fr); gap: .75rem; }
+}
+
+.hc-rooms-nav {
+    position: sticky;
+    top: 0;
+    max-height: calc(100vh - 230px);
+    overflow-y: auto;
+    border-right: 1px solid var(--border-color);
+    padding-right: .5rem;
+}
+@media (max-width: 767.98px) {
+    .hc-rooms-nav { position: static; max-height: none; border-right: 0; padding-right: 0; }
+}
+
+.hc-nav-group + .hc-nav-group { margin-top: .5rem; }
+
+.hc-nav-item {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    width: 100%;
+    min-height: 2rem;
+    padding: .3rem .5rem;
+    border: 0;
+    border-radius: .375rem;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: .875rem;
+    text-align: left;
+}
+.hc-nav-item:hover { background: var(--bg-surface-sunken); }
+.hc-nav-item.active {
+    background: rgba(13, 110, 253, .12);
+    color: var(--text-link);
+    font-weight: 600;
+}
+.hc-nav-circuit { font-weight: 600; }
+.hc-nav-circuit .fa-stream { color: var(--text-secondary); }
+.hc-nav-room { padding-left: 1.6rem; }
+.hc-nav-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hc-nav-meta { font-size: .75rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.hc-nav-add {
+    display: block;
+    width: 100%;
+    padding: .2rem .5rem .2rem 1.6rem;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: .8rem;
+    text-align: left;
+}
+.hc-nav-add:hover { color: var(--text-link); }
+
+.hc-warn { color: var(--bs-warning); font-size: .8rem; }
+.hc-dot {
+    display: inline-block;
+    width: .45rem;
+    height: .45rem;
+    margin-left: .3rem;
+    border-radius: 50%;
+    background: var(--bs-danger);
+    vertical-align: middle;
+}
+
+/* Room header and its sub-tabs. The rail scrolls sideways on a phone and holds
+   no dropdowns, so nothing is clipped by its overflow. */
+.hc-room-head { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin-bottom: .5rem; }
+.hc-room-head .hc-room-title { flex: 1 1 14rem; min-width: 0; }
+.hc-room-head .hc-room-move { flex: 0 1 12rem; }
+.hc-room-badges { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: .75rem; }
+
+.hc-room-tabs {
+    flex-wrap: nowrap;
+    gap: .25rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-bottom: .75rem;
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.hc-room-tabs::-webkit-scrollbar { display: none; }
+.hc-room-tabs .nav-link { white-space: nowrap; padding: .35rem .7rem; font-size: .85rem; }
+.hc-room-tabs .badge { font-size: .7rem; }
+
+.hc-top-tabs .nav-link { white-space: nowrap; }
+
+/* Bound-TRV behaviour rows under the TRV picker. */
+.hc-trv-settings { border-left: 3px solid var(--border-color); padding-left: .75rem; }

@@ -16,7 +16,11 @@ let controllerSensors = [];
 let controllerContactSensors = [];
 let workingCircuits = [];
 let controllerStatusTimer = null;
-let expandedRoomIds = new Set();
+// The modal shows one circuit (ri === null) or one room at a time; these
+// survive re-renders so editing never jumps the user elsewhere.
+let hcSelection = { ci: 0, ri: null };
+let hcRoomTab = 'comfort';
+let hcTopTab = 'rooms';
 
 // Tracks last known health level per "circuit_id:room_id" across polls,
 // so we can fire toasts only on transitions (not every 30s while a
@@ -863,7 +867,27 @@ export async function openControllerSettings() {
 }
 
 function renderControllerForm(cfg) {
+    const roomCount = workingCircuits.reduce((n, c) => n + (c.rooms || []).length, 0);
+    const topTab = (key, icon, label, extra = '') => `
+        <li class="nav-item" role="presentation">
+            <button type="button" class="nav-link hc-top-tab ${hcTopTab === key ? 'active' : ''}"
+                    data-hc-tab="${key}" role="tab">
+                <i class="fas ${icon} me-1"></i>${label}${extra}
+            </button>
+        </li>`;
     return `
+        <ul class="nav nav-tabs hc-top-tabs mb-3" role="tablist">
+            ${topTab('rooms', 'fa-stream', 'Circuits &amp; rooms',
+                     ` <span class="badge bg-secondary" id="hcRoomCount">${roomCount}</span>`)}
+            ${topTab('general', 'fa-sliders-h', 'General')}
+        </ul>
+        <div class="hc-top-pane" data-hc-pane="rooms" ${hcTopTab !== 'rooms' ? 'hidden' : ''}>
+            <div class="hc-rooms">
+                <nav class="hc-rooms-nav" id="hcRoomNav" aria-label="Circuits and rooms"></nav>
+                <section class="hc-rooms-detail" id="circuitsList"></section>
+            </div>
+        </div>
+        <div class="hc-top-pane" data-hc-pane="general" ${hcTopTab !== 'general' ? 'hidden' : ''}>
         <div class="alert alert-info small mb-3">
             <i class="fas fa-info-circle me-1"></i>
             <strong>Circuits</strong> are receivers/zone valves that call for boiler heat.
@@ -887,14 +911,7 @@ function renderControllerForm(cfg) {
 
         ${renderWeatherSuppressionForm(cfg.weather_suppression || {})}
         ${renderOperatingHoursForm(cfg.operating_hours || {})}
-
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <strong>Circuits</strong>
-            <button class="btn btn-sm btn-primary" id="btnAddCircuit">
-                <i class="fas fa-plus me-1"></i> Add circuit
-            </button>
-        </div>
-        <div id="circuitsList"></div>`;
+        </div>`;
 }
 
 function renderOperatingHoursForm(oh) {
@@ -946,7 +963,7 @@ function renderOperatingHoursForm(oh) {
                         <label class="form-label small mb-1" for="ohAction">Out-of-hours action</label>
                         <select id="ohAction" class="form-select form-select-sm">
                             ${opt('setback', 'Setback (lower target)')}
-                            ${opt('min_only', 'Frost-protect only (min temp)')}
+                            ${opt('min_only', 'Hold min temp')}
                             ${opt('off', 'Off (no heat call)')}
                         </select>
                     </div>
@@ -1018,18 +1035,22 @@ function renderWeatherSuppressionForm(wx) {
 }
 
 function bindControllerForm() {
-    document.getElementById('btnAddCircuit')?.addEventListener('click', () => {
-        const n = workingCircuits.length + 1;
-        workingCircuits.push({
-            id: `circuit_${n}`,
-            name: `Circuit ${n}`,
-            receiver_ieee: null,
-            receiver_command: 'thermostat',
-            rooms: [],
+    document.querySelectorAll('.hc-top-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            hcTopTab = btn.dataset.hcTab;
+            document.querySelectorAll('.hc-top-tab').forEach(b =>
+                b.classList.toggle('active', b === btn));
+            document.querySelectorAll('.hc-top-pane').forEach(p => {
+                p.hidden = p.dataset.hcPane !== hcTopTab;
+            });
         });
-        renderCircuitsList();
     });
     renderCircuitsList();
+}
+
+// Contact-sensor bindings live with the room cards, which re-render on every
+// structural edit; binding them once at form load left them dead after one.
+function bindContactSensorControls() {
     // Add a contact sensor to a room
     document.querySelectorAll('.btn-cs-add').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -1066,25 +1087,6 @@ function bindControllerForm() {
         });
     });
 
-    // Persist room expand/collapse state across re-renders
-    document.querySelectorAll('details.room-card').forEach(el => {
-        el.addEventListener('toggle', () => {
-            const id = el.dataset.roomId;
-            if (!id) return;
-            if (el.open) expandedRoomIds.add(id);
-            else expandedRoomIds.delete(id);
-            // Rotate chevron
-            const chev = el.querySelector('.room-chevron');
-            if (chev) chev.classList.toggle('fa-chevron-down', el.open);
-        });
-        // Set initial chevron state on render
-        const chev = el.querySelector('.room-chevron');
-        if (chev && el.open) {
-            chev.classList.remove('fa-chevron-right');
-            chev.classList.add('fa-chevron-down');
-        }
-    });
-
     // Per-field updates
     const csUpdate = (selector, key, parser) => {
         document.querySelectorAll(selector).forEach(el => {
@@ -1102,17 +1104,152 @@ function bindControllerForm() {
     csUpdate('.cs-enabled',  'enabled',               el => el.checked);
 }
 
+function clampSelection() {
+    if (!workingCircuits.length) { hcSelection = { ci: 0, ri: null }; return; }
+    let { ci, ri } = hcSelection;
+    ci = Math.min(Math.max(0, ci | 0), workingCircuits.length - 1);
+    const rooms = workingCircuits[ci].rooms || [];
+    if (ri != null) ri = rooms.length ? Math.min(ri, rooms.length - 1) : null;
+    hcSelection = { ci, ri };
+}
+
+/** A room that can't call for heat: nothing measures it. */
+function roomCannotControl(room) {
+    return !(room.trv_ieees || []).length && !primarySensorIeee(room);
+}
+
+function renderRoomNav() {
+    const sel = hcSelection;
+    const groups = workingCircuits.map((c, ci) => {
+        const rooms = (c.rooms || []).map((r, ri) => {
+            const active = sel.ci === ci && sel.ri === ri;
+            return `
+                <button type="button" class="hc-nav-item hc-nav-room ${active ? 'active' : ''}"
+                        data-ci="${ci}" data-ri="${ri}" ${active ? 'aria-current="true"' : ''}>
+                    <span class="hc-nav-name">${escapeHtml(r.name || r.id)}</span>
+                    ${roomCannotControl(r)
+                        ? '<i class="fas fa-exclamation-triangle hc-warn" title="No TRV or sensor — cannot call for heat"></i>'
+                        : ''}
+                    <span class="hc-nav-meta">${Number(r.target_temp).toFixed(1)}°</span>
+                </button>`;
+        }).join('');
+        const active = sel.ci === ci && sel.ri == null;
+        return `
+            <div class="hc-nav-group">
+                <button type="button" class="hc-nav-item hc-nav-circuit ${active ? 'active' : ''}"
+                        data-ci="${ci}" ${active ? 'aria-current="true"' : ''}>
+                    <i class="fas fa-stream"></i>
+                    <span class="hc-nav-name">${escapeHtml(c.name || c.id)}</span>
+                    ${c.receiver_ieee ? '' : '<i class="fas fa-exclamation-triangle hc-warn" title="No receiver assigned"></i>'}
+                </button>
+                ${rooms}
+                <button type="button" class="hc-nav-add btn-add-room" data-ci="${ci}">
+                    <i class="fas fa-plus me-1"></i>Add room
+                </button>
+            </div>`;
+    }).join('');
+
+    const options = workingCircuits.map((c, ci) => [
+        `<option value="${ci}:" ${sel.ci === ci && sel.ri == null ? 'selected' : ''}>${escapeHtml(c.name || c.id)} — circuit</option>`,
+        ...(c.rooms || []).map((r, ri) =>
+            `<option value="${ci}:${ri}" ${sel.ci === ci && sel.ri === ri ? 'selected' : ''}>&nbsp;&nbsp;${escapeHtml(r.name || r.id)}${roomCannotControl(r) ? ' ⚠' : ''}</option>`),
+    ].join('')).join('');
+
+    return `
+        <div class="d-none d-md-block">
+            ${groups}
+            <button type="button" class="btn btn-sm btn-outline-primary w-100 mt-3 hc-add-circuit">
+                <i class="fas fa-plus me-1"></i>Add circuit
+            </button>
+        </div>
+        <div class="d-md-none">
+            <label class="form-label small mb-1" for="hcNavSelect">Circuit or room</label>
+            <select class="form-select hc-nav-select" id="hcNavSelect">${options}</select>
+            <div class="d-flex gap-2 mt-2">
+                <button type="button" class="btn btn-sm btn-outline-primary flex-fill btn-add-room"
+                        data-ci="${sel.ci}">
+                    <i class="fas fa-plus me-1"></i>Room
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-primary flex-fill hc-add-circuit">
+                    <i class="fas fa-plus me-1"></i>Circuit
+                </button>
+            </div>
+        </div>`;
+}
+
+function selectInModal(ci, ri) {
+    hcSelection = { ci, ri };
+    renderCircuitsList();
+    document.getElementById('circuitsList')?.scrollIntoView({ block: 'nearest' });
+}
+
+function bindRoomNav() {
+    document.querySelectorAll('.hc-nav-circuit, .hc-nav-room, .hc-jump-room').forEach(btn => {
+        btn.addEventListener('click', () =>
+            selectInModal(+btn.dataset.ci, btn.dataset.ri == null ? null : +btn.dataset.ri));
+    });
+    document.querySelector('.hc-nav-select')?.addEventListener('change', e => {
+        const [ci, ri] = e.target.value.split(':');
+        selectInModal(+ci, ri === '' ? null : +ri);
+    });
+    document.querySelectorAll('.hc-add-circuit').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const n = workingCircuits.length + 1;
+            workingCircuits.push({
+                id: `circuit_${n}`,
+                name: `Circuit ${n}`,
+                receiver_ieee: null,
+                receiver_command: 'thermostat',
+                rooms: [],
+            });
+            selectInModal(workingCircuits.length - 1, null);
+        });
+    });
+    document.querySelectorAll('.hc-room-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            hcRoomTab = btn.dataset.roomTab;
+            document.querySelectorAll('.hc-room-tab').forEach(b =>
+                b.classList.toggle('active', b === btn));
+            document.querySelectorAll('.hc-room-pane').forEach(p => {
+                p.hidden = p.dataset.roomPane !== hcRoomTab;
+            });
+        });
+    });
+    // Renames show in the sidebar as they're typed, without a re-render that
+    // would steal focus.
+    document.querySelectorAll('.room-name, .circuit-name').forEach(el => {
+        el.addEventListener('input', () => {
+            const sel = el.classList.contains('room-name')
+                ? `.hc-nav-room[data-ci="${el.dataset.ci}"][data-ri="${el.dataset.ri}"] .hc-nav-name`
+                : `.hc-nav-circuit[data-ci="${el.dataset.ci}"] .hc-nav-name`;
+            const label = document.querySelector(sel);
+            if (label) label.textContent = el.value;
+        });
+    });
+}
+
 function renderCircuitsList() {
     const container = document.getElementById('circuitsList');
+    const nav = document.getElementById('hcRoomNav');
     if (!container) return;
+    clampSelection();
+    if (nav) nav.innerHTML = renderRoomNav();
+    const count = document.getElementById('hcRoomCount');
+    if (count) count.textContent = workingCircuits.reduce((n, c) => n + (c.rooms || []).length, 0);
     if (!workingCircuits.length) {
         container.innerHTML = `<div class="text-center text-muted py-4 border rounded">
             No circuits yet. Click <strong>Add circuit</strong> to start.
         </div>`;
-        return;
+    } else {
+        const { ci, ri } = hcSelection;
+        const circuit = workingCircuits[ci];
+        container.innerHTML = ri == null
+            ? renderCircuitCard(circuit, ci)
+            : renderRoomCard(circuit.rooms[ri], ci, ri);
     }
-    container.innerHTML = workingCircuits.map((c, i) => renderCircuitCard(c, i)).join('');
+    bindRoomNav();
     bindCircuitCards();
+    bindContactSensorControls();
 }
 
 function renderCircuitCard(circuit, ci) {
@@ -1129,44 +1266,89 @@ function renderCircuitCard(circuit, ci) {
         }).join('');
 
     const roomsHtml = (circuit.rooms || []).length
-        ? circuit.rooms.map((r, ri) => renderRoomCard(r, ci, ri)).join('')
-        : `<div class="text-muted small text-center py-2">No rooms in this circuit yet.</div>`;
+        ? `<div class="d-flex flex-wrap gap-2">${circuit.rooms.map((r, ri) => `
+            <button type="button" class="btn btn-sm btn-outline-secondary hc-jump-room"
+                    data-ci="${ci}" data-ri="${ri}">
+                ${escapeHtml(r.name || r.id)}
+                <span class="text-muted ms-1">${Number(r.target_temp).toFixed(1)}°</span>
+                ${roomCannotControl(r) ? '<i class="fas fa-exclamation-triangle hc-warn ms-1"></i>' : ''}
+            </button>`).join('')}</div>`
+        : `<div class="text-muted small">No rooms in this circuit yet.</div>`;
+
+    // Absent = follow the controller-wide setting on the General tab.
+    const override = (key, label) => {
+        const v = circuit[key];
+        return `
+            <div class="col-sm-6">
+                <label class="form-label small mb-1">${label}</label>
+                <select class="form-select form-select-sm circuit-override" data-ci="${ci}" data-key="${key}">
+                    <option value="" ${v == null ? 'selected' : ''}>Follow General tab</option>
+                    <option value="on" ${v === true ? 'selected' : ''}>On for this circuit</option>
+                    <option value="off" ${v === false ? 'selected' : ''}>Off for this circuit</option>
+                </select>
+            </div>`;
+    };
+    const thermostat = (circuit.receiver_command || 'thermostat') === 'thermostat';
 
     return `
-        <div class="card mb-3 controller-circuit-card" data-ci="${ci}">
-            <div class="card-header d-flex justify-content-between align-items-center bg-light">
-                <div class="d-flex align-items-center gap-2 flex-grow-1">
-                    <i class="fas fa-stream text-primary"></i>
+        <div class="controller-circuit-card" data-ci="${ci}">
+            <div class="hc-room-head">
+                <div class="hc-room-title">
+                    <label class="form-label small mb-1">Circuit name</label>
                     <input type="text" class="form-control form-control-sm circuit-name" data-ci="${ci}"
-                           value="${escapeAttr(circuit.name)}" placeholder="Circuit name" style="max-width:240px;">
-                    <small class="text-muted">id: ${escapeHtml(circuit.id)}</small>
+                           value="${escapeAttr(circuit.name)}" placeholder="Circuit name">
                 </div>
-                <button class="btn btn-sm btn-outline-danger btn-delete-circuit" data-ci="${ci}">
-                    <i class="fas fa-trash"></i>
+                <button class="btn btn-sm btn-outline-danger btn-delete-circuit" data-ci="${ci}"
+                        title="Delete circuit">
+                    <i class="fas fa-trash me-1"></i>Delete
                 </button>
             </div>
-            <div class="card-body">
-                <div class="row g-2 mb-3">
-                    <div class="col-md-7">
-                        <label class="form-label small mb-1">Receiver / zone valve</label>
-                        <select class="form-select form-select-sm circuit-receiver" data-ci="${ci}">
-                            <option value="">— No receiver assigned —</option>
-                            ${recvOptions}
-                        </select>
-                    </div>
-                    <div class="col-md-5 d-flex align-items-end">
-                        <small class="text-muted"><i class="fas fa-info-circle me-1"></i>Controls via system_mode (heat/off)</small>
-                    </div>
-                </div>
+            <div class="small text-muted mb-3">id: ${escapeHtml(circuit.id)}</div>
 
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <strong class="small">Rooms in this circuit</strong>
-                    <button class="btn btn-sm btn-outline-primary btn-add-room" data-ci="${ci}">
-                        <i class="fas fa-plus me-1"></i> Add room
-                    </button>
+            <h6 class="small text-uppercase text-muted mb-2">Boiler call</h6>
+            <div class="row g-2 mb-3">
+                <div class="col-md-7">
+                    <label class="form-label small mb-1">Receiver / zone valve</label>
+                    <select class="form-select form-select-sm circuit-receiver" data-ci="${ci}">
+                        <option value="">— No receiver assigned —</option>
+                        ${recvOptions}
+                    </select>
                 </div>
-                ${roomsHtml}
+                <div class="col-md-5">
+                    <label class="form-label small mb-1">Command</label>
+                    <select class="form-select form-select-sm circuit-recvcmd" data-ci="${ci}">
+                        <option value="thermostat" ${thermostat ? 'selected' : ''}>Thermostat (system_mode heat/off)</option>
+                        <option value="switch" ${!thermostat ? 'selected' : ''}>Switch (relay on/off)</option>
+                    </select>
+                </div>
+                ${thermostat ? `
+                <div class="col-6 col-md-3">
+                    <label class="form-label small mb-1">Call setpoint °C</label>
+                    <input type="number" step="0.5" min="4" max="90" class="form-control form-control-sm circuit-sp"
+                           data-ci="${ci}" data-key="receiver_call_setpoint" placeholder="30"
+                           value="${circuit.receiver_call_setpoint ?? ''}">
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="form-label small mb-1">Idle setpoint °C</label>
+                    <input type="number" step="0.5" min="4" max="90" class="form-control form-control-sm circuit-sp"
+                           data-ci="${ci}" data-key="receiver_idle_setpoint" placeholder="7"
+                           value="${circuit.receiver_idle_setpoint ?? ''}">
+                </div>` : ''}
             </div>
+
+            <h6 class="small text-uppercase text-muted mb-2">Overrides</h6>
+            <div class="row g-2 mb-3">
+                ${override('operating_hours', 'Operating hours')}
+                ${override('weather_suppression', 'Weather suppression')}
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="small text-uppercase text-muted mb-0">Rooms</h6>
+                <button class="btn btn-sm btn-outline-primary btn-add-room" data-ci="${ci}">
+                    <i class="fas fa-plus me-1"></i> Add room
+                </button>
+            </div>
+            ${roomsHtml}
         </div>`;
 }
 
@@ -1257,7 +1439,6 @@ function renderRoomCard(room, ci, ri) {
         </div>` : '';
 
 
-    const isOpen = expandedRoomIds.has(room.id);
     const sensorLabel = sensorIeee
         ? (controllerSensors.find(s => s.ieee === sensorIeee)?.name || sensorIeee)
         : null;
@@ -1296,147 +1477,175 @@ function renderRoomCard(room, ci, ri) {
             : '',
     ].filter(Boolean).join(' ');
 
-    return `
-        <details class="card mb-2 ms-3 room-card" data-room-id="${escapeAttr(room.id)}"
-                 data-ci="${ci}" data-ri="${ri}"
-                 style="border-left: 3px solid var(--bs-info);" ${isOpen ? 'open' : ''}>
-            <summary class="card-body py-2 user-select-none" style="cursor:pointer; list-style:none;">
-                <div class="d-flex justify-content-between align-items-center gap-2">
-                    <div class="d-flex align-items-center gap-2 flex-grow-1 flex-wrap">
-                        <i class="fas fa-chevron-right room-chevron text-muted"></i>
-                        <i class="fas fa-door-open text-info"></i>
-                        <strong>${escapeHtml(room.name)}</strong>
-                        <small class="text-muted">id: ${escapeHtml(room.id)}</small>
-                        <div class="ms-2 d-flex gap-1 flex-wrap">${headerBadges}</div>
-                    </div>
-                    <button class="btn btn-sm btn-outline-danger btn-delete-room"
-                            data-ci="${ci}" data-ri="${ri}" title="Delete room"
-                            onclick="event.stopPropagation();">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-            </summary>
-            <div class="card-body pt-0 py-2 border-top">
-                <div class="row g-2 my-2">
-                    <div class="col-md-6">
-                        <label class="form-label small mb-1">Room name</label>
-                        <input type="text" class="form-control form-control-sm room-name"
-                               data-ci="${ci}" data-ri="${ri}"
-                               value="${escapeAttr(room.name)}" placeholder="Room name">
-                    </div>
-                </div>
+    const otherCircuits = workingCircuits.map((c, i) =>
+        `<option value="${i}" ${i === ci ? 'selected' : ''}>${escapeHtml(c.name || c.id)}</option>`).join('');
+    const contacts = room.contact_sensors || [];
+    const dimsSet = !!(room.dimensions && (room.dimensions.width_m || room.dimensions.floor_area_m2));
+    const tab = (key, icon, label, extra = '') => `
+        <li class="nav-item" role="presentation">
+            <button type="button" class="nav-link hc-room-tab ${hcRoomTab === key ? 'active' : ''}"
+                    data-room-tab="${key}" role="tab">
+                <i class="fas ${icon} me-1"></i>${label}${extra}
+            </button>
+        </li>`;
+    const count = n => ` <span class="badge bg-secondary">${n}</span>`;
+    const pane = (key, body) => `
+        <div class="hc-room-pane" data-room-pane="${key}" ${hcRoomTab !== key ? 'hidden' : ''}>${body}</div>`;
 
-                <div class="row g-2 mb-2">
-                    <div class="col-md-3">
-                        <label class="form-label small mb-1">Target °C</label>
-                        <input type="number" step="0.5" class="form-control form-control-sm room-target"
-                               data-ci="${ci}" data-ri="${ri}" value="${room.target_temp}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label small mb-1">Setback °C</label>
-                        <input type="number" step="0.5" class="form-control form-control-sm room-setback"
-                               data-ci="${ci}" data-ri="${ri}" value="${room.night_setback}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label small mb-1">Min °C</label>
-                        <input type="number" step="0.5" class="form-control form-control-sm room-min"
-                               data-ci="${ci}" data-ri="${ri}" value="${room.min_temp}">
-                    </div>
-                </div>
-
-                <details class="mb-2">
-                  <summary class="form-label small mb-1" style="cursor:pointer">
-                    Schedule <span class="badge bg-secondary">${(room.schedule||[]).length}</span>
-                    <span class="text-muted small ms-1">(times vs temperatures)</span>
-                  </summary>
-                  <div class="hc-schedule-slots mt-1" data-ci="${ci}" data-ri="${ri}">
-                    ${renderHcScheduleSlots(room.schedule||[], ci, ri)}
-                  </div>
-                  <button type="button" class="btn btn-sm btn-outline-secondary w-100 mt-1 hc-add-slot"
-                          data-ci="${ci}" data-ri="${ri}">
-                    <i class="fas fa-plus me-1"></i>Add time slot
-                  </button>
-                  <div class="row g-1 mt-2">
-                    <div class="col-7">
-                      <label class="form-label small mb-0 text-muted">Outside schedule hours</label>
-                      <select class="form-select form-select-sm hc-room-ooh-action" data-ci="${ci}" data-ri="${ri}">
-                        <option value="setback" ${(room.out_of_hours_action||'setback')==='setback'?'selected':''}>Setback (lower target)</option>
-                        <option value="min_only" ${room.out_of_hours_action==='min_only'?'selected':''}>Frost-protect only</option>
-                        <option value="off" ${room.out_of_hours_action==='off'?'selected':''}>Off (no heat call)</option>
-                      </select>
-                    </div>
-                    <div class="col-5">
-                      <label class="form-label small mb-0 text-muted">Offset °C</label>
-                      <input type="number" step="0.5" min="-10" max="0"
-                             class="form-control form-control-sm hc-room-ooh-offset"
-                             data-ci="${ci}" data-ri="${ri}"
-                             placeholder="e.g. -3" value="${room.night_setback_offset_c??''}"/>
-                    </div>
-                  </div>
-                </details>
-
-                <div class="row g-2 mb-2">
-                    <div class="col-md-8">
-                        <label class="form-label small mb-1 d-flex justify-content-between align-items-center">
-                            <span>
-                                Temperature sensors
-                                <span class="badge bg-secondary ms-1">${sensors.length}</span>
-                                ${projected ? '<span class="badge bg-info ms-1">from floor plan</span>' : ''}
-                            </span>
-                            ${projected ? '' : `
-                                <button type="button" class="btn btn-sm btn-outline-primary btn-sens-add"
-                                        data-ci="${ci}" data-ri="${ri}">
-                                    <i class="fas fa-plus me-1"></i>Add sensor
-                                </button>`}
-                        </label>
-                        <fieldset ${projected ? 'disabled' : ''}>
-                        ${sensors.length === 0
-                            ? `<div class="small text-muted fst-italic mb-1">
-                                 No sensors — call-for-heat will be driven by TRV readings only.
-                                 ${projected ? '' : 'Click <strong>Add sensor</strong> to bind a device.'}
-                               </div>`
-                            : sensors.map((s, sidx) =>
-                                renderOneSensorCard(s, ci, ri, sidx, projected, room)
-                              ).join('')}
-                        </fieldset>
-                        ${projected
-                            ? `<div class="form-text small text-muted">Sensors are bound in the floor plan. <em>External temp mode</em> here is still editable.</div>`
-                            : `<div class="form-text small">
-                                Each sensor can be a motion sensor, THP, thermostat, etc. — anything reporting temperature.
-                                One must be marked <strong>primary</strong>; that one drives call-for-heat decisions.
-                              </div>`}
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small mb-1">External temp mode</label>
-                        <select class="form-select form-select-sm room-ext-mode"
-                                data-ci="${ci}" data-ri="${ri}" ${!sensorIeee ? 'disabled' : ''}>
-                            <option value="off"      ${extMode === 'off' ? 'selected' : ''}>Off (ignore sensor)</option>
-                            <option value="advisory" ${extMode === 'advisory' ? 'selected' : ''}>Advisory (controller uses sensor)</option>
-                            <option value="push"     ${extMode === 'push' ? 'selected' : ''}>Push (also send to TRVs)</option>
-                        </select>
-                    </div>
-                </div>
-
-                ${sensorOnlyBanner}
-                ${noTrvsNoSensorWarning}
-
-                <label class="form-label small mb-1">
-                    TRVs <span class="badge bg-secondary">${trvCount}</span>
-                    ${projected ? '<span class="badge bg-info ms-1">from floor plan</span>' : ''}
-                    ${trvCount === 0 && sensorIeee ? '<small class="text-muted ms-2">optional for sensor-only rooms</small>' : ''}
-                </label>
-                ${projected ? projectedBlockBanner('TRV assignments') : ''}
-                <fieldset ${projected ? 'disabled' : ''}>
-                <div class="list-group mb-2" style="max-height:200px; overflow-y:auto;">${trvCheckboxes}</div>
-                </fieldset>
-
-                ${renderContactSensorsPanel(room, ci, ri, projected)}
-                ${renderDimensionsPanel(room, ci, ri)}
+    const comfort = `
+        <div class="row g-2 mb-3">
+            <div class="col-4">
+                <label class="form-label small mb-1">Target °C</label>
+                <input type="number" step="0.5" class="form-control form-control-sm room-target"
+                       data-ci="${ci}" data-ri="${ri}" value="${room.target_temp}">
             </div>
-        </details>`;
+            <div class="col-4">
+                <label class="form-label small mb-1">Setback °C</label>
+                <input type="number" step="0.5" class="form-control form-control-sm room-setback"
+                       data-ci="${ci}" data-ri="${ri}" value="${room.night_setback}">
+            </div>
+            <div class="col-4">
+                <label class="form-label small mb-1">Min °C</label>
+                <input type="number" step="0.5" class="form-control form-control-sm room-min"
+                       data-ci="${ci}" data-ri="${ri}" value="${room.min_temp}">
+            </div>
+        </div>
+        <label class="form-label small mb-1">
+            Schedule <span class="badge bg-secondary">${(room.schedule || []).length}</span>
+            <span class="text-muted ms-1">— outside its slots the room uses its setback</span>
+        </label>
+        <div class="hc-schedule-slots" data-ci="${ci}" data-ri="${ri}">
+            ${renderHcScheduleSlots(room.schedule || [], ci, ri)}
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary w-100 mt-1 hc-add-slot"
+                data-ci="${ci}" data-ri="${ri}">
+            <i class="fas fa-plus me-1"></i>Add time slot
+        </button>
+        <div class="row g-2 mt-3">
+            <div class="col-7">
+                <label class="form-label small mb-1">Outside operating hours</label>
+                <select class="form-select form-select-sm hc-room-ooh-action" data-ci="${ci}" data-ri="${ri}">
+                    <option value="setback" ${(room.out_of_hours_action || 'setback') === 'setback' ? 'selected' : ''}>Setback (lower target)</option>
+                    <option value="min_only" ${room.out_of_hours_action === 'min_only' ? 'selected' : ''}>Hold min temp</option>
+                    <option value="off" ${room.out_of_hours_action === 'off' ? 'selected' : ''}>Off (no heat call)</option>
+                </select>
+            </div>
+            <div class="col-5">
+                <label class="form-label small mb-1">Offset °C</label>
+                <input type="number" step="0.5" min="-10" max="0"
+                       class="form-control form-control-sm hc-room-ooh-offset"
+                       data-ci="${ci}" data-ri="${ri}"
+                       placeholder="e.g. -3" value="${room.night_setback_offset_c ?? ''}"/>
+            </div>
+        </div>`;
+
+    const sensing = `
+        <div class="row g-2 mb-2">
+            <div class="col-md-8">
+                <label class="form-label small mb-1 d-flex justify-content-between align-items-center">
+                    <span>Temperature sensors <span class="badge bg-secondary ms-1">${sensors.length}</span></span>
+                    ${projected ? '' : `
+                        <button type="button" class="btn btn-sm btn-outline-primary btn-sens-add"
+                                data-ci="${ci}" data-ri="${ri}">
+                            <i class="fas fa-plus me-1"></i>Add sensor
+                        </button>`}
+                </label>
+                ${projected ? projectedBlockBanner('Sensors') : ''}
+                <fieldset ${projected ? 'disabled' : ''}>
+                ${sensors.length === 0
+                    ? `<div class="small text-muted fst-italic mb-1">
+                         No sensors — call-for-heat will be driven by TRV readings only.
+                       </div>`
+                    : sensors.map((s, sidx) => renderOneSensorCard(s, ci, ri, sidx, projected, room)).join('')}
+                </fieldset>
+                ${projected ? '' : `<div class="form-text small">
+                    Anything reporting temperature works. The <strong>primary</strong> one drives call-for-heat.
+                </div>`}
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small mb-1">External temp mode</label>
+                <select class="form-select form-select-sm room-ext-mode"
+                        data-ci="${ci}" data-ri="${ri}" ${!sensorIeee ? 'disabled' : ''}>
+                    <option value="off"      ${extMode === 'off' ? 'selected' : ''}>Off (ignore sensor)</option>
+                    <option value="advisory" ${extMode === 'advisory' ? 'selected' : ''}>Advisory (controller uses sensor)</option>
+                    <option value="push"     ${extMode === 'push' ? 'selected' : ''}>Push (also send to TRVs)</option>
+                </select>
+            </div>
+        </div>
+        ${sensorOnlyBanner}
+        ${noTrvsNoSensorWarning}`;
+
+    const boundTrvs = (room.trvs || []).filter(t => (room.trv_ieees || []).includes(t.ieee));
+    const trvName = ieee => controllerDevices.thermostats.find(t => t.ieee === ieee)?.name || ieee;
+    const flag = (t, ti, key, label) => `
+        <div class="form-check form-switch form-check-inline small m-0 me-3">
+            <input type="checkbox" class="form-check-input hc-trv-flag" id="hcTrv-${ci}-${ri}-${ti}-${key}"
+                   data-ci="${ci}" data-ri="${ri}" data-ieee="${escapeAttr(t.ieee)}" data-key="${key}"
+                   ${t[key] ? 'checked' : ''}>
+            <label class="form-check-label" for="hcTrv-${ci}-${ri}-${ti}-${key}">${label}</label>
+        </div>`;
+    const trvSettings = boundTrvs.map((t, ti) => `
+        <div class="hc-trv-settings mb-2">
+            <div class="small fw-semibold mb-1">${escapeHtml(trvName(t.ieee))}</div>
+            <div class="d-flex flex-wrap align-items-center gap-1">
+                ${flag(t, ti, 'window_detection', 'Window detection')}
+                ${flag(t, ti, 'child_lock', 'Child lock')}
+                ${flag(t, ti, 'valve_detection', 'Valve detection')}
+                <div class="input-group input-group-sm" style="max-width:11rem">
+                    <span class="input-group-text">Min</span>
+                    <input type="number" step="0.5" min="4" max="30" class="form-control hc-trv-minsp"
+                           data-ci="${ci}" data-ri="${ri}" data-ieee="${escapeAttr(t.ieee)}"
+                           placeholder="5" value="${t.min_setpoint ?? ''}">
+                    <span class="input-group-text">°C</span>
+                </div>
+            </div>
+        </div>`).join('');
+    const trvPane = `
+        ${projected ? projectedBlockBanner('TRV assignments') : ''}
+        <fieldset ${projected ? 'disabled' : ''}>
+        <div class="list-group mb-3">${trvCheckboxes}</div>
+        </fieldset>
+        ${boundTrvs.length ? `<h6 class="small text-uppercase text-muted mb-2">Behaviour</h6>${trvSettings}` : ''}`;
+
+    return `
+        <div class="room-card" data-room-id="${escapeAttr(room.id)}" data-ci="${ci}" data-ri="${ri}">
+            <div class="hc-room-head">
+                <div class="hc-room-title">
+                    <label class="form-label small mb-1">Room name</label>
+                    <input type="text" class="form-control form-control-sm room-name"
+                           data-ci="${ci}" data-ri="${ri}"
+                           value="${escapeAttr(room.name)}" placeholder="Room name">
+                </div>
+                <div class="hc-room-move">
+                    <label class="form-label small mb-1">Circuit</label>
+                    <select class="form-select form-select-sm room-move" data-ci="${ci}" data-ri="${ri}">
+                        ${otherCircuits}
+                    </select>
+                </div>
+                <button class="btn btn-sm btn-outline-danger btn-delete-room"
+                        data-ci="${ci}" data-ri="${ri}" title="Delete room">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+            <div class="hc-room-badges">${headerBadges}</div>
+            <ul class="nav nav-pills hc-room-tabs" role="tablist">
+                ${tab('comfort', 'fa-thermometer-half', 'Comfort')}
+                ${tab('sensing', 'fa-broadcast-tower', 'Sensors',
+                      count(sensors.length) + (roomCannotControl(room) ? '<span class="hc-dot" title="Cannot call for heat"></span>' : ''))}
+                ${tab('trvs', 'fa-sliders-h', 'TRVs', count(trvCount))}
+                ${tab('contacts', 'fa-door-closed', 'Doors &amp; windows', count(contacts.length))}
+                ${tab('layout', 'fa-ruler-combined', 'Layout',
+                      dimsSet ? '' : '<span class="hc-dot" title="No room size — heat-loss and preheat need it"></span>')}
+            </ul>
+            ${pane('comfort', comfort)}
+            ${pane('sensing', sensing)}
+            ${pane('trvs', trvPane)}
+            ${pane('contacts', renderContactSensorsPanel(room, ci, ri, projected, true))}
+            ${pane('layout', renderDimensionsPanel(room, ci, ri, true))}
+        </div>`;
 }
 // CONTACT SENSORS — optional per-room
-function renderContactSensorsPanel(room, ci, ri, projected) {
+function renderContactSensorsPanel(room, ci, ri, projected, inTab = false) {
     const assigned = room.contact_sensors || [];
     const assignedIeees = new Set(assigned.map(cs => cs.ieee));
 
@@ -1520,15 +1729,7 @@ function renderContactSensorsPanel(room, ci, ri, projected) {
                 </div>`;
         }).join('');
 
-    return `
-        <details class="mt-2" ${projected ? 'open' : ''}>
-            <summary class="small fw-bold text-muted user-select-none" style="cursor:pointer;">
-                <i class="fas fa-door-closed me-1"></i>
-                Doors &amp; windows (contact sensors)
-                <span class="badge bg-info">${assigned.length}</span>
-                ${projected ? '<span class="badge bg-info ms-1">from floor plan</span>' : ''}
-            </summary>
-            <div class="mt-2 ms-2">
+    const body = `
                 ${projected ? `
                     <div class="alert alert-info py-1 px-2 mb-2 d-flex justify-content-between align-items-center small">
                         <div>
@@ -1560,13 +1761,22 @@ function renderContactSensorsPanel(room, ci, ri, projected) {
                         </button>
                     </div>`}
                 ${rows}
-                </fieldset>
-            </div>
+                </fieldset>`;
+    if (inTab) return body;
+    return `
+        <details class="mt-2" ${projected ? 'open' : ''}>
+            <summary class="small fw-bold text-muted user-select-none" style="cursor:pointer;">
+                <i class="fas fa-door-closed me-1"></i>
+                Doors &amp; windows (contact sensors)
+                <span class="badge bg-info">${assigned.length}</span>
+                ${projected ? '<span class="badge bg-info ms-1">from floor plan</span>' : ''}
+            </summary>
+            <div class="mt-2 ms-2">${body}</div>
         </details>`;
 }
 
 // DIMENSIONS PANEL — optional per-room, collapsed by default
-function renderDimensionsPanel(room, ci, ri) {
+function renderDimensionsPanel(room, ci, ri, inline = false) {
     const dim = room.dimensions || {};
     const walls = dim.walls || {
         front: { type: 'external' }, back: { type: 'external' },
@@ -1672,13 +1882,14 @@ function renderDimensionsPanel(room, ci, ri) {
         </div>` : '';
 
     return `
-        <div class="border-top pt-2 mt-2">
+        <div class="${inline ? '' : 'border-top pt-2 mt-2'}">
+            ${inline ? '' : `
             <a class="small text-decoration-none" data-bs-toggle="collapse" href="#${collapseId}" role="button">
                 <i class="fas fa-ruler-combined me-1"></i>Room layout & radiator ${badgeHtml}
                 ${projected ? '<span class="badge bg-info ms-1">from floor plan</span>' : ''}
                 <i class="fas fa-caret-down ms-1"></i>
-            </a>
-            <div class="collapse ${hasContent ? 'show' : ''}" id="${collapseId}">
+            </a>`}
+            <div class="collapse ${hasContent || inline ? 'show' : ''}" id="${collapseId}">
                 <div class="pt-2">
                     ${projectedBanner}
                     <div class="small text-muted mb-2">
@@ -1707,7 +1918,8 @@ function renderDimensionsPanel(room, ci, ri) {
                         <div class="col-md-3">
                             <label class="form-label small mb-1">Floor area</label>
                             <input type="text" class="form-control form-control-sm" readonly
-                                   value="${dim.width_m && dim.depth_m ? (dim.width_m * dim.depth_m).toFixed(1) + ' m²' : '—'}"
+                                   value="${dim.floor_area_m2 ? Number(dim.floor_area_m2).toFixed(1) + ' m²'
+                                            : dim.width_m && dim.depth_m ? (dim.width_m * dim.depth_m).toFixed(1) + ' m²' : '—'}"
                                    id="dim-floor-area-display-${ci}-${ri}">
                         </div>
                     </div>
@@ -1975,6 +2187,7 @@ function bindCircuitCards() {
     document.querySelectorAll('.circuit-recvcmd').forEach(el => {
         el.addEventListener('change', e => {
             workingCircuits[+e.target.dataset.ci].receiver_command = e.target.value;
+            renderCircuitsList();
         });
     });
     document.querySelectorAll('.btn-delete-circuit').forEach(btn => {
@@ -2009,7 +2222,8 @@ function bindCircuitCards() {
                 temperature_sensor_ieee: null,
                 external_temp_mode: 'off',
             });
-            renderCircuitsList();
+            hcRoomTab = 'comfort';
+            selectInModal(ci, workingCircuits[ci].rooms.length - 1);
         });
     });
 
@@ -2090,6 +2304,46 @@ function bindCircuitCards() {
                 workingCircuits[ci].rooms.splice(ri, 1);
                 renderCircuitsList();
             }
+        });
+    });
+    document.querySelectorAll('.room-move').forEach(sel => {
+        sel.addEventListener('change', e => {
+            const ci = +e.target.dataset.ci, ri = +e.target.dataset.ri, to = +e.target.value;
+            if (to === ci) return;
+            const [room] = workingCircuits[ci].rooms.splice(ri, 1);
+            workingCircuits[to].rooms = workingCircuits[to].rooms || [];
+            workingCircuits[to].rooms.push(room);
+            selectInModal(to, workingCircuits[to].rooms.length - 1);
+        });
+    });
+    document.querySelectorAll('.circuit-override').forEach(sel => {
+        sel.addEventListener('change', e => {
+            const c = workingCircuits[+e.target.dataset.ci], key = e.target.dataset.key;
+            if (e.target.value === '') delete c[key];
+            else c[key] = e.target.value === 'on';
+        });
+    });
+    document.querySelectorAll('.circuit-sp').forEach(inp => {
+        inp.addEventListener('change', e => {
+            const c = workingCircuits[+e.target.dataset.ci], key = e.target.dataset.key;
+            const v = parseFloat(e.target.value);
+            if (Number.isNaN(v)) delete c[key]; else c[key] = v;
+        });
+    });
+    const trvEntry = el => (workingCircuits[+el.dataset.ci].rooms[+el.dataset.ri].trvs || [])
+        .find(t => t.ieee === el.dataset.ieee);
+    document.querySelectorAll('.hc-trv-flag').forEach(cb => {
+        cb.addEventListener('change', e => {
+            const t = trvEntry(e.target);
+            if (t) t[e.target.dataset.key] = e.target.checked;
+        });
+    });
+    document.querySelectorAll('.hc-trv-minsp').forEach(inp => {
+        inp.addEventListener('change', e => {
+            const t = trvEntry(e.target);
+            if (!t) return;
+            const v = parseFloat(e.target.value);
+            if (Number.isNaN(v)) delete t.min_setpoint; else t.min_setpoint = v;
         });
     });
     document.querySelectorAll('.room-trv-cb').forEach(cb => {
@@ -2248,8 +2502,15 @@ function bindCircuitCards() {
         const d = getDim(ci, ri);
         const el = document.getElementById(`dim-floor-area-display-${ci}-${ri}`);
         if (!el) return;
-        if (d.width_m && d.depth_m) el.value = (d.width_m * d.depth_m).toFixed(1) + ' m²';
-        else el.value = '—';
+        // Only rooms the plan didn't draw are editable here; the server trusts
+        // an explicit floor_area_m2 (the plan's polygon) over width × depth.
+        if (d.width_m && d.depth_m) {
+            d.floor_area_m2 = Math.round(d.width_m * d.depth_m * 100) / 100;
+            el.value = d.floor_area_m2.toFixed(1) + ' m²';
+        } else {
+            delete d.floor_area_m2;
+            el.value = '—';
+        }
     }
 
     document.querySelectorAll('.dim-x').forEach(el => {
@@ -3228,6 +3489,14 @@ async function saveControllerSettings() {
             const msg = 'Saved to disk, but live reload didn\'t confirm. Check journalctl for [save_config] / [apply_config] entries.';
             status.innerHTML = `<span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(msg)}</span>`;
             fireToast('warning', 'Hot-reload didn\'t apply', msg, 8000);
+        }
+
+        // What the floor-plan sync changed or needs the user to finish.
+        const notes = json.warnings || [];
+        if (notes.length) {
+            fireToast('info', 'Floor plan kept in step',
+                notes.slice(0, 4).join(' · ') + (notes.length > 4 ? ` (+${notes.length - 4} more)` : ''),
+                10000);
         }
 
         setTimeout(() => {

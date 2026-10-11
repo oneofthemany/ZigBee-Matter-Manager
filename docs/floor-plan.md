@@ -65,6 +65,12 @@ A plan is levels; a level is what was drawn on it.
 | `levels[].sensors[]` | temperature sensors: position, room, height, `primary` |
 | `levels[].contacts[]` | bound to an opening by `opening_id`; one bound in the manual config carries `room_id` and an empty `opening_id` until it is placed. A contact guards every room its opening opens into, so one on an internal door guards both (`contact_rooms`) |
 | `levels[].devices[]` | everything else placed by position alone |
+
+A radiator, sensor or contact bound from the manual config arrives with a room
+but no position. The editor draws it dashed near its room's centre until it is
+placed, and the Circuits panel's **To finish** checklist lists it alongside
+circuits with no receiver, rooms on no circuit and rooms that can't call for
+heat — each item a jump to its fix.
 | `levels[].background` | the image's calibration — see [Background images](#background-images) |
 | `plan.circuits[]` | heating circuits and their receivers |
 | `plan.map` | the OpenStreetMap backdrop: the point it's lined up by (`lat`, `lon`), where that sits on the plan, and opacity |

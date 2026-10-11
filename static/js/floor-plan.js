@@ -43,6 +43,7 @@ let _needsFit = false;
 
 function resetState(plan) {
     _fieldCache = new Map();
+    _measuredHeatLoss = null;
     _daylightCache = new Map();
     _state = {
         plan: plan || newEmptyPlan(),
@@ -537,7 +538,7 @@ function rootHtml() {
                       <label class="form-check-label text-muted" for="fpToggleColdZones">Cold zones</label>
                     </div>
                     <div id="fpColdZoneControls" style="display:none" class="ms-4 mb-1">
-                      <label class="small text-muted d-block mb-1">Building heat loss</label>
+                      <label class="small text-muted d-block mb-1">Assumed heat loss — used where a room has no reliable measurement</label>
                       <select class="form-select form-select-sm py-0" id="fpHeatFlux" style="font-size:0.78rem">
                         <option value="30">Well insulated — 30 W/m²</option>
                         <option value="50" selected>Average — 50 W/m²</option>
@@ -781,6 +782,7 @@ function bindModalEvents() {
     document.getElementById('fpToggleColdZones').addEventListener('change', e => {
         _state.showColdZones = e.target.checked;
         document.getElementById('fpColdZoneControls').style.display = _state.showColdZones ? '' : 'none';
+        if (_state.showColdZones) loadMeasuredHeatLoss();
         renderScene();
     });
     document.getElementById('fpHeatFlux').addEventListener('change', e => {
@@ -1209,7 +1211,8 @@ function radiatorCenter(r, lvl) {
         const t0 = Math.max(0, Math.min(wlen - len, (r.offset_m ?? wlen / 2)));
         return { x: wall.x1 + ux * (t0 + len / 2), y: wall.y1 + uy * (t0 + len / 2) };
     }
-    return { x: r.x ?? 0, y: r.y ?? 0 };
+    return isUnplacedRadiator(r) ? unplacedPoint(lvl, r.room_id, lvl.radiators.indexOf(r))
+                                 : { x: r.x, y: r.y };
 }
 
 // Centroid of the whole plan — average of room centroids, falling back to wall midpoints.
@@ -1594,10 +1597,12 @@ function renderScene() {
             }
         } else {
             // Freestanding geometry — axis-aligned strip at (x, y)
-            const p = modelToSvg({ x: r.x ?? 0, y: r.y ?? 0 });
+            const unplaced = isUnplacedRadiator(r);
+            const p = modelToSvg(unplaced ? unplacedPoint(lvl, r.room_id, lvl.radiators.indexOf(r))
+                                          : { x: r.x, y: r.y });
             parts.push(`
               <g data-kind="radiator" data-id="${r.id}" style="cursor:pointer">
-                <rect class="fp-radiator ${sel ? 'fp-selected' : ''}"
+                <rect class="fp-radiator ${unplaced ? 'fp-unplaced' : ''} ${sel ? 'fp-selected' : ''}"
                       x="${p.x - len / 2}" y="${p.y - hgt / 2}" width="${len}" height="${hgt}"
                       stroke-width="${sel ? 0.04 : 0.02}"/>
                 <text class="fp-radiator-label" x="${p.x}" y="${p.y + hgt / 2 + 0.22}"
@@ -1609,10 +1614,12 @@ function renderScene() {
     // Sensors
     for (const s of lvl.sensors) {
         const sel = isSelected('sensor', s.id);
-        const p = modelToSvg({ x: s.x ?? 0, y: s.y ?? 0 });
+        const unplaced = isUnplacedSensor(s);
+        const p = modelToSvg(unplaced ? unplacedPoint(lvl, s.room_id, lvl.sensors.indexOf(s) + 2)
+                                      : { x: s.x, y: s.y });
         parts.push(`
           <g data-kind="sensor" data-id="${s.id}" style="cursor:pointer">
-            <circle class="fp-sensor ${sel ? 'fp-selected' : ''}"
+            <circle class="fp-sensor ${unplaced ? 'fp-unplaced' : ''} ${sel ? 'fp-selected' : ''}"
                     cx="${p.x}" cy="${p.y}" r="0.13" stroke-width="${sel ? 0.04 : 0.02}"/>
             ${s.primary ? `<circle class="fp-sensor-primary-dot" cx="${p.x}" cy="${p.y}" r="0.06"/>` : ''}
           </g>`);
@@ -1621,7 +1628,18 @@ function renderScene() {
     // Contact sensors — drawn near their opening's centre, slightly offset
     for (const c of lvl.contacts) {
         const op = lvl.openings.find(o => o.id === c.opening_id);
-        if (!op) continue;
+        if (!op) {
+            if (!c.room_id) continue;
+            const p = modelToSvg(unplacedPoint(lvl, c.room_id, lvl.contacts.indexOf(c) + 4));
+            const sel = isSelected('contact', c.id);
+            parts.push(`
+              <g data-kind="contact" data-id="${c.id}" style="cursor:pointer">
+                <rect class="fp-contact fp-unplaced ${sel ? 'fp-selected' : ''}"
+                      x="${p.x - 0.07}" y="${p.y - 0.07}" width="0.14" height="0.14"
+                      stroke-width="${sel ? 0.04 : 0.02}"/>
+              </g>`);
+            continue;
+        }
         const wall = lvl.walls.find(w => w.id === op.wall_id);
         if (!wall) continue;
         const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
@@ -2587,6 +2605,17 @@ function snapToOtherWallEndpoint(lvl, excludeWallId, p) {
     return best ? { x: best.x, y: best.y } : null;
 }
 
+// A device bound from the manual config has a room but no position yet. It is
+// drawn dashed near its room's centre until the user places it.
+function unplacedPoint(lvl, roomId, seed) {
+    const room = (lvl.rooms || []).find(r => r.id === roomId);
+    const c = room ? polygonCentroid(room.polygon) : { x: 0, y: 0 };
+    return { x: c.x + ((seed % 5) - 2) * 0.35, y: c.y - 0.4 };
+}
+const isUnplacedRadiator = r => !r.wall_id && (r.x == null || r.y == null);
+const isUnplacedSensor = s => s.x == null || s.y == null;
+const isUnplacedContact = (c, lvl) => !(lvl.openings || []).some(o => o.id === c.opening_id);
+
 function polygonCentroid(poly) {
     if (!poly || poly.length < 3) {
         return poly && poly[0] ? { x: poly[0][0], y: poly[0][1] } : { x: 0, y: 0 };
@@ -2699,7 +2728,10 @@ function renderLegend() {
             rows.push(`<div class="fp-legend-row"><span class="fp-legend-line fp-legend-line-contour"></span>Isotherm contours</div>`);
         }
         if (_state.showColdZones) {
-            rows.push(`<div class="fp-legend-row"><span class="fp-legend-swatch fp-legend-swatch-cold"></span>Below comfort @ ${_state.heatFluxWm2} W/m²</div>`);
+            const measured = measuredRoomCount();
+            rows.push(`<div class="fp-legend-row"><span class="fp-legend-swatch fp-legend-swatch-cold"></span>Below comfort — ${measured
+                ? `${measured} room${measured === 1 ? '' : 's'} measured, others @ ${_state.heatFluxWm2} W/m²`
+                : `@ ${_state.heatFluxWm2} W/m² (no room has measured data yet)`}</div>`);
             rows.push(`<div class="fp-legend-row"><span class="fp-legend-line fp-legend-line-cold"></span>Comfort boundary</div>`);
         }
     }
@@ -3199,6 +3231,37 @@ function sunShaftParts(lvl, pt) {
 const COLD_THRESH = Math.exp(-1);   // coverage value at d = r₀
 let _fieldCache = new Map();        // room.id → field entry (reset per open)
 
+// room.id → {flux_wm2, confidence, reason} from /api/heating/rooms/heat-loss.
+// A room's measured design heat loss replaces the assumed W/m² only when the
+// server judged it tangible (flux_wm2 set); null until fetched, per open.
+let _measuredHeatLoss = null;
+let _measuredHeatLossLoading = false;
+
+async function loadMeasuredHeatLoss() {
+    if (_measuredHeatLoss || _measuredHeatLossLoading) return;
+    _measuredHeatLossLoading = true;
+    try {
+        const r = await fetch('/api/heating/rooms/heat-loss').then(x => x.ok ? x.json() : null);
+        _measuredHeatLoss = (r && r.success && r.rooms) || {};
+    } catch {
+        _measuredHeatLoss = {};
+    } finally {
+        _measuredHeatLossLoading = false;
+    }
+    renderScene();
+    renderProps();
+}
+
+/** The W/m² a room's cold zones are drawn with: measured if tangible, else assumed. */
+function roomFlux(roomId, assumed) {
+    const m = _measuredHeatLoss && _measuredHeatLoss[roomId];
+    return m && m.flux_wm2 ? m.flux_wm2 : assumed;
+}
+
+function measuredRoomCount() {
+    return Object.values(_measuredHeatLoss || {}).filter(m => m.flux_wm2).length;
+}
+
 /** Openings whose midpoint lies on this room's polygon boundary (±0.3 m). */
 function openingsOnRoomBoundary(room, lvl) {
     const res = [];
@@ -3278,7 +3341,8 @@ function windowSolarWatts(opening, wall, roomCentroid) {
  * which sources drive the field: radiators, radiators + solar, or solar
  * gain alone (for judging what the sun does to the house by itself).
  */
-function roomHeatField(room, lvl, heatFlux) {
+function roomHeatField(room, lvl, assumedFlux) {
+    const heatFlux = roomFlux(room.id, assumedFlux);
     const mode = _state.thermalMode || 'rad';
     const rads = lvl.radiators.filter(r => r.room_id === room.id);
     const bops = openingsOnRoomBoundary(room, lvl);
@@ -3653,7 +3717,8 @@ function renderThermalParts(lvl) {
 
     // Thermostat rings on sensors, with the live reading when a device is bound
     for (const s of lvl.sensors) {
-        const sp = modelToSvg({ x: s.x ?? 0, y: s.y ?? 0 });
+        const sp = modelToSvg(isUnplacedSensor(s) ? unplacedPoint(lvl, s.room_id, lvl.sensors.indexOf(s) + 2)
+                                                   : { x: s.x, y: s.y });
         const dev = s.ieee ? (_availableDevices.sensors || []).find(d => d.ieee === s.ieee) : null;
         const temp = dev && dev.temperature != null ? Number(dev.temperature) : null;
         out.push(`
@@ -3740,12 +3805,78 @@ const CIRCUIT_BADGE_COLOURS = [
     '#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316'
 ];
 
+/** What still stops the plan driving the heating, each item a jump to its fix. */
+function heatingChecklist() {
+    const items = [];
+    const circuitIds = new Set((_state.plan.circuits || []).map(c => c.id));
+    for (const c of _state.plan.circuits || []) {
+        if (!c.receiver_ieee) items.push({ text: `${c.name}: no boiler receiver`, circuit: c.id });
+    }
+    for (const lvl of _state.plan.levels || []) {
+        const go = (kind, id) => ({ level: lvl.id, kind, id });
+        for (const r of lvl.rooms || []) {
+            const name = r.name || r.id;
+            if (!r.circuit_id || !circuitIds.has(r.circuit_id)) {
+                items.push({ text: `${name}: not on a circuit`, muted: true, ...go('room', r.id) });
+                continue;
+            }
+            const sensed = (lvl.sensors || []).some(x => x.room_id === r.id && x.ieee);
+            const trv = (lvl.radiators || []).some(x => x.room_id === r.id && x.trv_ieee);
+            if (!sensed && !trv) {
+                items.push({ text: `${name}: can't call for heat — add a sensor or TRV`, ...go('room', r.id) });
+            }
+        }
+        const roomName = id => ((lvl.rooms || []).find(r => r.id === id) || {}).name || id;
+        for (const r of lvl.radiators || []) {
+            if (isUnplacedRadiator(r)) items.push({ text: `Radiator in ${roomName(r.room_id)}: not placed`, ...go('radiator', r.id) });
+        }
+        for (const x of lvl.sensors || []) {
+            if (isUnplacedSensor(x)) items.push({ text: `Sensor in ${roomName(x.room_id)}: not placed`, ...go('sensor', x.id) });
+        }
+        for (const x of lvl.contacts || []) {
+            if (isUnplacedContact(x, lvl)) items.push({ text: `Contact in ${roomName(x.room_id)}: no door or window`, ...go('contact', x.id) });
+        }
+    }
+    return items;
+}
+
+function renderHeatingChecklist() {
+    const items = heatingChecklist();
+    if (!items.length) {
+        return '<div class="small text-success mt-2"><i class="fas fa-check-circle me-1"></i>Every room can be heated.</div>';
+    }
+    return `
+      <div class="small text-muted text-uppercase mt-3 mb-1">To finish <span class="badge bg-secondary">${items.length}</span></div>
+      ${items.map((it, i) => `
+        <button type="button" class="btn btn-link btn-sm p-0 d-block text-start small ${it.muted ? 'text-muted' : 'text-warning'}"
+                data-check="${i}">
+          <i class="fas ${it.muted ? 'fa-circle-info' : 'fa-triangle-exclamation'} me-1"></i>${escapeHtml(it.text)}
+        </button>`).join('')}`;
+}
+
+function bindHeatingChecklist(wrap) {
+    const items = heatingChecklist();
+    wrap.querySelectorAll('[data-check]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const it = items[+btn.dataset.check];
+            if (!it) return;
+            if (it.circuit) { editCircuit(it.circuit); return; }
+            _state.currentLevelId = it.level;
+            _state.selection = { kind: it.kind, id: it.id };
+            renderAll();
+            renderProps();
+        });
+    });
+}
+
 function renderCircuitList() {
     const wrap = document.getElementById('fpCircuitList');
     if (!wrap) return;
     const circuits = _state.plan.circuits || [];
     if (!circuits.length) {
-        wrap.innerHTML = '<div class="text-muted small fst-italic">No circuits yet.</div>';
+        wrap.innerHTML = '<div class="text-muted small fst-italic">No circuits yet.</div>'
+            + renderHeatingChecklist();
+        bindHeatingChecklist(wrap);
         return;
     }
     // Count rooms per circuit across all levels
@@ -3772,6 +3903,8 @@ function renderCircuitList() {
     wrap.querySelectorAll('[data-action="delete-circuit"]').forEach(btn => {
         btn.addEventListener('click', () => deleteCircuit(btn.dataset.circuitId));
     });
+    wrap.insertAdjacentHTML('beforeend', renderHeatingChecklist());
+    bindHeatingChecklist(wrap);
 }
 
 async function addCircuit() {
@@ -3810,6 +3943,15 @@ function editCircuit(circuitId) {
             })
         ).join('');
 
+    // Absent = follow the controller-wide setting; a plain switch could only
+    // ever write an override.
+    const triState = (id, label, v) => `
+      <div class="mb-2"><label class="form-label small" for="${id}">${label}</label>
+        <select class="form-select form-select-sm" id="${id}">
+          <option value="" ${v == null ? 'selected' : ''}>Follow controller setting</option>
+          <option value="on" ${v === true ? 'selected' : ''}>On for this circuit</option>
+          <option value="off" ${v === false ? 'selected' : ''}>Off for this circuit</option>
+        </select></div>`;
     const propsDiv = document.getElementById('fpProps');
     propsDiv.innerHTML = `
       <div class="text-muted small text-uppercase mb-2">Circuit</div>
@@ -3824,12 +3966,8 @@ function editCircuit(circuitId) {
           <option value="thermostat" ${c.receiver_command === 'thermostat' ? 'selected' : ''}>thermostat</option>
           <option value="switch" ${c.receiver_command === 'switch' ? 'selected' : ''}>switch</option>
         </select></div>
-      <div class="mb-2 form-check form-switch small">
-        <input type="checkbox" class="form-check-input" id="fpCircuitOH" ${c.operating_hours ? 'checked' : ''}/>
-        <label class="form-check-label" for="fpCircuitOH">Respect operating hours</label></div>
-      <div class="mb-2 form-check form-switch small">
-        <input type="checkbox" class="form-check-input" id="fpCircuitWS" ${c.weather_suppression ? 'checked' : ''}/>
-        <label class="form-check-label" for="fpCircuitWS">Weather suppression</label></div>
+      ${triState('fpCircuitOH', 'Operating hours', c.operating_hours)}
+      ${triState('fpCircuitWS', 'Weather suppression', c.weather_suppression)}
       ${c.receiver_command === 'thermostat' ? `
       <div class="row g-1 mb-2">
         <div class="col-6"><label class="form-label small text-muted mb-0">Call setpoint °C</label>
@@ -3846,8 +3984,10 @@ function editCircuit(circuitId) {
         if (recVal) c.receiver_ieee = recVal; else delete c.receiver_ieee;
         const prevCmd = c.receiver_command;
         c.receiver_command = document.getElementById('fpCircuitCmd').value;
-        c.operating_hours = document.getElementById('fpCircuitOH').checked;
-        c.weather_suppression = document.getElementById('fpCircuitWS').checked;
+        for (const [id, key] of [['fpCircuitOH', 'operating_hours'], ['fpCircuitWS', 'weather_suppression']]) {
+            const v = document.getElementById(id).value;
+            if (v === '') delete c[key]; else c[key] = v === 'on';
+        }
         const callEl = document.getElementById('fpCircuitCallSp');
         if (callEl) {
             const v = parseFloat(callEl.value);
@@ -4408,6 +4548,17 @@ function renderFpScheduleSlots(slots) {
       </div>`).join('');
 }
 
+/** Which heat loss this room's cold zones use, and why — shown once fetched. */
+function heatLossLine(r) {
+    const m = _measuredHeatLoss && _measuredHeatLoss[r.id];
+    if (!m) return '';
+    return m.flux_wm2
+        ? `<div class="small text-success mb-2"><i class="fas fa-chart-line me-1"></i>Heat loss measured:
+             <strong>${m.flux_wm2} W/m²</strong> (confidence ${m.confidence})</div>`
+        : `<div class="small text-muted mb-2"><i class="fas fa-circle-info me-1"></i>Heat loss assumed
+             (${_state.heatFluxWm2 || 50} W/m²) — ${escapeHtml(m.reason || 'no measurement')}</div>`;
+}
+
 function renderRoomProps(r) {
     if (!r) return '';
     const planCircuits = _state.plan.circuits || [];
@@ -4426,6 +4577,7 @@ function renderRoomProps(r) {
       <div class="mb-2"><label class="form-label small">Name</label>
         <input class="form-control form-control-sm" data-prop="room.name" value="${escapeAttr(r.name || '')}"/></div>
       ${circuitSection}
+      ${heatLossLine(r)}
       <div class="mb-2"><label class="form-label small">Temperature targets</label>
         <div class="row g-1">
           <div class="col-4">
@@ -4452,7 +4604,7 @@ function renderRoomProps(r) {
           <div class="col-7">
             <select class="form-select form-select-sm" data-prop="room.out_of_hours_action">
               <option value="setback" ${oohAction==='setback'?'selected':''}>Setback (lower target)</option>
-              <option value="min_only" ${oohAction==='min_only'?'selected':''}>Frost-protect only</option>
+              <option value="min_only" ${oohAction==='min_only'?'selected':''}>Hold min temp</option>
               <option value="off" ${oohAction==='off'?'selected':''}>Off (no heat call)</option>
             </select>
           </div>
@@ -4522,8 +4674,8 @@ function renderRadiatorProps(r) {
         : (_availableCircuits.length && r.room_id
             ? `<div class="mb-2 small text-warning">
                  <i class="fas fa-exclamation-triangle me-1"></i>
-                 Room <code>${escapeHtml(r.room_id)}</code> isn't in any circuit yet.
-                 Add it in the heating controller settings.
+                 Room <code>${escapeHtml(r.room_id)}</code> isn't in any circuit yet —
+                 pick one in the room's properties.
                </div>`
             : '');
 
@@ -4557,8 +4709,11 @@ function renderRadiatorProps(r) {
         : `<div class="mb-2 p-2 border rounded bg-light">
              <div class="small text-muted text-uppercase mb-1">Mounting</div>
              <div class="small mb-2">
-               <i class="fas fa-arrows-alt me-1"></i>Freestanding at
-               <code>(${(r.x ?? 0).toFixed(2)}, ${(r.y ?? 0).toFixed(2)})</code>
+               ${isUnplacedRadiator(r)
+                 ? `<span class="text-warning"><i class="fas fa-map-marker-alt me-1"></i>Not placed yet</span>
+                    — shown dashed at its room's centre. Snap it to a wall or drag it into place.`
+                 : `<i class="fas fa-arrows-alt me-1"></i>Freestanding at
+                    <code>(${r.x.toFixed(2)}, ${r.y.toFixed(2)})</code>`}
              </div>
              ${(lvl.walls || []).length > 0 ? `
                <button class="btn btn-sm btn-outline-secondary w-100" data-action="rad-snap-to-wall">
@@ -4608,6 +4763,10 @@ function renderRadiatorProps(r) {
         <div class="form-check form-switch small">
           <input type="checkbox" class="form-check-input" id="fpTrvValve" data-prop="radiator.valve_detection" ${r.valve_detection ? 'checked' : ''}/>
           <label class="form-check-label" for="fpTrvValve">Valve detection</label></div>
+        <label class="form-label small text-muted mb-0 mt-1" for="fpTrvMinSp">Lowest setpoint (°C)</label>
+        <input type="number" step="0.5" min="4" max="30" class="form-control form-control-sm" id="fpTrvMinSp"
+               data-prop="radiator.min_setpoint" placeholder="5" value="${r.min_setpoint ?? ''}"/>
+        <div class="form-text small">The floor for every setpoint the controller writes, force-close included.</div>
       </div>` : ''}
       <div class="mb-2 form-check form-switch small">
         <input type="checkbox" class="form-check-input" id="fpRadRefl" data-prop="radiator.reflective_panel" ${r.reflective_panel ? 'checked' : ''}/>
@@ -4627,6 +4786,8 @@ function renderSensorProps(s) {
         `<option value="${d.ieee}" ${s.ieee === d.ieee ? 'selected' : ''} ${ieeeUsed.has(d.ieee) ? 'disabled' : ''}>${escapeHtml(d.name || d.ieee)}${d.temperature != null ? ` (${Number(d.temperature).toFixed(1)}°C)` : ''}</option>`)).join('');
     return `
       <div class="text-muted small text-uppercase mb-2">Temperature sensor</div>
+      ${isUnplacedSensor(s) ? `<div class="small text-warning mb-2"><i class="fas fa-map-marker-alt me-1"></i>
+        Not placed yet — shown dashed at its room's centre. Drag it to where it's mounted.</div>` : ''}
       <div class="mb-2"><label class="form-label small">Room</label>
         <select class="form-select form-select-sm" data-prop="sensor.room_id">${roomOpts}</select>
         ${lvl.rooms.length === 0 ? '<div class="form-text small text-warning">No rooms drawn on this level — draw one with the Room tool, then return here.</div>' : ''}
@@ -4669,6 +4830,9 @@ function renderContactProps(c) {
 
     return `
       <div class="text-muted small text-uppercase mb-2">Contact sensor</div>
+      ${isUnplacedContact(c, lvl) && c.room_id ? `<div class="small text-warning mb-2"><i class="fas fa-map-marker-alt me-1"></i>
+        Guarding <strong>${escapeHtml((lvl.rooms.find(r => r.id === c.room_id) || {}).name || c.room_id)}</strong>
+        but not on a door or window yet — pick its opening below.</div>` : ''}
       <div class="mb-2"><label class="form-label small">Bound to opening</label>
         <select class="form-select form-select-sm" data-prop="contact.opening_id">${openingOpts}</select>
         ${(lvl.openings || []).length === 0 ? '<div class="form-text small text-warning">No windows or doors on this level yet — draw some first.</div>' : ''}
@@ -4752,10 +4916,8 @@ function bindPropsHandlers() {
             if (scope === 'sensor' && key === 'primary' && val) {
                 lvl.sensors.forEach(s2 => { if (s2.id !== sel.id && s2.room_id === target.room_id) s2.primary = false; });
             }
-            // Circuit assignment: refresh sidebar room count
-            if (scope === 'room' && key === 'circuit_id') {
-                renderCircuitList();
-            }
+            // Room counts and the heating checklist follow any binding change.
+            renderCircuitList();
             renderScene();
         });
     });
@@ -4869,7 +5031,7 @@ function bindPropsHandlers() {
         const lvl = currentLevel();
         const r = lvl.radiators.find(x => x.id === sel.id);
         if (!r) return;
-        const p = { x: r.x ?? 0, y: r.y ?? 0 };
+        const p = radiatorCenter(r, lvl);
         const snap = nearestWallWithProjection(lvl, p, 100);  // any distance — this is explicit user intent
         if (!snap) {
             toast('warn', 'No walls', 'No walls available on this level.');

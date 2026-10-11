@@ -595,6 +595,16 @@ next to a radiator and crosses `COLD_THRESH = e⁻¹` at `d ≈ r₀`, so the
 cold-zone boundary lands where the old heated-radius circle used to — but now
 it bends around draughts and merges between multiple radiators.
 
+**`heatFlux` per room.** A room uses its *measured* design heat loss when the
+measurement is tangible, and the editor's assumed figure (30/50/80 W/m²)
+otherwise. `GET /api/heating/rooms/heat-loss` fits each room's thermal profile
+against real outdoor history and converts the measured W/K to W/m² at design
+conditions — `W/K × (target − design_outdoor_c) / floor area`. It is used only
+at fit confidence ≥ `HEAT_LOSS_MIN_CONFIDENCE` (0.7, the controller's "high")
+and inside `HEAT_LOSS_PLAUSIBLE_WM2`; a low-confidence fit is noise and once
+read an order of magnitude under the physics. The legend counts the measured
+rooms, and each room's inspector says which figure it is on and why.
+
 **Solar gain** (clear-sky heuristic, for insight rather than engineering).
 Average power admitted through a window over daylight hours:
 

@@ -242,6 +242,29 @@ def run() -> Checker:
             ctrl._effective_target({"target_temp": 21.0, "min_temp": 16.0},
                                    datetime(2026, 10, 12, 3, 0)) == hc.OUT_OF_HOURS_OFF_C)
 
+    c.section("TRV settings re-apply")
+    async def reapply():
+        ctrl, dev, s = make(heating_cfg(trvs=[{"ieee": TRV, "child_lock": False}]))
+        ctrl._trv_config_applied.add(TRV)
+        await ctrl.apply_config(heating_cfg(trvs=[{"ieee": TRV, "child_lock": True}]))
+        changed = TRV not in ctrl._trv_config_applied
+        ctrl._trv_config_applied.add(TRV)
+        await ctrl.apply_config(heating_cfg(trvs=[{"ieee": TRV, "child_lock": True}]))
+        ctrl.stop()
+        return changed, TRV in ctrl._trv_config_applied
+    changed, kept = asyncio.run(reapply())
+    c.check("a TRV whose flags changed is configured again", changed)
+    c.check("an unchanged TRV is not re-sent", kept)
+
+    c.section("history names")
+    from types import SimpleNamespace as NS
+    from modules.heating_advisor import HeatingAdvisor
+    svc = NS(friendly_names={TRV: "Kitchen TRV"})
+    adv = HeatingAdvisor.__new__(HeatingAdvisor)
+    adv._get_devices = lambda: {TRV: NS(state={"local_temperature": 20.0}, service=svc)}
+    c.check("the history labels a device by its name, not its IEEE",
+            [d["friendly_name"] for d in adv._find_hvac_devices()] == ["Kitchen TRV"])
+
     c.section("config mode")
     mixed = {"circuits": [{"id": "a", "name": "A", "rooms": []}],
              "controller": {"config_mode": "manual",

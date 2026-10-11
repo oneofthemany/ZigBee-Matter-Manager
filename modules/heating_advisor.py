@@ -824,10 +824,13 @@ class HeatingAdvisor:
                 manufacturer = dev.get("manufacturer")
                 model = dev.get("model")
             else:
-                # Assume object with attributes (e.g. ZigManDevice)
+                # Assume object with attributes (e.g. ZigManDevice). Its name
+                # lives in the service's names map, not on the device.
                 state = getattr(dev, "state", None) or {}
+                names = getattr(getattr(dev, "service", None), "friendly_names", None) or {}
                 friendly_name = (
                         getattr(dev, "friendly_name", None)
+                        or names.get(ieee)
                         or getattr(dev, "name", None)
                         or ieee
                 )
@@ -1180,6 +1183,10 @@ class HeatingAdvisor:
                                 pt["numeric_val"] = 100.0 if (int(pt.get("value", 0)) & 0x0001) else 0.0
                             except (TypeError, ValueError):
                                 pt["numeric_val"] = 0.0
+                # Keyed by name for the chart legend; a shared name would
+                # overwrite, so the second one carries its IEEE tail.
+                if name in history:
+                    name = f"{name} ({str(ieee)[-5:]})"
                 history[name] = {
                     "ieee": ieee,
                     "temperature": temp["series"],

@@ -841,6 +841,8 @@ class HeatingController:
             except Exception as diag_err:
                 logger.warning(f"[apply_config] post-parse-diag failed: {diag_err}")
 
+            old_trv_sigs = {t["ieee"]: self._trv_signature(t)
+                             for c in self.circuits for r in c["rooms"] for t in r["trvs"]}
             diff = self._diff_config(
                 old_circuits=self.circuits,
                 new_circuits=new_circuits,
@@ -925,15 +927,13 @@ class HeatingController:
             for k in stale:
                 del self._last_command[k]
 
-            # Drop removed TRVs so persistent settings re-apply if they return.
-            current_trvs = {
-                t["ieee"]
-                for c in new_circuits
-                for r in c.get("rooms") or []
-                for t in (r.get("trvs") or [])
-                if isinstance(t, dict) and t.get("ieee")
-            }
-            self._trv_config_applied &= current_trvs
+            # Re-apply persistent settings to a TRV whose flags changed, and to
+            # a removed one if it returns.
+            new_trv_sigs = {t["ieee"]: self._trv_signature(t)
+                            for c in new_circuits for r in c["rooms"] for t in r["trvs"]}
+            self._trv_config_applied = {
+                i for i in self._trv_config_applied
+                if i in new_trv_sigs and old_trv_sigs.get(i) == new_trv_sigs[i]}
 
         # Audit-trail log — shows exactly what changed and why.
         if diff.get("any_changes"):
