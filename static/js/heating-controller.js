@@ -1185,8 +1185,10 @@ function selectInModal(ci, ri) {
 
 function bindRoomNav() {
     document.querySelectorAll('.hc-nav-circuit, .hc-nav-room, .hc-jump-room').forEach(btn => {
-        btn.addEventListener('click', () =>
-            selectInModal(+btn.dataset.ci, btn.dataset.ri == null ? null : +btn.dataset.ri));
+        btn.addEventListener('click', () => {
+            if (btn.dataset.tab) hcRoomTab = btn.dataset.tab;
+            selectInModal(+btn.dataset.ci, btn.dataset.ri == null ? null : +btn.dataset.ri);
+        });
     });
     document.querySelector('.hc-nav-select')?.addEventListener('change', e => {
         const [ci, ri] = e.target.value.split(':');
@@ -1265,14 +1267,36 @@ function renderCircuitCard(circuit, ci) {
             </option>`;
         }).join('');
 
-    const roomsHtml = (circuit.rooms || []).length
-        ? `<div class="d-flex flex-wrap gap-2">${circuit.rooms.map((r, ri) => `
-            <button type="button" class="btn btn-sm btn-outline-secondary hc-jump-room"
-                    data-ci="${ci}" data-ri="${ri}">
-                ${escapeHtml(r.name || r.id)}
-                <span class="text-muted ms-1">${Number(r.target_temp).toFixed(1)}°</span>
-                ${roomCannotControl(r) ? '<i class="fas fa-exclamation-triangle hc-warn ms-1"></i>' : ''}
-            </button>`).join('')}</div>`
+    // What the circuit heats: each room's radiators and TRVs, each row a jump
+    // to that room's TRVs tab.
+    const trvName = ieee => controllerDevices.thermostats.find(t => t.ieee === ieee)?.name || ieee;
+    const rooms = circuit.rooms || [];
+    const allRads = rooms.flatMap(r => r.radiators || []);
+    const allTrvs = rooms.flatMap(r => r.trv_ieees || []);
+    const totalW = allRads.reduce((n, rd) => n + (Number(rd.watts_at_dt50) || 0), 0);
+    const roomsHtml = rooms.length
+        ? `<div class="small text-muted mb-2">${allRads.length} radiator${allRads.length === 1 ? '' : 's'}
+              · ${Math.round(totalW)} W · ${allTrvs.length} TRV${allTrvs.length === 1 ? '' : 's'}</div>
+           <div class="list-group">${rooms.map((r, ri) => {
+            const rads = r.radiators || [];
+            const watts = rads.reduce((n, rd) => n + (Number(rd.watts_at_dt50) || 0), 0);
+            const trvs = r.trv_ieees || [];
+            return `
+            <button type="button" class="list-group-item list-group-item-action hc-jump-room py-2"
+                    data-ci="${ci}" data-ri="${ri}" data-tab="trvs">
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                    <strong class="small">${escapeHtml(r.name || r.id)}</strong>
+                    <span class="small text-muted">${Number(r.target_temp).toFixed(1)}°
+                        ${roomCannotControl(r) ? '<i class="fas fa-exclamation-triangle hc-warn ms-1" title="Cannot call for heat"></i>' : ''}</span>
+                </div>
+                <div class="small text-muted d-flex flex-wrap gap-3 mt-1">
+                    <span><i class="fas fa-fire text-danger me-1"></i>${rads.length
+                        ? `${rads.length} · ${Math.round(watts)} W` : 'no radiator'}</span>
+                    <span><i class="fas fa-sliders-h me-1"></i>${trvs.length
+                        ? trvs.map(t => escapeHtml(trvName(t))).join(', ') : 'no TRV'}</span>
+                </div>
+            </button>`;
+        }).join('')}</div>`
         : `<div class="text-muted small">No rooms in this circuit yet.</div>`;
 
     // Absent = follow the controller-wide setting on the General tab.
@@ -1869,6 +1893,9 @@ function renderDimensionsPanel(room, ci, ri, inline = false) {
     // A room drawn on the plan takes its layout and radiators from it in either
     // mode — the plan is the more accurate — so this block is read-only here.
     const projected = !!room.floor_plan_ref;
+    // Radiator specs, unlike geometry, are edited here in manual mode and
+    // written back to the plan's radiators by id.
+    const radLocked = projected && controllerConfigMode === 'floor_plan';
     const projectedBanner = projected ? `
         <div class="alert alert-info py-2 px-3 mb-2 d-flex justify-content-between align-items-center small">
             <div>
@@ -1894,7 +1921,7 @@ function renderDimensionsPanel(room, ci, ri, inline = false) {
                     ${projectedBanner}
                     <div class="small text-muted mb-2">
                         ${projected
-                            ? 'Read-only — edit in the floor plan editor to update these values.'
+                            ? 'Room size, walls, windows and doors come from the floor plan — edit them there.'
                             : 'Enter room width (X) and depth (Y) in metres. Wall areas and per-wall loss are computed automatically.'}
                     </div>
                     <fieldset ${projected ? 'disabled' : ''}>
@@ -1980,23 +2007,26 @@ function renderDimensionsPanel(room, ci, ri, inline = false) {
                     </div>
                     ${doorRows || '<div class="small text-muted">No doors added.</div>'}
 
+                    </fieldset>
+
                     <hr class="my-3">
 
+                    <fieldset ${radLocked ? 'disabled' : ''}>
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <strong class="small">
                             <i class="fas fa-fire me-1"></i>Radiators
                             <span class="badge bg-secondary ms-1">${radiators.length}</span>
-                            ${projected ? '<span class="badge bg-info ms-1">from floor plan</span>' : ''}
+                            ${radLocked ? '<span class="badge bg-info ms-1">edit in the floor plan</span>' : ''}
                         </strong>
-                        ${projected ? '' : `
+                        ${radLocked ? '' : `
                             <button type="button" class="btn btn-sm btn-outline-primary btn-rad-add"
                                     data-ci="${ci}" data-ri="${ri}">
                                 <i class="fas fa-plus me-1"></i>Add radiator
                             </button>`}
                     </div>
                     ${radiators.length === 0
-                        ? `<div class="small text-muted fst-italic">No radiators on this room.${projected ? '' : ' Click <strong>Add radiator</strong> to set capacity for heat-loss sizing.'}</div>`
-                        : radiators.map((rd, ridx) => renderOneRadiatorCard(rd, ci, ri, ridx, projected)).join('')}
+                        ? `<div class="small text-muted fst-italic">No radiators on this room.${radLocked ? '' : ' Click <strong>Add radiator</strong> to set capacity for heat-loss sizing.'}</div>`
+                        : radiators.map((rd, ridx) => renderOneRadiatorCard(rd, ci, ri, ridx, radLocked)).join('')}
                     </fieldset>
                 </div>
             </div>

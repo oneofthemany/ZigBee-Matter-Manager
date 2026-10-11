@@ -23,7 +23,6 @@ let _availableDevices = { trvs: [], sensors: [], contacts: [] };
 // Circuits passed in by the caller (heating-controller config). Used purely
 // for display: showing which circuit a radiator's bound room belongs to,
 // in the radiator props panel. Schema: [{ id, name, rooms: [{id, name}] }, ...]
-let _availableCircuits = [];
 // True while the Alt key is held — suppresses grid snap and endpoint merging
 // so points can be placed exactly where the cursor is.
 let _altDown = false;
@@ -128,7 +127,6 @@ export async function openFloorPlanEditor(opts = {}) {
         contacts: opts.contacts || [],
         receivers: opts.devices?.receivers || opts.receivers || [],
     };
-    _availableCircuits = opts.circuits || [];
     _onSaveCallback = opts.onSave || null;
     ensureModal();
     const modalEl = document.getElementById('floorPlanModal');
@@ -1550,19 +1548,19 @@ function renderScene() {
             // Clamp offset so the radiator's CENTRE stays on the wall (length
             // can overhang slightly if wall is shorter than radiator)
             const t0 = Math.max(0, Math.min(wlen - len, (r.offset_m ?? wlen / 2)));
-            // Perpendicular direction: rotate (ux, uy) 90° → (-uy, ux). We
-            // pick the side facing the bound room's centroid. If no room
-            // bound, default to the +90 side.
+            // Perpendicular (-uy, ux), flipped to face the bound room: probed
+            // just off the radiator's own stretch of wall, because an L-shaped
+            // or angled room's centroid can sit on the wrong side of it.
             let nx = -uy, ny = ux;
             const room = r.room_id ? (lvl.rooms || []).find(rm => rm.id === r.room_id) : null;
             if (room) {
-                const c = polygonCentroid(room.polygon);
-                const wallMidX = (wall.x1 + wall.x2) / 2;
-                const wallMidY = (wall.y1 + wall.y2) / 2;
-                // Dot product of (centroid - wallMid) with (nx, ny). Positive
-                // means the chosen normal already points toward the room.
-                const dot = (c.x - wallMidX) * nx + (c.y - wallMidY) * ny;
-                if (dot < 0) { nx = -nx; ny = -ny; }
+                const mx = wall.x1 + ux * (t0 + len / 2), my = wall.y1 + uy * (t0 + len / 2);
+                const inside = d => pointInPolygon({ x: mx + nx * d, y: my + ny * d }, room.polygon);
+                if (!inside(0.15) && inside(-0.15)) { nx = -nx; ny = -ny; }
+                else if (!inside(0.15) && !inside(-0.15)) {
+                    const c = polygonCentroid(room.polygon);
+                    if ((c.x - mx) * nx + (c.y - my) * ny < 0) { nx = -nx; ny = -ny; }
+                }
             }
             // Four corners of the radiator rectangle, in MODEL coords.
             const ax = wall.x1 + ux * t0,         ay = wall.y1 + uy * t0;
@@ -1696,6 +1694,7 @@ function renderScene() {
             // A device's marker (or a sensor, which is one) moves with the pointer.
             if (el.dataset.kind === 'device') _devDrag = { ieee: el.dataset.id };
             else if (el.dataset.kind === 'sensor') _devDrag = { sensorId: el.dataset.id };
+            else if (el.dataset.kind === 'radiator') _radMove = { radId: el.dataset.id, from: clientToSvgModel(e), moving: false };
             renderScene(); renderProps();
         });
     });
@@ -2085,6 +2084,11 @@ let _wallDrag = null;
 // wall and updates `radiator.offset_m` live, clamped so the radiator stays
 // on the wall.
 let _radDrag = null;
+// A radiator being moved: { radId, from } until the pointer has travelled far
+// enough to count as a drag, so a click that only selects never re-snaps it.
+let _radMove = null;
+const RAD_WALL_SNAP_M = 0.5;
+const RAD_MOVE_START_M = 0.1;
 
 // Background-image drag state, set by the Adjust image tool: `move` slides the
 // image, `scale` resizes it about the corner opposite the one being dragged.
@@ -2239,6 +2243,29 @@ function onCanvasMouseMove(e) {
         return;
     }
     // Radiator slide drag: project cursor onto the host wall, compute the
+    // Moving a radiator: flush on a wall within RAD_WALL_SNAP_M (its own
+    // room's first), freestanding anywhere else.
+    if (_radMove) {
+        const lvl = currentLevel();
+        const r = lvl.radiators.find(x => x.id === _radMove.radId);
+        const m = clientToSvgModel(e);
+        if (!_radMove.moving && Math.hypot(m.x - _radMove.from.x, m.y - _radMove.from.y) < RAD_MOVE_START_M) return;
+        _radMove.moving = true;
+        if (r) {
+            const snap = radiatorWallSnap(lvl, r, m, RAD_WALL_SNAP_M);
+            if (snap) {
+                r.wall_id = snap.wall.id;
+                r.offset_m = snap.offset_m;
+                delete r.x; delete r.y;
+            } else {
+                r.x = Math.round(m.x * 1000) / 1000;
+                r.y = Math.round(m.y * 1000) / 1000;
+                delete r.wall_id; delete r.offset_m;
+            }
+            renderScene();
+        }
+        return;
+    }
     // offset that keeps the radiator's visual centre under the cursor, clamp
     // so it stays on the wall, write back to offset_m.
     if (_radDrag) {
@@ -2351,6 +2378,8 @@ function onCanvasMouseUp(e) {
     if (_isPanning) { _isPanning = false; _panStart = null; renderToolbar(); return; }
     if (_wallDrag) { _wallDrag = null; renderScene(); renderProps(); return; }
     if (_radDrag)  { _radDrag = null;  renderScene(); renderProps(); return; }
+    if (_radMove)  { const moved = _radMove.moving; _radMove = null;
+                     if (moved) { renderScene(); renderProps(); } return; }
     if (_devDrag)  { _devDrag = null;  renderScene(); renderProps(); return; }
     if (_mapDrag)  { _mapDrag = null;  renderOverlay(); syncMapControls(); return; }
     if (_bgDrag)   { _bgDrag = null;   renderScene(); renderOverlay();
@@ -3869,6 +3898,9 @@ function bindHeatingChecklist(wrap) {
     });
 }
 
+// Circuits expanded in the panel, kept across re-renders within one open.
+const _openCircuits = new Set();
+
 function renderCircuitList() {
     const wrap = document.getElementById('fpCircuitList');
     if (!wrap) return;
@@ -3886,22 +3918,69 @@ function renderCircuitList() {
             if (r.circuit_id) roomCounts[r.circuit_id] = (roomCounts[r.circuit_id] || 0) + 1;
         });
     });
+    const trvName = ieee => (_availableDevices.trvs || []).find(t => t.ieee === ieee)?.name || ieee.slice(-8);
+    // Each circuit lists what it heats: every room, its radiators and their TRVs.
+    const circuitDevices = cid => (_state.plan.levels || []).flatMap(lvl =>
+        (lvl.rooms || []).filter(r => r.circuit_id === cid).map(room => {
+            const rads = (lvl.radiators || []).filter(rd => rd.room_id === room.id);
+            const lines = rads.length
+                ? rads.map(rd => `
+                    <button type="button" class="btn btn-link btn-sm p-0 d-flex gap-1 w-100 text-start small fp-circuit-rad"
+                            data-level="${lvl.id}" data-rad="${rd.id}">
+                      <i class="fas fa-fire fa-fw text-danger mt-1"></i>
+                      <span class="flex-grow-1 text-truncate">${Math.round(rd.watts_at_dt50 || 0)} W</span>
+                      <span class="text-truncate ${rd.trv_ieee ? 'text-body' : 'text-muted'}">${rd.trv_ieee
+                          ? `<i class="fas fa-sliders-h fa-xs me-1"></i>${escapeHtml(trvName(rd.trv_ieee))}` : 'no TRV'}</span>
+                    </button>`).join('')
+                : '<div class="small text-muted fst-italic ps-3">no radiator</div>';
+            return `<div class="ms-3 mb-1">
+                <button type="button" class="btn btn-link btn-sm p-0 small fw-semibold text-body fp-circuit-room"
+                        data-level="${lvl.id}" data-room="${room.id}">${escapeHtml(room.name || room.id)}</button>
+                <div class="ps-2">${lines}</div></div>`;
+        })).join('');
+
     wrap.innerHTML = circuits.map((c, i) => {
         const colour = CIRCUIT_BADGE_COLOURS[i % CIRCUIT_BADGE_COLOURS.length];
         const cnt = roomCounts[c.id] || 0;
-        return `<div class="d-flex align-items-center gap-1 mb-1" data-circuit-id="${c.id}">
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${colour};flex-shrink:0"></span>
-          <span class="small flex-grow-1 text-truncate" title="${escapeHtml(c.id)}">${escapeHtml(c.name)}<span class="text-muted ms-1">(${cnt})</span></span>
-          <button class="btn btn-sm btn-link p-0 text-primary" data-action="edit-circuit" data-circuit-id="${c.id}" title="Edit"><i class="fas fa-pencil-alt fa-xs"></i></button>
-          <button class="btn btn-sm btn-link p-0 text-danger" data-action="delete-circuit" data-circuit-id="${c.id}" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
-        </div>`;
+        const rads = (_state.plan.levels || []).flatMap(lvl => {
+            const ids = new Set((lvl.rooms || []).filter(r => r.circuit_id === c.id).map(r => r.id));
+            return (lvl.radiators || []).filter(rd => ids.has(rd.room_id));
+        });
+        const watts = rads.reduce((n, rd) => n + (rd.watts_at_dt50 || 0), 0);
+        const trvs = rads.filter(rd => rd.trv_ieee).length;
+        return `<details class="mb-1" data-circuit-id="${c.id}" ${_openCircuits.has(c.id) ? 'open' : ''}>
+          <summary class="d-flex align-items-center gap-1" style="list-style:none;cursor:pointer">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${colour};flex-shrink:0"></span>
+            <span class="small flex-grow-1 text-truncate" title="${escapeHtml(c.id)}">${escapeHtml(c.name)}<span class="text-muted ms-1">(${cnt})</span></span>
+            <button class="btn btn-sm btn-link p-0 text-primary" data-action="edit-circuit" data-circuit-id="${c.id}" title="Edit"><i class="fas fa-pencil-alt fa-xs"></i></button>
+            <button class="btn btn-sm btn-link p-0 text-danger" data-action="delete-circuit" data-circuit-id="${c.id}" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
+          </summary>
+          <div class="small text-muted ms-3 mb-1">${rads.length} radiator${rads.length === 1 ? '' : 's'} · ${Math.round(watts)} W · ${trvs} TRV${trvs === 1 ? '' : 's'}</div>
+          ${circuitDevices(c.id)}
+        </details>`;
     }).join('');
 
+    wrap.querySelectorAll('details[data-circuit-id]').forEach(d => {
+        d.addEventListener('toggle', () => {
+            if (d.open) _openCircuits.add(d.dataset.circuitId);
+            else _openCircuits.delete(d.dataset.circuitId);
+        });
+    });
+    const jump = (levelId, kind, id) => {
+        _state.currentLevelId = levelId;
+        _state.selection = { kind, id };
+        renderAll();
+        renderProps();
+    };
+    wrap.querySelectorAll('.fp-circuit-rad').forEach(b =>
+        b.addEventListener('click', () => jump(b.dataset.level, 'radiator', b.dataset.rad)));
+    wrap.querySelectorAll('.fp-circuit-room').forEach(b =>
+        b.addEventListener('click', () => jump(b.dataset.level, 'room', b.dataset.room)));
     wrap.querySelectorAll('[data-action="edit-circuit"]').forEach(btn => {
-        btn.addEventListener('click', () => editCircuit(btn.dataset.circuitId));
+        btn.addEventListener('click', e => { e.preventDefault(); editCircuit(btn.dataset.circuitId); });
     });
     wrap.querySelectorAll('[data-action="delete-circuit"]').forEach(btn => {
-        btn.addEventListener('click', () => deleteCircuit(btn.dataset.circuitId));
+        btn.addEventListener('click', e => { e.preventDefault(); deleteCircuit(btn.dataset.circuitId); });
     });
     wrap.insertAdjacentHTML('beforeend', renderHeatingChecklist());
     bindHeatingChecklist(wrap);
@@ -4108,9 +4187,8 @@ function addPointFeature(tool, m) {
         // perpendicular distance), create a wall-mounted radiator. Otherwise
         // create a freestanding one at the click position. The user can
         // convert between modes later via the property panel.
-        const RAD_WALL_SNAP_M = 0.5;
-        const snap = nearestWallWithProjection(lvl, m, RAD_WALL_SNAP_M);
         const id = genId('rad');
+        const snap = radiatorWallSnap(lvl, { room_id, length_m: 0.6 }, m, RAD_WALL_SNAP_M);
         if (snap) {
             // Wall-mounted: store wall_id + offset_m. No x/y — render computes
             // the on-wall point from (wall, offset_m, room centroid for side).
@@ -4147,6 +4225,42 @@ function addPointFeature(tool, m) {
  * projection details if within `maxDist` metres. Returns null otherwise.
  * { wall, offset_m, projected: {x,y}, perpDist }
  */
+/** Does wall `w` run along one of `room`'s polygon edges? */
+function wallBordersRoom(w, room) {
+    const poly = room?.polygon || [];
+    for (let i = 0; i < poly.length; i++) {
+        const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+        const L = Math.hypot(bx - ax, by - ay);
+        if (L < 1e-6) continue;
+        const ux = (bx - ax) / L, uy = (by - ay) / L;
+        const off = (x, y) => Math.abs((x - ax) * uy - (y - ay) * ux);
+        if (off(w.x1, w.y1) > 0.08 || off(w.x2, w.y2) > 0.08) continue;
+        const t1 = (w.x1 - ax) * ux + (w.y1 - ay) * uy;
+        const t2 = (w.x2 - ax) * ux + (w.y2 - ay) * uy;
+        if (Math.min(Math.max(t1, t2), L) - Math.max(Math.min(t1, t2), 0) > 0.1) return true;
+    }
+    return false;
+}
+
+/**
+ * Where radiator `r` would mount if its centre were at `p`: the nearest wall
+ * within `maxDist`, preferring its own room's walls — the nearest wall on the
+ * level is as often the far face of an internal wall — with the offset chosen
+ * so the radiator is centred on `p`'s projection. Null when nothing is close.
+ */
+function radiatorWallSnap(lvl, r, p, maxDist) {
+    const room = (lvl.rooms || []).find(x => x.id === r.room_id);
+    const own = room ? (lvl.walls || []).filter(w => wallBordersRoom(w, room)) : [];
+    const snap = nearestWallWithProjection({ walls: own }, p, maxDist)
+        || nearestWallWithProjection(lvl, p, maxDist);
+    if (!snap) return null;
+    const w = snap.wall;
+    const wlen = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
+    const len = r.length_m || 0.6;
+    const offset = Math.max(0, Math.min(Math.max(0, wlen - len), snap.offset_m - len / 2));
+    return { wall: w, offset_m: Math.round(offset * 1000) / 1000 };
+}
+
 function nearestWallWithProjection(lvl, p, maxDist) {
     let best = null, bestD = maxDist;
     for (const w of (lvl.walls || [])) {
@@ -4657,12 +4771,13 @@ function renderRadiatorProps(r) {
       .concat(lvl.rooms.map(rm =>
         `<option value="${rm.id}" ${r.room_id === rm.id ? 'selected' : ''}>${escapeHtml(rm.name || rm.id)}</option>`)).join('');
 
-    // Circuit context — derived from `room_id` via the caller-provided
-    // circuits list. Read-only: circuit membership is set in the heating-
-    // controller config, not here, because it's a behavioural binding (which
-    // receiver fires for this room), not a geometric one. We just show it
-    // so the user knows what controller behaviour this radiator triggers.
-    const circuit = r.room_id ? findCircuitForRoom(r.room_id) : null;
+    // Circuit context, read-only here: the room's circuit is set in its own
+    // properties, and shown so the user knows which receiver this radiator
+    // heats on.
+    const room = r.room_id ? lvl.rooms.find(rm => rm.id === r.room_id) : null;
+    const circuit = room?.circuit_id
+        ? (_state.plan.circuits || []).find(c => c.id === room.circuit_id) || null
+        : null;
     const circuitInfo = circuit
         ? `<div class="mb-2 small text-muted">
              <i class="fas fa-stream me-1"></i>Heats on circuit
@@ -4671,7 +4786,7 @@ function renderRadiatorProps(r) {
                ? `<span class="text-muted" title="${escapeHtml(circuit.receiver_ieee)}"> · receiver <code>${escapeHtml(circuit.receiver_ieee.slice(-8))}</code></span>`
                : '<span class="text-warning ms-1">(no receiver assigned)</span>'}
            </div>`
-        : (_availableCircuits.length && r.room_id
+        : ((_state.plan.circuits || []).length && r.room_id
             ? `<div class="mb-2 small text-warning">
                  <i class="fas fa-exclamation-triangle me-1"></i>
                  Room <code>${escapeHtml(r.room_id)}</code> isn't in any circuit yet —
@@ -5031,8 +5146,8 @@ function bindPropsHandlers() {
         const lvl = currentLevel();
         const r = lvl.radiators.find(x => x.id === sel.id);
         if (!r) return;
-        const p = radiatorCenter(r, lvl);
-        const snap = nearestWallWithProjection(lvl, p, 100);  // any distance — this is explicit user intent
+        // Any distance — this is explicit user intent.
+        const snap = radiatorWallSnap(lvl, r, radiatorCenter(r, lvl), 100);
         if (!snap) {
             toast('warn', 'No walls', 'No walls available on this level.');
             return;
