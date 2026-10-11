@@ -52,7 +52,7 @@ async function loadStructuredConfig() {
         }
         _currentConfig = data.config;
         renderConfigTab(data.config);
-        renderSecurityTab(data.config);
+        renderKeysTab(data.config);
         renderApisTab(data.config);
     } catch (e) {
         showSettingsAlert('danger', 'Error loading config: ' + e.message);
@@ -469,9 +469,9 @@ function collectOtaProviderRows() {
     return out;
 }
 
-// SECURITY TAB RENDER
+// KEY AND ID (Settings → Network): the Zigbee PAN IDs and network key
 
-function renderSecurityTab(config) {
+function renderKeysTab(config) {
     const z = config.zigbee || {};
     const el = document.getElementById('securityFormBody');
     if (!el) return;

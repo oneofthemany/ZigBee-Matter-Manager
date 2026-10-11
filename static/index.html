@@ -612,6 +612,11 @@
                     </button>
                 </li>
                 <li class="nav-item">
+                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsSecurity">
+                        <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
+                    </button>
+                </li>
+                <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#securityRemoteAccess">
                         <i class="fas fa-globe me-1"></i> <span class="tab-label">Remote Access</span>
                     </button>
@@ -666,6 +671,23 @@
                     <!-- populated by notifications.js on first show -->
                 </div>
 
+
+                <!-- SECURITY TAB: house mode, alarm, banned devices                    -->
+                <div class="tab-pane fade p-3" id="settingsSecurity">
+                    <div class="card shadow-sm mb-3">
+                        <div class="card-header bg-light d-flex flex-wrap gap-2 justify-content-between align-items-center py-2">
+                            <span class="fw-bold"><i class="fas fa-ban me-1"></i> Banned devices</span>
+                            <button class="btn btn-warning btn-sm" onclick="openBannedModal()">
+                                <i class="fas fa-ban me-1"></i> Manage banned devices
+                            </button>
+                        </div>
+                        <div class="card-body small text-muted py-2">
+                            Devices refused when they try to join the Zigbee network.
+                        </div>
+                    </div>
+                    <!-- House mode + alarm setup (admin); populated by alarm-settings.js. -->
+                    <div id="alarm-settings-host"></div>
+                </div>
 
                 <!-- ACCOUNTS TAB                                                       -->
                 <div class="tab-pane fade p-3" id="settingsAuth">
@@ -777,25 +799,22 @@
                             </button>
                         </li>
                         <li class="nav-item">
-                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsSecurity">
-                                <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsKeys">
+                                <i class="fas fa-fingerprint me-1"></i> <span class="tab-label">Key and ID</span>
                             </button>
                         </li>
                     </ul>
 
                     <div class="tab-content">
 
-                <!-- SECURITY SUB-TAB                                                     -->
-                <div class="tab-pane fade" id="settingsSecurity">
+                <!-- KEY AND ID SUB-TAB: the Zigbee network's PAN IDs and key            -->
+                <div class="tab-pane fade" id="settingsKeys">
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-                            <span class="fw-bold"><i class="fas fa-shield-alt me-1"></i> Security</span>
+                            <span class="fw-bold"><i class="fas fa-fingerprint me-1"></i> Key and ID</span>
                             <div>
                                 <button class="btn btn-success btn-sm" onclick="saveSettingsConfig()">
                                     <i class="fas fa-save me-1"></i> Save
-                                </button>
-                                <button class="btn btn-warning btn-sm ms-2" onclick="openBannedModal()">
-                                    <i class="fas fa-ban me-1"></i> Banned Devices
                                 </button>
                             </div>
                         </div>
@@ -809,8 +828,6 @@
                             Network key changes require re-pairing all devices. Always keep a backup.
                         </div>
                     </div>
-                    <!-- House mode + alarm setup (admin); populated by alarm-settings.js. -->
-                    <div id="alarm-settings-host" class="mt-3"></div>
                 </div>
 
                 <!-- SPECTRUM ANALYSIS SUB-TAB                                            -->
