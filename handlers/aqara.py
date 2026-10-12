@@ -284,6 +284,8 @@ class AqaraManufacturerCluster(ClusterHandler):
 
     # Thermostat/TRV Attributes (E1: lumi.airrtc.agl001)
     ATTR_MOTOR_CALIBRATION = 0x0270     # 624 decimal - Write 1 to start calibration
+    # Waits between re-reads of ATTR_CALIBRATED after a calibration starts.
+    CALIBRATION_RECHECK_DELAYS_SEC = (15, 30, 45, 90)
     ATTR_SYSTEM_MODE = 0x0271           # uint8 - System mode
     ATTR_PRESET = 0x0272                # uint8 - Preset mode
     ATTR_WINDOW_DETECTION = 0x0273      # 627 decimal - Window detection
@@ -1125,18 +1127,23 @@ class AqaraManufacturerCluster(ClusterHandler):
             if not ok:
                 return False
             # No "in_progress" state exists on agl001 (0x027B is boolean), so do
-            # not fake one. Adaptation takes ~10 s and needs the head mounted;
-            # re-read the real flag afterwards rather than strand a phantom status.
+            # not fake one. The valve travels its full stroke before the flag
+            # turns true, and a sleepy head can miss any one read, so re-read on
+            # a widening schedule until it does rather than strand whatever the
+            # first read caught mid-stroke.
             import asyncio
 
             async def _recheck_calibration():
-                try:
-                    await asyncio.sleep(12)
-                    await self.read_attribute(self.ATTR_CALIBRATED)
-                except Exception as e:
-                    logger.debug(
-                        f"[{self.device.ieee}] calibration re-read failed: {e}"
-                    )
+                for delay in self.CALIBRATION_RECHECK_DELAYS_SEC:
+                    await asyncio.sleep(delay)
+                    try:
+                        await self.read_attribute(self.ATTR_CALIBRATED)
+                    except Exception as e:
+                        logger.debug(
+                            f"[{self.device.ieee}] calibration re-read failed: {e}"
+                        )
+                    if self.device.state.get("calibrated") is True:
+                        return
 
             asyncio.create_task(_recheck_calibration())
             return True

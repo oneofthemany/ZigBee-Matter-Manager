@@ -19,6 +19,11 @@ try:
 except Exception:
     query_room_heating_state = None
 
+try:
+    from modules.telemetry_db import query_state_since_change_sec
+except Exception:
+    query_state_since_change_sec = None
+
 logger = logging.getLogger("modules.heating_anomaly_watcher")
 
 SCAN_INTERVAL_SEC = 300        # every 5 minutes
@@ -86,6 +91,66 @@ def _build_heating_state_getter(tick_rows: List[Dict[str, Any]]):
         return tick_active[idx]
 
     return _getter
+
+def _duration(seconds: float) -> str:
+    mins = max(1, round(seconds / 60))
+    return f"{mins} min" if mins < 60 else f"{mins // 60} h {mins % 60} min"
+
+
+def _names(names: List[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def contact_cause(contacts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    What a room's contact sensors say about a fast cool-down — a fact where
+    the detector alone can only guess.
+
+    Each contact: ``{name, is_open, open_for_sec, open_in_window_sec}``, with
+    ``is_open`` None when the sensor's state is unknown. Returns
+    ``{kind, text, sensors}`` or None when no contact has a known state, which
+    leaves the detector's own suggestion standing.
+      open         one is open now
+      was_open     none is open now, but one was during the cooling window
+      all_closed   every one stayed closed — the cause is elsewhere
+    """
+    known = [c for c in contacts if c.get("is_open") is not None]
+    if not known:
+        return None
+    open_now = [c for c in known if c["is_open"]]
+    if open_now:
+        parts = []
+        for c in open_now:
+            since = c.get("open_for_sec")
+            parts.append(c["name"] + (f" (open {_duration(since)})" if since else ""))
+        verb = "is" if len(open_now) == 1 else "are"
+        return {"kind": "open", "sensors": [c["name"] for c in open_now],
+                "text": f"{_names(parts)} {verb} open."}
+    was_open = [c for c in known if (c.get("open_in_window_sec") or 0) >= 60]
+    if was_open:
+        parts = [f"{c['name']} was open for {_duration(c['open_in_window_sec'])}" for c in was_open]
+        return {"kind": "was_open", "sensors": [c["name"] for c in was_open],
+                "text": f"{_names(parts)} while it cooled; closed now."}
+    return {"kind": "all_closed", "sensors": [c["name"] for c in known],
+            "text": f"{_names([c['name'] for c in known])} stayed closed — look for a window "
+                    f"or door without a sensor, or a sudden change in the weather."}
+
+
+def _open_seconds_in_window(rows: List[Dict[str, Any]], t0: float, t1: float) -> float:
+    """Seconds an `is_open` history was True inside [t0, t1]. Row timestamps are
+    read the same naive way as the temperature series the window came from."""
+    import datetime as _dt
+    total, prev_ts, prev_open = 0.0, None, None
+    for r in rows:
+        ts = r.get("ts")
+        ts = ts.timestamp() if isinstance(ts, _dt.datetime) else float(ts or 0)
+        if prev_open:
+            total += max(0.0, min(ts, t1) - max(prev_ts, t0))
+        prev_ts, prev_open = ts, str(r.get("value")).strip().lower() in ("true", "1", "open")
+    if prev_open:
+        total += max(0.0, t1 - max(prev_ts, t0))
+    return total
+
 
 class HeatingAnomalyWatcher:
     def __init__(
@@ -264,9 +329,19 @@ class HeatingAnomalyWatcher:
                     key = (cid, rid, anomaly.kind)
                     seen_keys.add(key)
 
+                    # A door that has since been opened or shut changes the
+                    # explanation of an anomaly still on screen, so the cause
+                    # is re-read every scan.
+                    cause = None
+                    if anomaly.kind == "fast_cool":
+                        cause = self._contact_cause(room, adv, anomaly)
+                    message = (f"{anomaly.summary} {cause['text']}"
+                               if cause and anomaly.summary else anomaly.message)
+
                     existing = active.get(key)
                     if existing and \
                             existing.get("window_end_ts") == anomaly.window_end_ts:
+                        active[key] = {**existing, "message": message, "cause": cause}
                         continue  # already reported this exact window
 
                     # New or refreshed anomaly
@@ -276,13 +351,15 @@ class HeatingAnomalyWatcher:
                         "room_id": rid,
                         "room_name": room.get("name"),
                         **anomaly.to_dict(),
+                        "message": message,
+                        "cause": cause,
                     }
                     active[key] = record
                     new_count += 1
                     logger.warning(
                         f"Anomaly [{anomaly.severity}] {anomaly.kind} in "
                         f"{circuit.get('name')}/{room.get('name')}: "
-                        f"{anomaly.message}"
+                        f"{message}"
                     )
 
         # Resolve: anything active that we didn't re-detect this pass
@@ -304,6 +381,43 @@ class HeatingAnomalyWatcher:
         self._history = history
         self._last_scan_ts = now
         return new_count
+
+    def _contact_cause(self, room: Dict[str, Any], adv: Any, anomaly: Any) -> Optional[Dict[str, Any]]:
+        """Read the room's contact sensors and their recent history. Blocking
+        (DuckDB) — called from the scan's worker thread only."""
+        configured = [c for c in (room.get("contact_sensors") or [])
+                      if isinstance(c, dict) and c.get("ieee") and c.get("enabled", True)]
+        if not configured:
+            return None
+        try:
+            devices = (adv._get_devices() or {}) if adv is not None else {}
+        except Exception:
+            devices = {}
+        contacts = []
+        for c in configured:
+            ieee = c["ieee"]
+            dev = devices.get(ieee)
+            state = (dev.get("state") if isinstance(dev, dict)
+                     else getattr(dev, "state", None)) or {}
+            names = getattr(getattr(dev, "service", None), "friendly_names", None) or {}
+            is_open = None
+            if "is_open" in state:
+                is_open = bool(state["is_open"])
+            elif "contact" in state:
+                is_open = not bool(state["contact"])
+            entry = {"name": names.get(ieee) or c.get("name") or ieee, "is_open": is_open,
+                     "open_for_sec": None, "open_in_window_sec": 0.0}
+            try:
+                if is_open and query_state_since_change_sec is not None:
+                    entry["open_for_sec"] = query_state_since_change_sec(ieee, "is_open", 24)
+                if anomaly.window_start_ts and anomaly.window_end_ts:
+                    entry["open_in_window_sec"] = _open_seconds_in_window(
+                        self.telemetry_query(ieee, "is_open", 6) or [],
+                        anomaly.window_start_ts, anomaly.window_end_ts)
+            except Exception as e:
+                logger.debug(f"contact history unavailable for {ieee}: {e}")
+            contacts.append(entry)
+        return contact_cause(contacts)
 
     def get_snapshot(self) -> Dict[str, Any]:
         return {

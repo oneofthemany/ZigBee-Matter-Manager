@@ -936,6 +936,9 @@ class Anomaly:
     baseline_tau_seconds: Optional[float] = None
     tau_ratio: Optional[float] = None  # observed / baseline; <1 = faster cooling
     message: str = ""
+    # The measured part of `message`, without the suggested cause — a caller
+    # that knows the cause (a contact sensor) appends its own.
+    summary: str = ""
     window_start_ts: Optional[float] = None
     window_end_ts: Optional[float] = None
     temp_drop_c: Optional[float] = None
@@ -950,6 +953,7 @@ class Anomaly:
             "baseline_tau_seconds": self.baseline_tau_seconds,
             "tau_ratio": round(self.tau_ratio, 2) if self.tau_ratio else None,
             "message": self.message,
+            "summary": self.summary,
             "window_start_ts": self.window_start_ts,
             "window_end_ts": self.window_end_ts,
             "temp_drop_c": self.temp_drop_c,
@@ -995,6 +999,8 @@ def detect_fast_cooling(
     severity = "critical" if ratio < critical_ratio_threshold else "warning"
     temp_drop = round(samples[0][1] - samples[-1][1], 1)
     mins = round((t1 - t0) / 60)
+    summary = (f"Room cooling {int((1 - ratio) * 100)}% faster than normal: "
+               f"dropped {temp_drop}°C in {mins} min.")
 
     return Anomaly(
         room_id=room_id,
@@ -1007,11 +1013,9 @@ def detect_fast_cooling(
         window_start_ts=t0,
         window_end_ts=t1,
         temp_drop_c=temp_drop,
-        message=(
-            f"Room cooling {int((1 - ratio) * 100)}% faster than normal: "
-            f"dropped {temp_drop}°C in {mins} min. Check for an open window, "
-            f"door left open, or sudden weather change."
-        ),
+        summary=summary,
+        message=(f"{summary} Check for an open window, door left open, "
+                 f"or sudden weather change."),
     )
 
 

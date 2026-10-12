@@ -478,13 +478,18 @@ def should_suppress_heat_call(
         shortwave_wm2: Optional[float] = None,
         cloud_fraction: float = 0.0,
         suppress_fraction: float = 0.8,
+        outdoor_temp_c: Optional[float] = None,
 ) -> tuple[bool, float]:
     """
-    Should the controller suppress a heat call because solar gain is
-    sufficient to close (most of) the temperature deficit on its own?
+    Should the controller suppress a heat call because solar gain alone will
+    carry the room to target?
 
-    This is a conservative check — suppression only fires when solar alone
-    can cover `suppress_fraction` (default 80%) of the remaining deficit.
+    The sun has to replace what the room loses to outdoors at target —
+    ``w_per_k × (target − outdoor)`` — not just the loss across the remaining
+    deficit, which is several times smaller and let a few tens of watts hold a
+    room a degree short all afternoon. Suppression fires when solar covers
+    `suppress_fraction` of that; with no outdoor reading it cannot be judged
+    and never fires.
 
     Args:
         room_config:        Room config dict.
@@ -495,7 +500,8 @@ def should_suppress_heat_call(
         dt_utc:             Evaluation instant (default: now UTC).
         shortwave_wm2:      Current GHI [W/m²].
         cloud_fraction:     Cloud cover fraction 0.0–1.0.
-        suppress_fraction:  Fraction of deficit solar must cover to suppress.
+        outdoor_temp_c:     Current outdoor temperature [°C].
+        suppress_fraction:  Fraction of the loss solar must cover to suppress.
                             Lower = more aggressive suppression.
                             Higher = more conservative (default 0.8).
 
@@ -507,9 +513,10 @@ def should_suppress_heat_call(
         # Room already at or above target — suppress regardless
         return True, 0.0
 
-    deficit_k = target_temp_c - current_temp_c
-    # Watts needed to hold the deficit (steady-state, no dynamics)
-    watts_needed = deficit_k * w_per_k
+    if outdoor_temp_c is None:
+        return False, 0.0
+    # Steady-state loss to outdoors with the room at target.
+    watts_needed = (target_temp_c - outdoor_temp_c) * w_per_k
 
     solar_w = solar_gain_now(
         room_config=room_config,
@@ -609,23 +616,30 @@ if __name__ == "__main__":
     assert len(forecast) == 12
 
     # Test 7: Suppression check
-    # Room at 18°C, target 21°C, heat loss 80 W/K, strong noon sun
+    # Half a degree short, 80 W/K, strong noon sun, mild outside
     suppress, sw = should_suppress_heat_call(
         ROOM, LAT, LON,
         current_temp_c=20.5, target_temp_c=21.0,
         w_per_k=80.0,
         dt_utc=noon, shortwave_wm2=800.0, cloud_fraction=0.1,
+        outdoor_temp_c=17.0,
     )
     print(f"\nSuppression check: suppress={suppress}  solar={sw:.1f} W")
+    assert suppress, "strong sun on a mild day covers a 4 K loss"
 
-    # Room 3°C below target — solar shouldn't be able to cover 80% of 240 W
+    # Same room, weak sun and 2 °C outside: a 1.5 kW loss the sun can't cover
     suppress2, sw2 = should_suppress_heat_call(
         ROOM, LAT, LON,
-        current_temp_c=18.0, target_temp_c=21.0,
+        current_temp_c=20.5, target_temp_c=21.0,
         w_per_k=80.0,
         dt_utc=noon, shortwave_wm2=400.0, cloud_fraction=0.5,
+        outdoor_temp_c=2.0,
     )
-    print(f"Large deficit:     suppress={suppress2}  solar={sw2:.1f} W")
+    print(f"Cold day:          suppress={suppress2}  solar={sw2:.1f} W")
+    assert not suppress2, "half a degree short on a cold day still needs the boiler"
+    assert not should_suppress_heat_call(
+        ROOM, LAT, LON, current_temp_c=20.5, target_temp_c=21.0, w_per_k=80.0,
+        dt_utc=noon, shortwave_wm2=800.0)[0], "no outdoor reading, no suppression"
 
     # Test 8: No orientation data — graceful degradation
     ROOM_NO_FACING = {

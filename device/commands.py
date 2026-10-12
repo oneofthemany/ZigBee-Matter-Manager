@@ -19,6 +19,14 @@ class DeviceCommandExecutorMixin:
         result = handler.process_command(command, value)
         if asyncio.iscoroutine(result):
             ieee = self.ieee
+
+            def _calibration_not_sent():
+                # The command never reached the valve, so nothing about its
+                # calibration changed: drop the optimistic "in_progress" back
+                # to what the device last reported, not to a failure.
+                self.update_state({'calibration_status':
+                                   'ready' if self.state.get('calibrated') is True else 'not_ready'})
+
             async def _run():
                 # write_fail_streak counts consecutive background-write
                 # failures; the heating controller uses it to back off
@@ -29,14 +37,14 @@ class DeviceCommandExecutorMixin:
                         self.write_fail_streak = getattr(self, 'write_fail_streak', 0) + 1
                         logger.warning(f"[{ieee}] {command}: device write failed (see handler logs)")
                         if command == 'motor_calibration':
-                            self.update_state({'calibration_status': 'failed'})
+                            _calibration_not_sent()
                     else:
                         self.write_fail_streak = 0
                 except Exception as e:
                     self.write_fail_streak = getattr(self, 'write_fail_streak', 0) + 1
                     logger.error(f"[{ieee}] {command}: background write error: {type(e).__name__}: {e}")
                     if command == 'motor_calibration':
-                        self.update_state({'calibration_status': 'failed'})
+                        _calibration_not_sent()
             asyncio.create_task(_run())
 
     def get_control_commands(self) -> List[Dict[str, Any]]:

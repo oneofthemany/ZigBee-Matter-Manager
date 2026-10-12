@@ -1125,6 +1125,10 @@ def write_heating_tick(
                         except (TypeError, ValueError):
                             pass
                         break
+                # A TRV that reports no position (Aqara E1) still says whether
+                # it is heating: recorded as fully open or shut.
+                if trv_open is None and first.get("hvac_action") is not None:
+                    trv_open = 100.0 if "heat" in str(first["hvac_action"]).lower() else 0.0
 
             room_rows.append({
                 "circuit_id": cid,
@@ -1311,6 +1315,28 @@ def query_device_state_history(ieee: str, attribute: str, hours: int = 24) -> Li
         ORDER BY ts ASC
     """, [ieee, attribute]).fetchall()
     return [{"ts": r[0], "value": r[1], "numeric_val": r[2]} for r in result]
+
+def query_state_since_change_sec(ieee: str, attribute: str, hours: int = 24) -> Optional[float]:
+    """Seconds the attribute has held its current value, or None with no rows.
+    Capped at the lookback when it never changed inside it. Age is computed in
+    DuckDB for the reason given in `query_last_report_age_sec`."""
+    db = _rcursor()
+    hours = int(hours)
+    rows = db.execute(f"""
+        SELECT value, date_diff('second', ts, now()::TIMESTAMP)
+        FROM device_states
+        WHERE ieee = ? AND attribute = ? AND ts >= now() - INTERVAL '{hours} hours'
+        ORDER BY ts DESC
+    """, [ieee, attribute]).fetchall()
+    if not rows:
+        return None
+    current, since = rows[0][0], float(rows[0][1])
+    for value, age in rows[1:]:
+        if value != current:
+            return since
+        since = float(age)
+    return since
+
 
 def query_last_report_age_sec(ieee: str, attributes: List[str],
                               hours: int = 6) -> Optional[float]:

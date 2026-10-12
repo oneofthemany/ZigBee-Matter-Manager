@@ -9,6 +9,8 @@ import os
 import time
 from datetime import datetime
 
+from types import SimpleNamespace as NS
+
 from harness import Checker
 
 import modules.heating_controller as hc
@@ -242,6 +244,75 @@ def run() -> Checker:
             ctrl._effective_target({"target_temp": 21.0, "min_temp": 16.0},
                                    datetime(2026, 10, 12, 3, 0)) == hc.OUT_OF_HOURS_OFF_C)
 
+    c.section("solar suppression is on probation")
+    import modules.solar_gain as sg
+    real_suppress = sg.should_suppress_heat_call
+    sg.should_suppress_heat_call = lambda **k: (k.get("outdoor_temp_c") is not None, 60.0)
+    ctrl, dev, s = make(room_temp=19.0)
+    ctrl._weather = NS(latitude=51.0, longitude=0.0, get_outdoor_temperature=lambda: 12.0,
+                       get_solar_irradiance=lambda: 300.0, get_cloud_fraction=lambda: 0.2)
+    ctrl._get_room_profile = lambda room: {"w_per_k": 30.0}
+    r = room(tick(ctrl))
+    c.check("sun the model trusts holds the call off at first",
+            r["status"] == "solar_suppressed" and not r["calling_for_heat"], r["status"])
+    ctrl._solar_hold["lounge"]["since"] -= hc.SOLAR_PROOF_SEC + 60
+    r = room(tick(ctrl))
+    c.check("a room that hasn't warmed after the proof window is heated",
+            r["status"] == "cold" and r["calling_for_heat"], r["status"])
+    c.check("and stays heated until that call is satisfied",
+            room(tick(ctrl))["calling_for_heat"])
+    dev[SENSOR]["state"]["temperature"] = 20.1
+    tick(ctrl)
+    c.check("a satisfied call clears the probation", "lounge" not in ctrl._solar_hold)
+    ctrl, dev, s = make(room_temp=19.0)
+    ctrl._weather = NS(latitude=51.0, longitude=0.0, get_outdoor_temperature=lambda: 12.0,
+                       get_solar_irradiance=lambda: 300.0, get_cloud_fraction=lambda: 0.2)
+    ctrl._get_room_profile = lambda room: {"w_per_k": 30.0}
+    tick(ctrl)
+    ctrl._solar_hold["lounge"]["since"] -= hc.SOLAR_PROOF_SEC + 60
+    dev[SENSOR]["state"]["temperature"] = 19.3
+    c.check("a room the sun is warming keeps its suppression",
+            room(tick(ctrl))["status"] == "solar_suppressed")
+    sg.should_suppress_heat_call = real_suppress
+    c.check("the model needs the sun to cover the loss to outdoors, not the last degree",
+            not sg.should_suppress_heat_call(
+                room_config={"dimensions": {"windows": [{"area_m2": 2.0, "orientation": "S"}]}},
+                lat=51.0, lon=0.0, current_temp_c=19.0, target_temp_c=20.0, w_per_k=30.0,
+                dt_utc=datetime(2026, 6, 21, 12, 0), shortwave_wm2=100.0, cloud_fraction=0.9,
+                outdoor_temp_c=5.0)[0])
+
+    c.section("TRV sensor mode follows the room")
+    async def sensor_mode(room_mode, device_mode):
+        ctrl, dev, s = make(heating_cfg(external_temp_mode=room_mode))
+        if device_mode is not None:
+            dev[TRV]["state"]["sensor_type"] = device_mode
+        await ctrl.apply_trv_config(TRV)
+        return [x[2] for x in s.to(TRV) if x[1] == "sensor_type"]
+    c.check("a TRV left in external mode is put back to internal when nothing feeds it",
+            asyncio.run(sensor_mode("advisory", "external")) == [0])
+    c.check("a push room switches its TRV to external",
+            asyncio.run(sensor_mode("push", "internal")) == [1])
+    c.check("a TRV already in the right mode is left alone",
+            asyncio.run(sensor_mode("advisory", "internal")) == [])
+    c.check("a TRV that reports no sensor mode is never switched to internal",
+            asyncio.run(sensor_mode("advisory", None)) == [])
+
+    c.section("TRV health")
+    ctrl, dev, s = make()
+    dev[TRV]["state"].update(calibrated=False, calibration_status="not_ready", system_mode="off")
+    reasons = room(tick(ctrl))["health"]["reasons"]
+    c.check("a TRV reporting itself uncalibrated is called out",
+            any("not calibrated" in x for x in reasons), reasons)
+    c.check("so is one that is switched off", any("switched off" in x for x in reasons), reasons)
+    ctrl, dev, s = make()
+    dev[TRV]["state"].update(calibrated=False, calibration_status="in_progress")
+    c.check("a calibration still running is not a fault",
+            not any("calibrat" in x for x in room(tick(ctrl))["health"]["reasons"]))
+    ctrl, dev, s = make()
+    dev[TRV]["state"].update(calibration_status="failed")
+    c.check("a calibrate command that never arrived says nothing about the valve",
+            not any("calibrat" in x for x in room(tick(ctrl))["health"]["reasons"]))
+
     c.section("TRV settings re-apply")
     async def reapply():
         ctrl, dev, s = make(heating_cfg(trvs=[{"ieee": TRV, "child_lock": False}]))
@@ -257,7 +328,6 @@ def run() -> Checker:
     c.check("an unchanged TRV is not re-sent", kept)
 
     c.section("history names")
-    from types import SimpleNamespace as NS
     from modules.heating_advisor import HeatingAdvisor
     svc = NS(friendly_names={TRV: "Kitchen TRV"})
     adv = HeatingAdvisor.__new__(HeatingAdvisor)

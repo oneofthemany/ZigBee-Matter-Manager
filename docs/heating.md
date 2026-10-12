@@ -274,6 +274,20 @@ The **Heating Anomaly Watcher** scans every 5 minutes. For each room with a know
 
 Active anomalies surface on the dashboard as "Room X cooling faster than expected" cards. Once the condition resolves (subsequent scans show normal τ), the anomaly moves into a 6-hour history buffer so users can see the "was" card briefly before it drops off.
 
+**Facts before guesses.** A fast cool-down in a room with contact sensors is
+explained by them (`contact_cause`), re-read every scan so the card follows a
+door that has since been opened or shut:
+
+| Sensors say | The card reads |
+|:------------|:---------------|
+| One is open now | "Kitchen door (open 18 min) is open." |
+| None open now, one was during the cooling window | "Kitchen door was open for 12 min while it cooled; closed now." |
+| All stayed closed | "… stayed closed — look for a window or door without a sensor, or a sudden change in the weather." |
+| No contact sensor, or none with a known state | the detector's own suggestion |
+
+The record carries the result as `cause` (`kind`: `open` / `was_open` /
+`all_closed`, and the sensor names).
+
 This is how the system catches problems like: a window left open overnight, a TRV that's stopped responding, a broken door seal, or a room whose insulation has degraded — all without the user needing to watch temperature graphs.
 
 ---

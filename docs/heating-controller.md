@@ -87,6 +87,18 @@ In `advisory` mode the TRV still judges by its own reading beside the radiator, 
 
 Preheat may raise the target ahead of an upcoming slot; it never lowers the one in force.
 
+## Solar suppression
+
+A cold room's call is held off while the sun is expected to carry it to target:
+solar gain through its windows must cover `suppress_fraction` of the room's
+loss to outdoors at target, `W/K × (target − outdoor)`. With no outdoor reading
+it never fires.
+
+The estimate is on probation. Unless the room has warmed `SOLAR_PROOF_RISE_C`
+within `SOLAR_PROOF_SEC` of the suppression starting, it is dropped until that
+call for heat is satisfied — the room not warming is better evidence than the
+model.
+
 ## Force-close logic
 
 A common multi-room problem: circuit A has a cold room and a hot room. When the boiler fires, hot water flows through both TRVs. If the hot room's TRV isn't explicitly closed, it'll over-shoot further. The controller handles this by writing a setpoint *below* the hot room's current temperature, so the TRV's own thermostat clamps the valve shut. The setpoint is clamped to the TRV's `min_setpoint` (5 °C default for Aqara E1) to stay within its valid range.
@@ -104,6 +116,11 @@ On controller start, each configured TRV has its Aqara-cluster settings applied:
 | `valve_detection`  | 0xFCC0         | 0x0274    | Detect stuck/unresponsive valves                         |
 
 These are applied when the loop starts and after any config change that adds a TRV (deduplicated via `_trv_config_applied`; a TRV whose write failed is retried next time), and re-applied via `POST /api/heating/controller/trv/apply-config` if the user changes them.
+
+The TRV's **sensor mode** follows the room: external only while the room's
+`external_temp_mode` is `push`, internal otherwise. A TRV left external with
+nothing feeding it regulates on the last value it was pushed. A TRV that reports
+no sensor mode is never switched to internal.
 
 `min_setpoint` is a fourth per-TRV setting: the floor for every setpoint the controller writes to it (default 5 °C). It is not sent to the device.
 
@@ -216,6 +233,7 @@ Without a plan, both lists are simply written with the saved circuits.
 | `ADVISORY_OPEN_BOOST_C`        | 2.0 °C     | `heating_controller.py`      |
 | `OUT_OF_HOURS_OFF_C`           | 5.0 °C     | `heating_controller.py`      |
 | `FLATLINE_HOURS` / `FLATLINE_MIN_REPORTS` | 12 h / 6 | `heating_controller.py` |
+| `SOLAR_PROOF_SEC` / `SOLAR_PROOF_RISE_C` | 30 min / 0.2 °C | `heating_controller.py` |
 
 ## API
 
@@ -347,7 +365,13 @@ view of the room at that value.
   resilience gate.
 - **Tick log**: `heating_tick_boiler.receiver_command` is set only when a
   command went out (or would have, in dry run); `heating_tick_rooms` carries the
-  outdoor temperature and the first TRV's valve opening when it reports one.
+  outdoor temperature and the first TRV's valve opening — or, for a TRV that
+  reports none (Aqara E1), 100 / 0 from its `hvac_action`.
+- **TRV health**: a TRV that reports itself uncalibrated (`calibrated` false,
+  the device's own flag) or is switched off still accepts a setpoint, so room
+  health names it; nothing else would show it. A calibrate *command* that
+  timed out is not a fault of the valve and leaves the reported status alone;
+  after one that lands, the flag is re-read on a widening schedule until true.
 - **Stratification** is applied only to the external sensor path. TRVs sit near
   the floor by their nature, but their readings already carry convective bias
   from the radiator, so a separate height correction would mislead.

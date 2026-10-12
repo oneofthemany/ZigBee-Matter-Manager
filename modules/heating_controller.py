@@ -67,6 +67,10 @@ FLATLINE_HOURS = 12
 FLATLINE_MIN_REPORTS = 6
 _FLATLINE_CACHE_TTL_SEC = 600.0
 
+# A solar suppression has to show the room warming this much, this soon.
+SOLAR_PROOF_SEC = 30 * 60
+SOLAR_PROOF_RISE_C = 0.2
+
 # Receivers report a held heat call as either.
 HEAT_MODES = ("heat", "emergency_heat")
 
@@ -539,6 +543,13 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
 
         if trv_dec.get("valve_alarm"):
             reasons.append(f"TRV {trv_dec.get('name') or ieee}: valve alarm (stuck/seized)")
+        # A setpoint is still accepted in both states, so nothing else shows it.
+        if trv_dec.get("uncalibrated"):
+            reasons.append(f"TRV {trv_dec.get('name') or ieee} reports it is not calibrated — "
+                           f"it can't position its valve; run calibration")
+        if trv_dec.get("switched_off"):
+            reasons.append(f"TRV {trv_dec.get('name') or ieee} is switched off — "
+                           f"it will not open for a setpoint")
 
     # No data source at all.
     if decision.temp_source == "none":
@@ -695,6 +706,8 @@ class HeatingController:
         self._heat_latch: Dict[str, bool] = {}
         # receiver ieee -> a heat call was seen confirmed since it was sent
         self._receiver_confirmed: Dict[str, bool] = {}
+        # room_id -> {since, temp0, gave_up}: a solar suppression on probation
+        self._solar_hold: Dict[str, Dict[str, Any]] = {}
 
         # room_id -> {state, sensors_open, opened_ts, opened_temp, activated_ts,
         #              last_closed_ts, observed_drop_c}
@@ -841,8 +854,12 @@ class HeatingController:
             except Exception as diag_err:
                 logger.warning(f"[apply_config] post-parse-diag failed: {diag_err}")
 
-            old_trv_sigs = {t["ieee"]: self._trv_signature(t)
-                             for c in self.circuits for r in c["rooms"] for t in r["trvs"]}
+            # The room's external-temp mode is part of what a TRV is configured
+            # with (its sensor mode), so it is part of the signature.
+            def _sigs(circuits):
+                return {t["ieee"]: f"{self._trv_signature(t)}|{r.get('external_temp_mode')}"
+                        for c in circuits for r in c["rooms"] for t in r["trvs"]}
+            old_trv_sigs = _sigs(self.circuits)
             diff = self._diff_config(
                 old_circuits=self.circuits,
                 new_circuits=new_circuits,
@@ -929,8 +946,7 @@ class HeatingController:
 
             # Re-apply persistent settings to a TRV whose flags changed, and to
             # a removed one if it returns.
-            new_trv_sigs = {t["ieee"]: self._trv_signature(t)
-                            for c in new_circuits for r in c["rooms"] for t in r["trvs"]}
+            new_trv_sigs = _sigs(new_circuits)
             self._trv_config_applied = {
                 i for i in self._trv_config_applied
                 if i in new_trv_sigs and old_trv_sigs.get(i) == new_trv_sigs[i]}
@@ -1578,7 +1594,7 @@ class HeatingController:
 
             for room in circuit["rooms"]:
                 room["_oh_enabled_for_circuit"] = circuit.get("operating_hours")
-                decision = self._evaluate_room(room, devices, now)
+                decision = self._evaluate_room(room, devices, now, outdoor_now)
                 if decision.calling_for_heat:
                     any_calling = True
                 room_decisions.append(decision)
@@ -1692,7 +1708,7 @@ class HeatingController:
         return {str(ieee): dev for ieee, dev in raw.items()}
 
     def _evaluate_room(self, room: dict, devices: Dict[str, Any],
-                       now: datetime) -> RoomDecision:
+                       now: datetime, outdoor: Optional[float] = None) -> RoomDecision:
         decision = RoomDecision(room_id=room["id"], name=room["name"])
         base_target = self._effective_target(room, now)
         decision.target_temp = base_target
@@ -1727,8 +1743,14 @@ class HeatingController:
                 "online": True,
                 "valve_alarm": bool(state.get("valve_alarm")),
                 "window_open": bool(state.get("window_open")),
+                # The device's own flag, not our command bookkeeping; a
+                # calibration in flight reads false until the stroke is done.
+                "uncalibrated": (state.get("calibrated") is False
+                                 and state.get("calibration_status") != "in_progress"),
+                "switched_off": str(state.get("system_mode") or "").lower() == "off",
             }
-            for k in ("valve_opening_degree", "pi_heating_demand", "valve_open_degree"):
+            for k in ("valve_opening_degree", "pi_heating_demand", "valve_open_degree",
+                      "hvac_action"):
                 if state.get(k) is not None:
                     entry[k] = state.get(k)
             trvs.append(entry)
@@ -1839,6 +1861,8 @@ class HeatingController:
         if cur is not None and tgt is not None:
             demand = cur < tgt - COLD_BAND or (latched and cur < tgt - early_stop)
         self._heat_latch[rid] = demand
+        if not demand:
+            self._solar_hold.pop(rid, None)
 
         _, overshoot_info = self._track_overshoot(
             room_id=rid,
@@ -1858,37 +1882,9 @@ class HeatingController:
             decision.status = "cold"
             decision.calling_for_heat = True
 
-            # Solar suppression: skip the heat call when solar alone covers
-            # SOLAR_SUPPRESS_FRACTION of the deficit. Re-evaluated next tick.
-            if self._weather is not None:
-                try:
-                    _solar_profile = self._get_room_profile(room)
-                    _w_per_k = (_solar_profile or {}).get("w_per_k")
-                    if _w_per_k:
-                        from modules.solar_gain import should_suppress_heat_call
-                        lat = getattr(self._weather, "latitude", None)
-                        lon = getattr(self._weather, "longitude", None)
-                        if lat is not None and lon is not None:
-                            suppress, solar_w = should_suppress_heat_call(
-                                room_config=room,
-                                lat=lat,
-                                lon=lon,
-                                current_temp_c=cur,
-                                target_temp_c=tgt,
-                                w_per_k=_w_per_k,
-                                shortwave_wm2=self._weather.get_solar_irradiance(),
-                                cloud_fraction=self._weather.get_cloud_fraction() or 0.0,
-                            )
-                            if suppress and solar_w > 0:
-                                logger.info(
-                                    f"Room '{decision.name}': solar suppressing heat call "
-                                    f"(solar={solar_w:.0f}W, deficit="
-                                    f"{tgt - cur:.1f}°C)"
-                                )
-                                decision.status = "solar_suppressed"
-                                decision.calling_for_heat = False
-                except Exception as ss_err:
-                    logger.debug(f"solar suppression check failed for {rid}: {ss_err}")
+            if self._solar_suppresses(room, decision, cur, tgt, outdoor):
+                decision.status = "solar_suppressed"
+                decision.calling_for_heat = False
 
         elif cur > tgt + HOT_BAND:
             decision.status = "hot"
@@ -1957,6 +1953,56 @@ class HeatingController:
             logger.debug(f"Diagnostic log failed for room {decision.name}: {e}")
 
         return decision
+
+    def _solar_suppresses(self, room: dict, decision: RoomDecision, cur: float,
+                          tgt: float, outdoor: Optional[float]) -> bool:
+        """Whether the sun should stand in for this room's heat call.
+
+        The model's say-so is on probation: unless the room has actually warmed
+        SOLAR_PROOF_RISE_C within SOLAR_PROOF_SEC the suppression is dropped
+        until this call for heat is satisfied — the estimate was wrong, and a
+        cold room is the evidence.
+        """
+        rid = room["id"]
+        hold = self._solar_hold.get(rid)
+        if self._weather is None or (hold and hold.get("gave_up")):
+            return False
+        try:
+            w_per_k = (self._get_room_profile(room) or {}).get("w_per_k")
+            lat = getattr(self._weather, "latitude", None)
+            lon = getattr(self._weather, "longitude", None)
+            if not w_per_k or lat is None or lon is None:
+                return False
+            from modules.solar_gain import should_suppress_heat_call
+            suppress, solar_w = should_suppress_heat_call(
+                room_config=room, lat=lat, lon=lon,
+                current_temp_c=cur, target_temp_c=tgt, w_per_k=w_per_k,
+                shortwave_wm2=self._weather.get_solar_irradiance(),
+                cloud_fraction=self._weather.get_cloud_fraction() or 0.0,
+                outdoor_temp_c=outdoor,
+            )
+        except Exception as e:
+            logger.debug(f"solar suppression check failed for {rid}: {e}")
+            return False
+        if not (suppress and solar_w > 0):
+            self._solar_hold.pop(rid, None)
+            return False
+
+        now_ts = time.time()
+        if hold is None:
+            hold = self._solar_hold[rid] = {"since": now_ts, "temp0": cur}
+        elif cur >= hold["temp0"] + SOLAR_PROOF_RISE_C:
+            hold.update(since=now_ts, temp0=cur)
+        elif now_ts - hold["since"] > SOLAR_PROOF_SEC:
+            hold["gave_up"] = True
+            logger.info(
+                f"Room '{decision.name}': solar gain ({solar_w:.0f}W) hasn't warmed it "
+                f"in {SOLAR_PROOF_SEC // 60} min — calling for heat")
+            return False
+        logger.info(
+            f"Room '{decision.name}': solar suppressing heat call "
+            f"(solar={solar_w:.0f}W, deficit={tgt - cur:.1f}°C)")
+        return True
 
     WEEKEND_DAYS = ("sat", "sun")
 
@@ -3025,22 +3071,27 @@ class HeatingController:
                 logger.error(f"TRV {ieee} {cfg_key} write failed: {_send_error(resp)}")
                 results["failed"][cfg_key] = _send_error(resp)
 
-        # Sensor type — only write if room is in push mode AND device isn't already external
-        if room.get("external_temp_mode") == "push":
-            current_sensor = current_state.get("sensor_type")
-            # sensor_type: 1 = external, 0 = internal (stored as int or str)
-            already_external = (
-                    current_sensor in (1, "1", "external", True)
-            )
-            if already_external:
-                results["skipped"]["sensor_type"] = "already external"
-            elif self.dry_run:
-                logger.info(f"[DRY-RUN] Would set TRV {ieee} sensor_type = external")
-                results["sent"]["sensor_type"] = {"value": "external", "dry_run": True}
+        # The TRV's sensor mode follows the room: external only while the room
+        # pushes it a temperature. Left external without a feed it regulates on
+        # the last value pushed, forever. An unreported mode is only ever set
+        # to external — a TRV that never had the feature is left alone.
+        want_external = room.get("external_temp_mode") == "push"
+        current_sensor = current_state.get("sensor_type")
+        is_external = current_sensor in (1, "1", "external", True)
+        if is_external == want_external or (current_sensor is None and not want_external):
+            results["skipped"]["sensor_type"] = (
+                "not reported" if current_sensor is None
+                else f"already {'external' if is_external else 'internal'}")
+        else:
+            label = "external" if want_external else "internal"
+            if self.dry_run:
+                logger.info(f"[DRY-RUN] Would set TRV {ieee} sensor_type = {label}")
+                results["sent"]["sensor_type"] = {"value": label, "dry_run": True}
             else:
-                resp = await self._throttled_send(ieee, "sensor_type", 1)
+                resp = await self._throttled_send(ieee, "sensor_type", 1 if want_external else 0)
                 if _send_ok(resp):
-                    results["sent"]["sensor_type"] = {"value": "external"}
+                    logger.info(f"TRV {ieee}: sensor_type → {label}")
+                    results["sent"]["sensor_type"] = {"value": label}
                 else:
                     logger.error(f"TRV {ieee} sensor_type write failed: {_send_error(resp)}")
                     results["failed"]["sensor_type"] = _send_error(resp)
