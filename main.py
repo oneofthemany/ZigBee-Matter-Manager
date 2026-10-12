@@ -1434,7 +1434,7 @@ register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller, lambda: weather_service,
                            lambda: zigbee_service.get_simple_mesh() if zigbee_service else None)
-register_chamber_routes(app, get_zigbee_service)
+register_chamber_routes(app, get_zigbee_service, lambda: heating_controller)
 register_frame_routes(app, get_zigbee_service)
 register_ac_routes(app)
 from routes import register_blueair_routes

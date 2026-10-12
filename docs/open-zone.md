@@ -583,4 +583,4 @@ design supersedes the earlier pair-link RSSI model.
   `min_devices_triggered`, and clears after `clear_delay` of stability.
 
 > `zones` / `config/zones.yaml` are RSSI presence-detection zones, **not** rooms.
-> See [chambers](frames.md#chambers).
+> See [chambers](chambers.md).

@@ -144,13 +144,13 @@ def load_rooms(config_path: str = CONFIG_PATH) -> Dict[str, str]:
             cfg = yaml.safe_load(f) or {}
         for c in build_registry(cfg):
             rooms[c["id"]] = c.get("name") or c["id"]
-            # Which subsystem defined it. The registry unions configured
-            # chambers with rooms adopted from heating and from the floor plan,
-            # so two subsystems naming one room differently produce two
-            # chambers — and without the source, an empty one is a mystery.
+            # What uses it: an empty chamber that heating or the plan holds is
+            # expected; an empty unused one is likely stale.
+            uses = [u for u, on in (("heating", c.get("heated")),
+                                    ("floor plan", c.get("mapped"))) if on]
             meta[c["id"]] = {"id": c["id"], "name": rooms[c["id"]],
-                             "source": c.get("source"), "level": c.get("level"),
-                             "adopted": bool(c.get("adopted"))}
+                             "source": " + ".join(uses) or "chambers",
+                             "level": c.get("level")}
     except Exception as e:
         logger.debug(f"Room registry unavailable: {e}")
         rooms, meta = {}, {}

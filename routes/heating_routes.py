@@ -466,22 +466,13 @@ def _slugify(s: str) -> str:
 
 
 def _clean_zone(z: dict, existing_ids: Optional[set] = None) -> Optional[dict]:
-    if not isinstance(z, dict) or not z.get("name"):
+    """One zone's advisor settings, keyed on its chamber id (docs/chambers.md § Heating zones)."""
+    if not isinstance(z, dict):
         return None
-    existing_ids = existing_ids or set()
-
-    zid = str(z.get("id") or _slugify(z["name"]))
-    # de-dup id
-    base = zid
-    n = 2
-    while zid in existing_ids:
-        zid = f"{base}_{n}"
-        n += 1
-
-    devices = z.get("devices") or []
-    if not isinstance(devices, list):
-        devices = []
-    devices = [str(d) for d in devices if d]
+    from modules.chambers import valid_id
+    zid = valid_id(z.get("id"))
+    if not zid or zid in (existing_ids or set()):
+        return None
 
     schedule = z.get("schedule") or []
     if not isinstance(schedule, list):
@@ -503,12 +494,10 @@ def _clean_zone(z: dict, existing_ids: Optional[set] = None) -> Optional[dict]:
 
     return {
         "id": zid,
-        "name": str(z["name"]),
         "target_temp": _coerce_float(z.get("target_temp"), 21.0),
         "night_setback": _coerce_float(z.get("night_setback"), 17.0),
         "min_temp": _coerce_float(z.get("min_temp"), 16.0),
         "priority": _coerce_int(z.get("priority"), 5),  # 1-10, higher = more important
-        "devices": devices,
         "schedule": clean_schedule,
     }
 
@@ -524,6 +513,63 @@ def _clean_zones(zones: List[dict]) -> List[dict]:
             result.append(cleaned)
             seen_ids.add(cleaned["id"])
     return result
+
+
+def _adopt_zones(zones: Any, cfg: Dict[str, Any], svc=None) -> List[dict]:
+    """
+    Zones about to be saved, each on a chamber.
+
+    A zone from before chambers (its own id and name, its own device list) is
+    put on the chamber of that name, created if missing, and its devices that
+    are in no chamber yet join it. ``cfg``'s registry is mutated in place.
+    """
+    from modules.chambers import _name_key, build_registry, upsert_chamber
+    if not isinstance(zones, list):
+        return []
+    registry = build_registry(cfg)
+    ids = {c["id"] for c in registry}
+    by_name = {_name_key(c["name"]): c["id"] for c in registry}
+    moved: Dict[str, str] = {}
+    out = []
+    for z in zones:
+        if not isinstance(z, dict):
+            continue
+        z = dict(z)
+        if z.get("id") not in ids:
+            name = str(z.get("name") or "").strip()
+            cid = by_name.get(_name_key(name))
+            if not cid and name:
+                chamber, _ = upsert_chamber(cfg, {"name": name})
+                cid = chamber["id"] if chamber else None
+                if cid:
+                    ids.add(cid)
+                    by_name[_name_key(name)] = cid
+            if not cid:
+                logger.warning(f"Heating zone {z.get('id')!r} has no chamber; dropped")
+                continue
+            z["id"] = cid
+        for ieee in z.get("devices") or []:
+            moved.setdefault(str(ieee).lower(), z["id"])
+        out.append(z)
+
+    settings = getattr(svc, "device_settings", None)
+    if moved and isinstance(settings, dict):
+        from routes.chamber_routes import SETTINGS_PATH, _set_device_chamber
+        changed = False
+        for ieee, cid in moved.items():
+            if not (settings.get(ieee) or {}).get("chamber"):
+                _set_device_chamber(svc, ieee, cid)
+                changed = True
+        if changed:
+            svc._save_json(SETTINGS_PATH, settings)
+    return _clean_zones(out)
+
+
+def _named_zones(zones: List[dict], cfg: Dict[str, Any]) -> List[dict]:
+    """Zones for display, each with its chamber's name."""
+    from modules.chambers import build_registry
+    names = {c["id"]: c["name"] for c in build_registry(cfg)}
+    return [{**z, "name": names.get(z["id"], z["id"])} for z in _clean_zones(zones)]
 
 
 # HVAC device discovery (mirrors heating_advisor._find_hvac_devices)
@@ -777,6 +823,12 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             logger.debug(f"Octopus tariff lookup failed: {e}")
             return None
 
+    def _zigbee():
+        try:
+            return get_zigbee_service() if get_zigbee_service else None
+        except Exception:                                       # noqa: BLE001
+            return None
+
     def _resolve_advisor():
         """Unwrap advisor; tolerates `lambda: advisor_ref` or `lambda: lambda: advisor_ref`."""
         adv = get_heating_advisor()
@@ -940,7 +992,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                     "tariff": _with_defaults(heating.get("tariff"), _TARIFF_DEFAULTS),
                     "boiler": _with_defaults(heating.get("boiler"), _BOILER_DEFAULTS),
                     "comfort": _with_defaults(heating.get("comfort"), _COMFORT_DEFAULTS),
-                    "zones": _clean_zones(heating.get("zones") or []),
+                    "zones": _named_zones(heating.get("zones") or [], cfg),
                 },
                 "tariff_source": "octopus" if live else "manual",
                 "octopus_tariff": live,
@@ -984,7 +1036,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 heating["comfort"] = _clean_comfort(incoming["comfort"])
 
             if "zones" in incoming:
-                heating["zones"] = _clean_zones(incoming["zones"])
+                heating["zones"] = _adopt_zones(incoming["zones"], cfg, _zigbee())
 
             _save_config(cfg)
             logger.info("Heating config saved via API")
@@ -1003,7 +1055,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
         try:
             cfg = _load_config()
             zones = (cfg.get("heating") or {}).get("zones") or []
-            return {"success": True, "zones": _clean_zones(zones)}
+            return {"success": True, "zones": _named_zones(zones, cfg)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1016,29 +1068,30 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             zones = data.get("zones") if isinstance(data, dict) else None
             if not isinstance(zones, list):
                 return {"success": False, "error": "`zones` must be a list"}
-            heating["zones"] = _clean_zones(zones)
+            heating["zones"] = _adopt_zones(zones, cfg, _zigbee())
             _save_config(cfg)
             logger.info(f"Heating zones replaced — {len(heating['zones'])} zone(s)")
-            return {"success": True, "zones": heating["zones"]}
+            return {"success": True, "zones": _named_zones(heating["zones"], cfg)}
         except Exception as e:
             logger.error(f"Failed to replace zones: {e}")
             return {"success": False, "error": str(e)}
 
     @app.post("/api/heating/zones/{zone_id}")
     async def upsert_zone(zone_id: str, data: dict):
-        """Create or update a single zone."""
+        """Create or update the zone for one chamber; ``zone_id`` is the chamber id."""
         try:
+            from modules.chambers import registry_ids
             cfg = _load_config()
+            if zone_id not in registry_ids(cfg):
+                return {"success": False, "error": f"no chamber '{zone_id}'"}
             heating = cfg.setdefault("heating", {})
             zones = _clean_zones(heating.get("zones") or [])
 
-            # Build clean candidate (force matching id)
             incoming = dict(data) if isinstance(data, dict) else {}
             incoming["id"] = zone_id
             cleaned = _clean_zone(incoming)
             if not cleaned:
-                return {"success": False, "error": "Invalid zone data (missing name?)"}
-            cleaned["id"] = zone_id  # preserve path id even after _clean_zone re-slugs
+                return {"success": False, "error": "Invalid zone data"}
 
             # Upsert
             replaced = False
@@ -1053,7 +1106,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             heating["zones"] = zones
             _save_config(cfg)
             logger.info(f"Heating zone {'updated' if replaced else 'created'}: {zone_id}")
-            return {"success": True, "zone": cleaned, "created": not replaced}
+            return {"success": True, "zone": _named_zones([cleaned], cfg)[0],
+                    "created": not replaced}
         except Exception as e:
             logger.error(f"Failed to upsert zone {zone_id}: {e}")
             return {"success": False, "error": str(e)}
@@ -1865,16 +1919,15 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
 
             thermostats = _find_thermostats(devices)
 
-            # Annotate with current zone assignment
+            # A device's zone is its chamber's, when that chamber is zoned.
             cfg = _load_config()
-            zones = (cfg.get("heating") or {}).get("zones") or []
-            ieee_to_zone = {}
-            for z in zones:
-                for d in z.get("devices") or []:
-                    ieee_to_zone[d] = {"id": z.get("id"), "name": z.get("name")}
-
+            zones = {z["id"]: z for z in _named_zones(
+                (cfg.get("heating") or {}).get("zones") or [], cfg)}
+            settings = getattr(_zigbee(), "device_settings", None) or {}
             for t in thermostats:
-                t["zone"] = ieee_to_zone.get(t["ieee"])
+                t["chamber"] = (settings.get(t["ieee"]) or {}).get("chamber")
+                z = zones.get(t["chamber"])
+                t["zone"] = {"id": z["id"], "name": z["name"]} if z else None
 
             return {
                 "success": True,

@@ -104,7 +104,10 @@ import {
     deleteChamber,
     assignChamberDevices,
     saveChamberDevices,
-    assignDeviceChamber
+    assignDeviceChamber,
+    showChamberMerge,
+    mergeChambers,
+    chooseChamber
 } from './chambers.js';
 
 import { initHeating } from './heating.js';
@@ -334,6 +337,9 @@ window.assignChamberDevices = assignChamberDevices;
 window.saveChamberDevices = saveChamberDevices;
 window.assignDeviceChamber = assignDeviceChamber;
 window.loadChambers = loadChambers;
+window.showChamberMerge = showChamberMerge;
+window.mergeChambers = mergeChambers;
+window.zbmChooseChamber = chooseChamber;
 
 // Tabs Management
 window.loadTabs = loadTabs;

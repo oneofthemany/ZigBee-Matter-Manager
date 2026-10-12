@@ -26,7 +26,7 @@ and not under `heating:` in `config.yaml`, and why a change to it is scoped per
 | Heating | room dimensions, walls and their types, radiators, TRVs, temperature sensors, window/door contacts | [heating.md](heating.md), [heating-controller.md](heating-controller.md) |
 | Daylight | room polygons, window area, glazing and orientation | [daylight.md](daylight.md) §7 |
 | Signal coverage | every placed device's position, and walls as attenuators | [signal-coverage.md](signal-coverage.md) |
-| Frames and chambers | the room list, adopted as chambers | [frames.md](frames.md) |
+| Chambers | each drawn room is a chamber: same id and name | [chambers.md](chambers.md) |
 | Automations | per-room daylight, and the rooms rules can name | [automations.md](automations.md) |
 | Swarm intelligence | the virtual per-room daylight devices | [swarm-intelligence.md](swarm-intelligence.md) |
 | Air conditioning | `room_id`, to bind a unit to a room | [air-conditioning.md](air-conditioning.md) |

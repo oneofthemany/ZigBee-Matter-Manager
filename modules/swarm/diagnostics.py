@@ -56,7 +56,7 @@ def _finding(level: str, code: str, message: str, **extra) -> Dict[str, Any]:
 
 
 def _room_sources(rooms: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
-    """Provenance for each chamber, when the registry can be read."""
+    """What uses each chamber, when the registry can be read."""
     try:
         from modules.swarm.network import load_room_meta
         return load_room_meta()
@@ -214,12 +214,8 @@ def _check_network(described: List[Dict[str, Any]],
 
     empty_rooms = sorted(set(rooms) - {d.get("room") for d in described})
     if empty_rooms:
-        # Naming the subsystem that defined it is the difference between a
-        # finding and a question. The registry unions configured chambers with
-        # rooms adopted from heating and from the floor plan, so a room drawn on
-        # the plan but never given devices is expected rather than stale — and
-        # two subsystems naming one room differently produce two chambers, one
-        # of which is then always empty.
+        # Naming what uses it is the difference between a finding and a
+        # question: a heated or drawn room with no devices yet is expected.
         meta = _room_sources(rooms)
         entries = [{"id": r, "name": rooms[r],
                     "source": (meta.get(r) or {}).get("source") or "unknown",
@@ -232,9 +228,8 @@ def _check_network(described: List[Dict[str, Any]],
         out.append(_finding(
             INFO, "rooms_empty",
             f"{len(empty_rooms)} room(s) hold no devices ({where}). A room the "
-            f"floor plan or heating defines but no device sits in is expected, "
-            f"not stale — but two subsystems naming one room differently make "
-            f"two chambers, and room-scoped patterns cannot pair across them.",
+            f"floor plan or heating uses but no device sits in yet is expected, "
+            f"not stale; an unused one can be deleted or merged in Chambers.",
             rooms=entries))
     return out
 

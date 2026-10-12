@@ -1038,7 +1038,8 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/energy.md](docs/energy.md) | Octopus integration — consumption, tariffs, Home Mini |
 | [docs/speaker_sync.md](docs/speaker_sync.md) | Media, OpenZone groups, EQ, TTS and the Sync Lab |
 | [docs/open-zone.md](docs/open-zone.md) | Source-side clock discipline for multi-room audio |
-| [docs/frames.md](docs/frames.md) | Frames and chambers — auto-generated dashboards |
+| [docs/frames.md](docs/frames.md) | Frames — auto-generated dashboards |
+| [docs/chambers.md](docs/chambers.md) | Chambers — the one room registry shared by devices, heating and the floor plan |
 | [docs/journeys.md](docs/journeys.md) | Drive tracking, trips, driving behaviour and fuel |
 | [docs/plans/fuel_prices_region.md](docs/plans/fuel_prices_region.md) | Multi-region fuel prices — the full plan |
 | [docs/beekeeper.md](docs/beekeeper.md) | Beekeeper — the built-in DNS ad/tracker blocker |

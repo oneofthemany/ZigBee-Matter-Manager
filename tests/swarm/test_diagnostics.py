@@ -114,10 +114,9 @@ def run() -> Checker:
     c.check("counted", "1 device" in f["message"], f["message"])
     c.check("named", f["devices"][0]["name"] == "Front Door Lock", f["devices"])
 
-    c.section("an empty room says which subsystem defined it")
-    # The registry unions configured chambers with rooms adopted from heating
-    # and from the floor plan, so an empty one is expected rather than stale —
-    # and without the source that is a question, not a finding.
+    c.section("an empty room says what uses it")
+    # A heated or drawn room with no devices yet is expected rather than
+    # stale — and without saying so that is a question, not a finding.
     rooms = {**SAMPLE_ROOMS, "attic": "Attic"}
     f = _codes(dx.diagnose(described, rooms=rooms))["rooms_empty"]
     c.check("the empty room is named",

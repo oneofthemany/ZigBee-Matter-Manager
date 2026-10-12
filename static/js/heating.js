@@ -1401,75 +1401,63 @@ function renderZonesSection() {
         <div class="d-flex justify-content-between align-items-center mb-3">
             <div>
                 <strong>Heating Zones</strong>
-                <small class="text-muted ms-2">Assign thermostats and TRVs to rooms or floors.</small>
+                <small class="text-muted ms-2">A zone is a chamber with its own targets and schedule.</small>
             </div>
-            <div class="btn-group btn-group-sm">
-                <button class="btn btn-outline-secondary" id="btnZonePresets"><i class="fas fa-magic me-1"></i> Quick setup</button>
+            <div class="btn-group btn-group-sm flex-shrink-0">
+                <button class="btn btn-outline-secondary" id="btnZoneAllHeated"><i class="fas fa-magic me-1"></i> Add heated rooms</button>
                 <button class="btn btn-primary" id="btnAddZone"><i class="fas fa-plus me-1"></i> Add zone</button>
             </div>
         </div>
-        ${thermostatsCache.length === 0
-            ? `<div class="alert alert-info small"><i class="fas fa-info-circle me-1"></i> No heating devices detected yet. You can still define zones — devices will appear once paired.</div>`
-            : `<div class="small text-muted mb-2">${thermostatsCache.length} heating device(s) available.</div>`}
+        <div class="small text-muted mb-2">
+            A zone's devices are the heating devices in its chamber — set a device's chamber on the device,
+            or in Chambers.
+        </div>
         <div id="zonesList"></div>`;
 }
 
 function renderZoneCard(zone, index) {
-    const assigned = zone.devices || [];
-    const unassignedForThis = thermostatsCache.filter(t =>
-        !workingZones.some((z, zi) => zi !== index && (z.devices || []).includes(t.ieee))
-    );
-    const deviceCheckboxes = unassignedForThis.length
-        ? unassignedForThis.map(t => {
-            const checked = assigned.includes(t.ieee) ? 'checked' : '';
+    const members = thermostatsCache.filter(t => t.chamber === zone.id);
+    const memberRows = members.length
+        ? members.map(t => {
             const temp = t.temperature != null ? ` <small class="text-muted">(${Number(t.temperature).toFixed(1)}°C)</small>` : '';
-            return `
-                <label class="list-group-item small d-flex align-items-center">
-                    <input class="form-check-input me-2 zone-device-cb" type="checkbox" data-zone-idx="${index}" data-ieee="${escapeAttr(t.ieee)}" ${checked}>
-                    <div class="flex-grow-1">
-                        <div>${escapeHtml(t.name)}${temp}</div>
-                        <small class="text-muted">${escapeHtml(t.ieee)}</small>
-                    </div>
-                </label>`;
+            return `<div class="list-group-item small text-truncate">${escapeHtml(t.name)}${temp}</div>`;
         }).join('')
-        : `<div class="list-group-item small text-muted">No available devices.</div>`;
+        : `<div class="list-group-item small text-muted">No heating devices in this chamber yet.</div>`;
 
     return `
         <div class="card mb-2 heating-zone-card" data-zone-idx="${index}">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <div class="d-flex align-items-center gap-2 flex-grow-1">
-                    <i class="fas fa-layer-group text-primary"></i>
-                    <input type="text" class="form-control form-control-sm zone-name" data-zone-idx="${index}"
-                           value="${escapeAttr(zone.name)}" placeholder="Zone name" style="max-width:220px;">
-                    <small class="text-muted">id: ${escapeHtml(zone.id)}</small>
+                <div class="d-flex align-items-center gap-2 flex-grow-1 min-w-0">
+                    <i class="fas fa-location-dot text-primary"></i>
+                    <strong class="text-truncate">${escapeHtml(zone.name || zone.id)}</strong>
                 </div>
-                <button class="btn btn-sm btn-outline-danger btn-delete-zone" data-zone-idx="${index}" title="Delete zone">
+                <button class="btn btn-sm btn-outline-danger btn-delete-zone flex-shrink-0" data-zone-idx="${index}" title="Remove zone">
                     <i class="fas fa-trash"></i>
                 </button>
             </div>
             <div class="card-body">
                 <div class="row g-2 mb-3">
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <label class="form-label small mb-1">Target °C</label>
                         <input type="number" step="0.5" class="form-control form-control-sm zone-target" data-zone-idx="${index}" value="${zone.target_temp}">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <label class="form-label small mb-1">Setback °C</label>
                         <input type="number" step="0.5" class="form-control form-control-sm zone-setback" data-zone-idx="${index}" value="${zone.night_setback}">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <label class="form-label small mb-1">Min °C</label>
                         <input type="number" step="0.5" class="form-control form-control-sm zone-min" data-zone-idx="${index}" value="${zone.min_temp}">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <label class="form-label small mb-1">Priority (1–10)</label>
                         <input type="number" min="1" max="10" class="form-control form-control-sm zone-priority" data-zone-idx="${index}" value="${zone.priority || 5}">
                     </div>
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label small mb-1">Devices in this zone <span class="badge bg-secondary">${assigned.length}</span></label>
-                    <div class="list-group" style="max-height:220px; overflow-y:auto;">${deviceCheckboxes}</div>
+                    <label class="form-label small mb-1">Devices <span class="badge bg-secondary">${members.length}</span></label>
+                    <div class="list-group" style="max-height:220px; overflow-y:auto;">${memberRows}</div>
                 </div>
 
                 <details>
@@ -1508,65 +1496,35 @@ function renderZoneSchedule(zone, zoneIdx) {
         <button class="btn btn-sm btn-outline-primary btn-add-slot" data-zone-idx="${zoneIdx}"><i class="fas fa-plus"></i> Add time slot</button>`;
 }
 
-// Zone presets
-const ZONE_PRESETS = {
-    single: [{ name: 'Whole Home' }],
-    two: [{ name: 'Upstairs' }, { name: 'Downstairs' }],
-    three: [{ name: 'Living Areas' }, { name: 'Bedrooms' }, { name: 'Bathroom' }],
-    four: [{ name: 'Living Room' }, { name: 'Kitchen' }, { name: 'Master Bedroom' }, { name: 'Other Bedrooms' }],
-};
-
-function showQuickSetupPicker() {
-    const html = `
-        <div class="modal fade" id="zonePresetModal" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Quick Zone Setup</h5>
-                        <button class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <p class="small text-muted">Pick a starting layout. You can customise and assign devices afterwards. <strong>This replaces your existing zones.</strong></p>
-                        <div class="list-group">
-                            <button class="list-group-item list-group-item-action" data-preset="single"><strong>Single Zone</strong><br><small class="text-muted">Whole-home control (1 zone)</small></button>
-                            <button class="list-group-item list-group-item-action" data-preset="two"><strong>Upstairs / Downstairs</strong><br><small class="text-muted">Classic 2-zone layout</small></button>
-                            <button class="list-group-item list-group-item-action" data-preset="three"><strong>Living / Bedrooms / Bathroom</strong><br><small class="text-muted">Typical 3-zone layout</small></button>
-                            <button class="list-group-item list-group-item-action" data-preset="four"><strong>Room-by-Room (4 zones)</strong><br><small class="text-muted">Living, Kitchen, Master, Other Bedrooms</small></button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>`;
-    document.querySelector('#zonePresetModal')?.remove();
-    document.body.insertAdjacentHTML('beforeend', html);
-    const modalEl = document.getElementById('zonePresetModal');
-    const modal = new bootstrap.Modal(modalEl);
-    modal.show();
-    modalEl.addEventListener('hidden.bs.modal', () => modalEl.remove());
-    modalEl.querySelectorAll('[data-preset]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const preset = ZONE_PRESETS[btn.dataset.preset];
-            if (preset) {
-                workingZones = preset.map(z => ({
-                    id: z.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
-                    name: z.name,
-                    target_temp: 21, night_setback: 17, min_temp: 16, priority: 5,
-                    devices: [], schedule: [],
-                }));
-                renderZonesList();
-            }
-            modal.hide();
-        });
-    });
+/** A new zone on a chamber, with the advisor's defaults. */
+function newZone(chamber) {
+    return {
+        id: chamber.id, name: chamber.name,
+        target_temp: 21, night_setback: 17, min_temp: 16, priority: 5,
+        schedule: [],
+    };
 }
 
-// Zone list rendering + bindings
+/** Zone every chamber heating has a room for, or that holds a heating device. */
+async function addHeatedZones() {
+    const chambers = await window.loadChambers();
+    const withDevices = new Set(thermostatsCache.map(t => t.chamber).filter(Boolean));
+    const fresh = chambers.filter(c => (c.heated || withDevices.has(c.id))
+        && !workingZones.some(z => z.id === c.id));
+    if (!fresh.length) {
+        window.toast.info('Every heated room already has a zone');
+        return;
+    }
+    workingZones.push(...fresh.map(newZone));
+    renderZonesList();
+}
+
 function renderZonesList() {
     const container = document.getElementById('zonesList');
     if (!container) return;
     if (!workingZones.length) {
         container.innerHTML = `<div class="text-center text-muted py-4 border rounded">
-            No zones defined. Click <strong>Add zone</strong> or <strong>Quick setup</strong> to start.
+            No zones yet. <strong>Add heated rooms</strong> makes one for each room heating controls.
         </div>`;
     } else {
         container.innerHTML = workingZones.map((z, i) => renderZoneCard(z, i)).join('');
@@ -1577,11 +1535,6 @@ function renderZonesList() {
 }
 
 function bindZoneControls() {
-    document.querySelectorAll('.zone-name').forEach(el => {
-        el.addEventListener('input', e => {
-            workingZones[+e.target.dataset.zoneIdx].name = e.target.value;
-        });
-    });
     const numericBindings = [
         ['.zone-target', 'target_temp', parseFloat],
         ['.zone-setback', 'night_setback', parseFloat],
@@ -1595,20 +1548,6 @@ function bindZoneControls() {
             });
         });
     }
-    document.querySelectorAll('.zone-device-cb').forEach(cb => {
-        cb.addEventListener('change', e => {
-            const idx = +e.target.dataset.zoneIdx;
-            const ieee = e.target.dataset.ieee;
-            const zone = workingZones[idx];
-            zone.devices = zone.devices || [];
-            if (e.target.checked) {
-                if (!zone.devices.includes(ieee)) zone.devices.push(ieee);
-            } else {
-                zone.devices = zone.devices.filter(d => d !== ieee);
-            }
-            renderZonesList();
-        });
-    });
     document.querySelectorAll('.btn-delete-zone').forEach(btn => {
         btn.addEventListener('click', async () => {
             const idx = +btn.dataset.zoneIdx;
@@ -1669,16 +1608,16 @@ function bindZoneControls() {
 function bindSettingsTabs() {
     renderZonesList();
 
-    document.getElementById('btnAddZone')?.addEventListener('click', () => {
-        const n = workingZones.length + 1;
-        workingZones.push({
-            id: `zone_${n}`, name: `Zone ${n}`,
-            target_temp: 21, night_setback: 17, min_temp: 16, priority: 5,
-            devices: [], schedule: [],
+    document.getElementById('btnAddZone')?.addEventListener('click', async () => {
+        const chamber = await window.zbmChooseChamber({
+            title: 'Add a heating zone',
+            exclude: c => workingZones.some(z => z.id === c.id),
         });
+        if (!chamber) return;
+        workingZones.push(newZone(chamber));
         renderZonesList();
     });
-    document.getElementById('btnZonePresets')?.addEventListener('click', showQuickSetupPicker);
+    document.getElementById('btnZoneAllHeated')?.addEventListener('click', addHeatedZones);
 }
 
 // Gather + save

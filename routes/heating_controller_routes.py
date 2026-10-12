@@ -1004,8 +1004,17 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
 
             sync_notes: List[str] = []
             if "circuits" in incoming:
+                from modules.chambers import heating_room_names
+                from routes.chamber_routes import apply_room_edit
+                prev_names = heating_room_names(cfg)
+                plan = load_plan()
                 plan_out, sync_notes = sync_heating_config(
-                    heating, load_plan(), edited=incoming["circuits"])
+                    heating, plan, edited=incoming["circuits"])
+                # A heated room is a chamber: registered here, renames carried both ways.
+                current = plan_out if plan_out is not None else plan
+                if apply_room_edit(cfg, current, edited="heating",
+                                   prev_names=prev_names)["plan_changed"]:
+                    plan_out = current
                 if plan_out is not None:
                     save_plan(plan_out)
 

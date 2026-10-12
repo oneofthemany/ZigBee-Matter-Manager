@@ -8,7 +8,7 @@ wired in by `routes/frame_routes.py`.
 
 - **Hive** — the install.
 - **Frame** — a dashboard.
-- **Chamber** — a room (see `modules/chambers.py`).
+- **Chamber** — a room ([chambers.md](chambers.md)).
 - **Cell** — one device tile. A honeycomb cell is the individual hexagon.
 
 ## Cell kind is precedence-ordered
@@ -59,37 +59,8 @@ belongs to the *profiles* layer and is not usable against `capability_list`.
 
 ## Chambers
 
-`modules/chambers.py` is the chamber registry — the Frames-side notion of "a
-room in the home". Pure module, wired in by `routes/chamber_routes.py`.
-
-`chamber` is **Frames-side vocabulary only**. The heating subsystem and the
-floor-plan editor both say `room` internally and deliberately keep doing so:
-renaming them would mean migrating the config schema underneath
-`heating_controller.py` / `thermal_profile.py` / the floor-plan projection for
-no functional gain. Translation happens at this boundary and nowhere else.
-
-### The registry is a union, not a migration
-
-Rooms are already described in two places, and this module adopts both rather
-than replacing either:
-
-| Source | `source` |
-| --- | --- |
-| `chambers:` | `config` (this module) |
-| `heating.circuits[].rooms[]` | `heating` (adopted) |
-| the floor plan's `levels[].rooms[]` (`floor_plan_store`, [docs/floor-plan.md](floor-plan.md)) | `floor_plan` (adopted) |
-
-A chamber's `id` is the **same string** heating uses as its `room.id` (e.g.
-`living`). That is what keeps "Living Room" a single chamber instead of two.
-
-When a configured chamber shadows an adopted room id, the configured entry wins
-and is flagged `adopted: True` — meaning heating also defines this room, so its
-id must not be renamed or the two drift apart.
-
-Nothing here ever writes to the heating config.
-
-> `zones` / `config/zones.yaml` are RSSI presence-detection zones, **not** rooms.
-> They are unrelated to chambers.
+A frame splits by chamber — the one room registry, shared with heating and the
+floor plan. See [chambers.md](chambers.md).
 
 ## Frontend
 

@@ -214,17 +214,13 @@ class HeatingAdvisor:
         return self._manual_off_peak_rate
 
     def _clean_zones(self, zones: list) -> List[Dict]:
-        """Normalise + default zone definitions."""
+        """Per-chamber advisor settings; ``id`` is the chamber's (docs/chambers.md § Heating zones)."""
         if not isinstance(zones, list):
             return []
         out = []
         for z in zones:
-            if not isinstance(z, dict) or not z.get("name"):
+            if not isinstance(z, dict) or not z.get("id"):
                 continue
-            zid = str(z.get("id") or z["name"]).lower().replace(" ", "_")
-            devices = z.get("devices") or []
-            if not isinstance(devices, list):
-                devices = []
             schedule = z.get("schedule") or []
             if not isinstance(schedule, list):
                 schedule = []
@@ -242,16 +238,23 @@ class HeatingAdvisor:
                     "temp": _as_float(_get_or(slot, "temp", 20.0), 20.0),
                 })
             out.append({
-                "id": zid,
-                "name": str(z["name"]),
-                "target_temp": _as_float(_get_or(z, "target_temp", self_target := 21.0), self_target),
+                "id": str(z["id"]),
+                "target_temp": _as_float(_get_or(z, "target_temp", 21.0), 21.0),
                 "night_setback": _as_float(_get_or(z, "night_setback", 17.0), 17.0),
                 "min_temp": _as_float(_get_or(z, "min_temp", 16.0), 16.0),
                 "priority": _as_int(_get_or(z, "priority", 5), 5),
-                "devices": [str(d) for d in devices if d],
                 "schedule": clean_schedule,
             })
         return out
+
+    @staticmethod
+    def _zone_names() -> Dict[str, str]:
+        """Chamber id -> name; a zone is named by its chamber, so a rename shows here."""
+        try:
+            from modules.swarm.network import load_rooms
+            return load_rooms()
+        except Exception:                                       # noqa: BLE001
+            return {}
 
     def _compute_zone_mass(self) -> Dict[str, float]:
         """Estimate per-zone thermal mass. Equal split if no area hints."""
@@ -480,7 +483,7 @@ class HeatingAdvisor:
                     "mode": mode,
                     "action": state.get("hvac_action", "unknown"),
                     "effective_action": effective_action,
-                    "zone": self._device_to_zone_id(d.get("ieee")),
+                    "zone": self._device_to_zone_id(d.get("chamber")),
                 })
             except Exception as e:
                 logger.debug(f"Skipping malformed device entry: {e}")
@@ -527,7 +530,7 @@ class HeatingAdvisor:
     # Zone Analysis
     def _analyse_zones(self, hvac_devices: List[dict], outdoor: Optional[float]) -> List[Dict]:
         """Produce per-zone analysis: current temps, effective target, demand, pre-heat."""
-        by_ieee = {d.get("ieee"): d for d in hvac_devices if d.get("ieee")}
+        names = self._zone_names()
         now = datetime.now()
         now_day = DAY_KEYS[now.weekday()]
         now_minutes = now.hour * 60 + now.minute
@@ -540,16 +543,8 @@ class HeatingAdvisor:
             demands = []
             any_heating = False
 
-            for ieee in z.get("devices", []):
-                dev = by_ieee.get(ieee)
-                if not dev:
-                    # Device not currently visible — include a stub
-                    z_devices.append({
-                        "ieee": ieee,
-                        "name": ieee,
-                        "online": False,
-                    })
-                    continue
+            for dev in (d for d in hvac_devices if d.get("chamber") == z["id"]):
+                ieee = dev.get("ieee")
                 state = dev.get("state", {})
                 temp = state.get("local_temperature") or state.get("current_temperature")
                 setpoint = state.get("occupied_heating_setpoint") or state.get("target_temp")
@@ -611,7 +606,7 @@ class HeatingAdvisor:
 
             zones_out.append({
                 "id": z["id"],
-                "name": z["name"],
+                "name": names.get(z["id"], z["id"]),
                 "target_temp": effective_target,
                 "target_source": source,        # "schedule" | "default" | "setback"
                 "configured_target": z["target_temp"],
@@ -624,7 +619,7 @@ class HeatingAdvisor:
                 "heating_active": any_heating,
                 "status": status,               # below | ontarget | above | unknown
                 "preheat_minutes": zone_preheat,
-                "device_count": len(z.get("devices", [])),
+                "device_count": len(z_devices),
                 "devices": z_devices,
             })
 
@@ -665,13 +660,8 @@ class HeatingAdvisor:
         except (ValueError, AttributeError):
             return None
 
-    def _device_to_zone_id(self, ieee: Optional[str]) -> Optional[str]:
-        if not ieee:
-            return None
-        for z in self.zones:
-            if ieee in (z.get("devices") or []):
-                return z["id"]
-        return None
+    def _device_to_zone_id(self, chamber: Optional[str]) -> Optional[str]:
+        return chamber if chamber and any(z["id"] == chamber for z in self.zones) else None
 
     # Tips Engine
     def _generate_tips(self, outdoor: Optional[float], indoor: Optional[float],
@@ -778,25 +768,16 @@ class HeatingAdvisor:
 
         # Zone-aware tips
         if self.zones:
-            cold_zones = []
-            for z in self.zones:
-                # Reuse cached analysis if available
-                pass  # (zone tips derived at analysis time if desired)
-
-            # Unassigned devices tip
-            hvac = self._find_hvac_devices()
-            assigned = set()
-            for z in self.zones:
-                assigned.update(z.get("devices") or [])
-            unassigned = [d for d in hvac if d.get("ieee") not in assigned]
-            if unassigned and len(self.zones) > 0:
+            zoned = {z["id"] for z in self.zones}
+            unassigned = [d for d in self._find_hvac_devices() if d.get("chamber") not in zoned]
+            if unassigned:
                 tips.append({
                     "category": "zones",
                     "priority": "medium",
                     "icon": "layer-group",
                     "title": f"{len(unassigned)} heating device(s) not in a zone",
-                    "detail": "Unassigned devices aren't included in zone-level "
-                              "analysis or scheduling. Assign them in Heating Settings → Zones.",
+                    "detail": "A zone is a chamber: put these devices in a chamber, then "
+                              "add that chamber in Heating Settings → Zones.",
                 })
 
         return tips
@@ -823,6 +804,7 @@ class HeatingAdvisor:
                 friendly_name = dev.get("friendly_name") or dev.get("name") or ieee
                 manufacturer = dev.get("manufacturer")
                 model = dev.get("model")
+                chamber = (dev.get("settings") or {}).get("chamber")
             else:
                 # Assume object with attributes (e.g. ZigManDevice). Its name
                 # lives in the service's names map, not on the device.
@@ -836,6 +818,8 @@ class HeatingAdvisor:
                 )
                 manufacturer = getattr(dev, "manufacturer", None)
                 model = getattr(dev, "model", None)
+                settings = getattr(getattr(dev, "service", None), "device_settings", None) or {}
+                chamber = (settings.get(ieee) or {}).get("chamber")
 
             if not isinstance(state, dict):
                 continue
@@ -851,6 +835,7 @@ class HeatingAdvisor:
                     "friendly_name": str(friendly_name),
                     "manufacturer": manufacturer,
                     "model": model,
+                    "chamber": chamber,
                 })
         return hvac
 

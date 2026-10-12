@@ -99,8 +99,8 @@ def run() -> Checker:
     store.reset(plan_path, cfg_path)
     store.save_plan(plan)
     reg = chambers.build_registry({"heating": {}})
-    c.check("a plan room is adopted as a chamber",
-            any(r["id"] == "lounge" and r["source"] == "floor_plan" for r in reg), reg)
+    c.check("a plan room is a chamber, marked as drawn",
+            any(r["id"] == "lounge" and r["mapped"] for r in reg), reg)
     c.check("with its level", chambers.levels() == [{"id": "ground", "name": "Ground",
                                                      "index": 0}], chambers.levels())
     c.check("a key left in config is ignored",
@@ -108,10 +108,10 @@ def run() -> Checker:
                 {"heating": {"floor_plan": {"levels": [{"id": "up", "rooms": [
                     {"id": "attic", "name": "Attic"}]}]}}})))
     c.check("a plan can still be passed in",
-            chambers.floor_plan_rooms({"levels": []}) == [])
+            chambers.plan_room_names({"levels": []}) == {})
     ok, err = chambers.delete_chamber({"chambers": [{"id": "lounge", "name": "Lounge"}]},
                                       "lounge")
-    c.check("an adopted plan room cannot be deleted", not ok and "floor plan" in (err or ""),
+    c.check("a drawn chamber cannot be deleted", not ok and "floor plan" in (err or ""),
             (ok, err))
 
     c.section("nothing reads heating.floor_plan any more")

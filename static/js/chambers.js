@@ -1,10 +1,10 @@
 /**
- * Chambers — the Frames-side room registry.
+ * Chambers — the one room registry.
  *
- * The backend adopts heating and floor-plan rooms into this registry by id;
- * entries with `editable: false` exist only because another subsystem defines
- * them. A device's chamber ships with the device as device.settings.chamber, so
- * no per-device fetch is needed. Zigbee-only for now. See docs/frames.md.
+ * A heating room and a floor-plan room are the chamber with the same id
+ * (`heated` / `mapped`). A device's chamber ships with the device as
+ * device.settings.chamber, so no per-device fetch is needed. Zigbee-only for
+ * now. See docs/chambers.md.
  */
 
 import { state } from './state.js';
@@ -13,13 +13,8 @@ const log = zmmLog('chambers');
 
 let chambers = [];
 let levels = [];
+let duplicates = [];
 let firstLoad = null;
-
-const SOURCE_LABELS = {
-    config: { label: 'Frames', cls: 'bg-primary' },
-    heating: { label: 'Heating', cls: 'bg-danger' },
-    floor_plan: { label: 'Floor plan', cls: 'bg-info' },
-};
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
@@ -42,14 +37,17 @@ export function chamberName(id) {
     return c ? c.name : id;
 }
 
+function adopt(data) {
+    chambers = data.chambers || chambers;
+    levels = data.levels || levels;
+    duplicates = data.duplicates || [];
+}
+
 export async function loadChambers() {
     try {
         const res = await fetch('/api/chambers');
         const data = await res.json();
-        if (data.success) {
-            chambers = data.chambers || [];
-            levels = data.levels || [];
-        } else {
+        if (data.success) adopt(data); else {
             log.warn('chamber registry error:', data.error);
         }
     } catch (e) {
@@ -123,6 +121,7 @@ export function renderChamberPicker(device) {
     if (current && !chambers.some(c => c.id === current)) {
         opts += `<option value="${esc(current)}" selected>${esc(current)} (unknown)</option>`;
     }
+    opts += `<option value="__new__">+ New chamber…</option>`;
 
     return `
         <div class="d-flex align-items-center gap-2 mt-2">
@@ -143,6 +142,19 @@ export function renderChamberPicker(device) {
 
 export async function assignDeviceChamber(ieee, chamberId) {
     const select = document.getElementById('deviceChamberSelect');
+    if (chamberId === '__new__') {
+        const created = await promptNewChamber();
+        if (!created) {
+            if (select) select.value = state.deviceCache?.[ieee]?.settings?.chamber || '';
+            return;
+        }
+        chamberId = created.id;
+        if (select) {
+            select.insertAdjacentHTML('beforeend',
+                `<option value="${esc(created.id)}">${esc(created.name)}</option>`);
+            select.value = created.id;
+        }
+    }
     if (select) select.disabled = true;
     try {
         const res = await fetch('/api/chambers/assign', {
@@ -195,8 +207,8 @@ export async function openChamberManager() {
                     <div class="modal-body">
                         <div class="d-flex justify-content-between align-items-center mb-3">
                             <div class="text-muted small">
-                                Rooms already defined by heating or the floor plan are listed
-                                automatically — you don't need to re-create them.
+                                One list of rooms for the whole app. Rooms added in Heating or drawn
+                                on the floor plan appear here, and a rename here renames them there.
                             </div>
                             <button class="btn btn-sm btn-success flex-shrink-0 ms-2" onclick="window.createChamber()">
                                 <i class="fas fa-plus"></i> New
@@ -220,22 +232,24 @@ function renderChamberList() {
     if (!chambers.length) {
         el.innerHTML = `
             <div class="alert alert-light text-center small mb-0">
-                No chambers yet. Create one, or define rooms in Heating or the floor plan.
+                No chambers yet. Create one here, add a room in Heating, or draw one on the floor plan.
             </div>`;
         return;
     }
 
     const levelName = id => levels.find(l => l.id === id)?.name || id;
 
-    el.innerHTML = chambers.map(c => {
-        const src = SOURCE_LABELS[c.source] || { label: c.source, cls: 'bg-secondary' };
+    el.innerHTML = renderDuplicates() + chambers.map(c => {
         const count = devicesInChamber(c.id).length;
-        // Only Frames-owned chambers can truly be deleted — an adopted room
-        // would just reappear from heating / the floor plan on next read.
-        const canDelete = c.source === 'config';
+        const uses = [
+            c.heated ? '<span class="badge bg-danger">Heating</span>' : '',
+            c.mapped ? '<span class="badge bg-info">Floor plan</span>' : '',
+            c.zoned ? '<span class="badge bg-warning text-dark">Zone</span>' : '',
+        ].join(' ');
+        const why = [c.heated && 'heating', c.mapped && 'the floor plan'].filter(Boolean).join(' and ');
 
         return `
-        <div class="card mb-2">
+        <div class="card mb-2" data-chamber="${esc(c.id)}">
             <div class="card-body py-2">
                 <div class="d-flex justify-content-between align-items-center">
                     <div class="min-w-0">
@@ -244,10 +258,7 @@ function renderChamberList() {
                             ${esc(c.name)}
                         </div>
                         <div class="small text-muted">
-                            <span class="badge ${src.cls}">${src.label}</span>
-                            ${c.adopted && c.source === 'config'
-                                ? '<span class="badge bg-secondary" title="Heating or the floor plan also defines this room, so its id is shared">shared</span>'
-                                : ''}
+                            ${uses}
                             ${c.level ? `<span class="ms-1">${esc(levelName(c.level))}</span>` : ''}
                             <span class="ms-1">${count} device${count === 1 ? '' : 's'}</span>
                         </div>
@@ -259,26 +270,104 @@ function renderChamberList() {
                         <button class="btn btn-outline-secondary" onclick="window.renameChamber('${esc(c.id)}')" title="Rename">
                             <i class="fas fa-pen"></i>
                         </button>
-                        <button class="btn btn-outline-danger" ${canDelete ? '' : 'disabled'}
+                        <button class="btn btn-outline-secondary" onclick="window.showChamberMerge('${esc(c.id)}')" title="Merge into another chamber">
+                            <i class="fas fa-code-merge"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" ${c.in_use ? 'disabled' : ''}
                                 onclick="window.deleteChamber('${esc(c.id)}')"
-                                title="${canDelete ? 'Delete' : `Defined by ${src.label} — remove it there`}">
+                                title="${c.in_use ? `Used by ${why} — remove it there, or merge it` : 'Delete'}">
                             <i class="fas fa-trash"></i>
                         </button>
                     </div>
                 </div>
+                <div class="chamber-merge-row d-none mt-2"></div>
             </div>
         </div>`;
     }).join('');
 }
 
+/** Pairs the backend thinks are one room, each with a one-tap merge. */
+function renderDuplicates() {
+    const byId = id => chambers.find(c => c.id === id);
+    const rows = duplicates.map(d => {
+        const a = byId(d.a), b = byId(d.b);
+        if (!a || !b) return '';
+        // Keep the name of the one in use: that's the one heating and the plan show.
+        const [from, into] = a.in_use ? [b, a] : [a, b];
+        return `
+            <div class="d-flex flex-wrap align-items-center gap-2 py-1">
+                <span class="flex-grow-1 min-w-0">
+                    <strong>${esc(from.name)}</strong> and <strong>${esc(into.name)}</strong>
+                    look like the same room
+                </span>
+                <button class="btn btn-sm btn-warning flex-shrink-0"
+                        onclick="window.mergeChambers('${esc(from.id)}', '${esc(into.id)}')">
+                    Merge as "${esc(into.name)}"
+                </button>
+            </div>`;
+    }).join('');
+    return rows ? `<div class="alert alert-warning small py-2 mb-3">${rows}</div>` : '';
+}
+
+export function showChamberMerge(id) {
+    const row = document.querySelector(`#chamberList [data-chamber="${CSS.escape(id)}"] .chamber-merge-row`);
+    if (!row) return;
+    const others = chambers.filter(c => c.id !== id);
+    row.innerHTML = others.length ? `
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+            <label class="small text-muted mb-0" for="chamberMergeInto">Merge into</label>
+            <select class="form-select form-select-sm flex-grow-1" id="chamberMergeInto" style="min-width: 0; max-width: 240px;">
+                ${others.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
+            </select>
+            <button class="btn btn-sm btn-primary"
+                    onclick="window.mergeChambers('${esc(id)}', document.getElementById('chamberMergeInto').value)">Merge</button>
+        </div>` : '<span class="small text-muted">No other chamber to merge into.</span>';
+    row.classList.toggle('d-none');
+}
+
+export async function mergeChambers(source, into) {
+    const a = chambers.find(c => c.id === source), b = chambers.find(c => c.id === into);
+    const ok = await window.zbmConfirm({
+        title: 'Merge chambers',
+        message: `Merge "${a?.name || source}" into "${b?.name || into}"?`,
+        detail: 'Its devices, groups and dashboards move across, and the merged room keeps the name '
+            + `"${b?.name || into}".`,
+        confirmText: 'Merge',
+    });
+    if (!ok) return;
+    try {
+        const res = await fetch('/api/chambers/merge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, into }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'merge failed');
+        for (const d of Object.values(state.deviceCache || {})) {
+            if (d.settings?.chamber === data.removed) d.settings.chamber = data.chamber;
+        }
+        adopt(data);
+        renderChamberList();
+        window.toast.success(`Merged into "${chamberName(data.chamber)}"`);
+    } catch (e) {
+        window.toast.error('Could not merge: ' + e.message);
+    }
+}
+
 export async function createChamber() {
+    if (await promptNewChamber()) renderChamberList();
+}
+
+/** Ask for a name and create the chamber; the new entry, or null. */
+async function promptNewChamber(value = '') {
     const name = await window.zbmPrompt({
         title: 'New chamber',
         label: 'Room name (e.g. Kitchen, Master Bedroom):',
+        value,
         confirmText: 'Create',
     });
-    if (!name) return;
-    await saveChamber({ name });
+    if (!name?.trim()) return null;
+    return saveChamber({ name: name.trim() });
 }
 
 export async function renameChamber(id) {
@@ -290,9 +379,8 @@ export async function renameChamber(id) {
         confirmText: 'Save',
     });
     if (!name) return;
-    // Send the id so this renames rather than creating a second chamber. For an
-    // adopted room this writes a Frames-side override; heating keeps its own name.
-    await saveChamber({ id, name });
+    // The id makes it a rename; heating and the floor plan take the new name too.
+    if (await saveChamber({ ...existing, id, name })) renderChamberList();
 }
 
 async function saveChamber(body) {
@@ -304,11 +392,12 @@ async function saveChamber(body) {
         });
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'save failed');
-        chambers = data.chambers || chambers;
-        renderChamberList();
+        adopt(data);
         window.toast.success(`Chamber "${data.chamber.name}" saved`);
+        return data.chamber;
     } catch (e) {
         window.toast.error('Could not save chamber: ' + e.message);
+        return null;
     }
 }
 
@@ -317,9 +406,9 @@ export async function deleteChamber(id) {
     const count = devicesInChamber(id).length;
     const ok = await window.zbmConfirm({
         title: 'Delete chamber',
-        message: count
-            ? `Delete "${c?.name || id}"? ${count} device${count === 1 ? '' : 's'} will be unassigned.`
-            : `Delete "${c?.name || id}"?`,
+        message: `Delete "${c?.name || id}"?`
+            + (count ? ` ${count} device${count === 1 ? '' : 's'} will be unassigned.` : '')
+            + (c?.zoned ? ' Its heating zone is removed too.' : ''),
         confirmText: 'Delete',
         variant: 'danger',
     });
@@ -329,20 +418,10 @@ export async function deleteChamber(id) {
         const res = await fetch(`/api/chambers/${encodeURIComponent(id)}`, { method: 'DELETE' });
         const data = await res.json();
 
-        // A chamber that heating or the floor plan also defines survives the
-        // delete; the backend says so rather than pretending it worked.
-        if (!data.success) {
-            if (data.chambers) {
-                chambers = data.chambers;
-                renderChamberList();
-                window.toast.info(data.error);
-                return;
-            }
-            throw new Error(data.error || 'delete failed');
-        }
+        if (!data.success) throw new Error(data.error || 'delete failed');
 
         for (const d of devicesInChamber(id)) delete d.settings.chamber;
-        await loadChambers();
+        adopt(data);
         renderChamberList();
         window.toast.success(
             data.unassigned
@@ -496,6 +575,95 @@ async function bulkAssign(ieees, chamberId) {
     return data;
 }
 
+
+// pick or create (heating "Add room", drawing a room on the floor plan)
+
+/**
+ * Choose the chamber a new heating or plan room is, or name a new one.
+ *
+ * `exclude(c)` drops chambers that side already has, since one chamber is one
+ * heating room and one outline. Resolves `{id, name}` or null on cancel.
+ */
+export async function chooseChamber({ title = 'Which room is this?', exclude = () => false,
+                                      suggestedName = '' } = {}) {
+    await loadChambers();
+    const free = chambers.filter(c => !exclude(c));
+    document.getElementById('chamberChooseModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', `
+        <div class="modal fade" id="chamberChooseModal" tabindex="-1" aria-labelledby="chamberChooseTitle" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="chamberChooseTitle"><i class="fas fa-location-dot"></i> ${esc(title)}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        ${free.length ? `
+                        <label class="form-label small" for="chamberChooseSelect">Existing chamber</label>
+                        <select class="form-select mb-3" id="chamberChooseSelect">
+                            <option value="">— New chamber —</option>
+                            ${free.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
+                        </select>` : ''}
+                        <div id="chamberChooseNewWrap">
+                            <label class="form-label small" for="chamberChooseName">New chamber name</label>
+                            <input type="text" class="form-control" id="chamberChooseName"
+                                   value="${esc(suggestedName)}" placeholder="e.g. Kitchen">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button class="btn btn-sm btn-primary" id="chamberChooseOk">OK</button>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+    const modalEl = document.getElementById('chamberChooseModal');
+    const select = document.getElementById('chamberChooseSelect');
+    const nameEl = document.getElementById('chamberChooseName');
+    const wrap = document.getElementById('chamberChooseNewWrap');
+    select?.addEventListener('change', () => wrap.classList.toggle('d-none', !!select.value));
+
+    // Stacked over the heating modal: lift above it, as dialogs.js does.
+    if (document.querySelector('.modal.show')) {
+        modalEl.style.zIndex = '1080';
+        modalEl.addEventListener('shown.bs.modal', () => {
+            const bd = document.querySelectorAll('.modal-backdrop');
+            if (bd.length) bd[bd.length - 1].style.zIndex = '1079';
+        }, { once: true });
+    }
+
+    return new Promise(resolve => {
+        let result = null;
+        const modal = new bootstrap.Modal(modalEl);
+        const ok = async () => {
+            if (select?.value) {
+                result = chambers.find(c => c.id === select.value) || null;
+            } else {
+                const name = nameEl.value.trim();
+                if (!name) { nameEl.focus(); return; }
+                // An existing chamber of that name is the answer, not a duplicate.
+                result = chambers.find(c => c.name.trim().toLowerCase() === name.toLowerCase())
+                    || await saveChamber({ name });
+                if (!result) return;
+                if (exclude(result)) {
+                    window.toast.error(`"${result.name}" is already here`);
+                    result = null;
+                    return;
+                }
+            }
+            modal.hide();
+        };
+        document.getElementById('chamberChooseOk').addEventListener('click', ok);
+        nameEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
+        modalEl.addEventListener('shown.bs.modal', () => (select || nameEl).focus(), { once: true });
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            if (document.querySelector('.modal.show')) document.body.classList.add('modal-open');
+            modalEl.remove();
+            resolve(result ? { id: result.id, name: result.name } : null);
+        }, { once: true });
+        modal.show();
+    });
+}
 
 export function initChambers() {
     ensureChambers();

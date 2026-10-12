@@ -4109,7 +4109,11 @@ async function deleteCircuit(circuitId) {
 // feature creators
 
 
-function finishRoom() {
+let _choosingRoom = false;
+
+async function finishRoom() {
+    // The chamber dialog is open: its Enter key must not close the room again.
+    if (_choosingRoom) return;
     const lvl = currentLevel();
     const points = _state.drawBuffer.points;
     if (points.length < 3) {
@@ -4121,9 +4125,24 @@ function finishRoom() {
     const problem = roomPolygonProblem(lvl, closed);
     if (problem) { toast('warn', "Can't close the room", problem); return; }
     points.splice(0, points.length, ...closed);
-    const id = genId('room');
+    // An outline is a chamber's: one per chamber across every level.
+    const drawn = new Set((_state.plan.levels || []).flatMap(l => (l.rooms || []).map(r => r.id)));
+    _choosingRoom = true;
+    let chamber;
+    try {
+        chamber = await window.zbmChooseChamber({
+            title: 'Which room is this?',
+            exclude: c => drawn.has(c.id),
+            suggestedName: `Room ${lvl.rooms.length + 1}`,
+        });
+    } finally {
+        _choosingRoom = false;
+    }
+    // Cancelled: the outline stays open, so a click on its first corner retries.
+    if (!chamber || !_state?.drawBuffer) return;
+    const id = chamber.id;
     const r = {
-        id, name: `Room ${lvl.rooms.length + 1}`,
+        id, name: chamber.name,
         polygon: points.map(p => [p.x, p.y]),
     };
     lvl.rooms.push(r);

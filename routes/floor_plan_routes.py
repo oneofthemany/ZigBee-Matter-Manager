@@ -197,6 +197,11 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
             logger.exception("floor plan projection failed")
             return {"success": False, "error": f"projection failed: {e}"}
 
+        # A drawn room is a chamber: registered here, renames carried both ways.
+        from modules.chambers import plan_room_names
+        from routes.chamber_routes import apply_room_edit
+        apply_room_edit(cfg, cleaned, edited="floor_plan", prev_names=plan_room_names(saved))
+
         try:
             floor_plan_store.save_plan(cleaned)
         except Exception as e:

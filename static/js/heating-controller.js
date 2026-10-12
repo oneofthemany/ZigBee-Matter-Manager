@@ -2236,17 +2236,20 @@ function bindCircuitCards() {
         });
     });
     document.querySelectorAll('.btn-add-room').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const ci = +btn.dataset.ci;
+            // A heating room is a chamber: its id is the chamber's, so devices,
+            // the floor plan and dashboards all mean the same room.
+            const inUse = new Set(workingCircuits.flatMap(c => (c.rooms || []).map(r => r.id)));
+            const chamber = await window.zbmChooseChamber({
+                title: 'Add a heated room',
+                exclude: c => inUse.has(c.id),
+            });
+            if (!chamber) return;
             workingCircuits[ci].rooms = workingCircuits[ci].rooms || [];
-            const n = workingCircuits[ci].rooms.length + 1;
-            // Prefix with circuit id so newly-added rooms are globally unique.
-            // User can rename later; this just avoids the default collision.
-            const prefix = (workingCircuits[ci].id || `c${ci + 1}`).toLowerCase()
-                .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
             workingCircuits[ci].rooms.push({
-                id: `${prefix}_room_${n}`,
-                name: `Room ${n}`,
+                id: chamber.id,
+                name: chamber.name,
                 target_temp: 21, night_setback: 17, min_temp: 16,
                 trv_ieees: [], trvs: [], schedule: [],
                 temperature_sensor_ieee: null,
