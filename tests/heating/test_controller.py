@@ -313,6 +313,39 @@ def run() -> Checker:
     c.check("a calibrate command that never arrived says nothing about the valve",
             not any("calibrat" in x for x in room(tick(ctrl))["health"]["reasons"]))
 
+    c.section("pre-heat for the operating day")
+    ctrl, _, _ = make()
+    ctrl._oh_enabled = True
+    ctrl._oh_weekday_start, ctrl._oh_weekday_end = "07:30", "22:30"
+    ctrl._oh_weekend_start, ctrl._oh_weekend_end = "08:30", "23:00"
+    plain = {"id": "lounge", "target_temp": 20.0, "schedule": []}
+    nxt = ctrl._next_operating_start(plain, datetime(2026, 10, 12, 6, 0))       # Monday
+    c.check("before a weekday start, the day start is the upcoming warm period",
+            nxt and nxt["temp"] == 20.0 and nxt["minutes_until"] == 90.0, nxt)
+    nxt = ctrl._next_operating_start(plain, datetime(2026, 10, 16, 23, 30))     # Friday night
+    c.check("late on Friday it is Saturday's later start, still beyond the look-ahead",
+            nxt is None, nxt)
+    nxt = ctrl._next_operating_start(plain, datetime(2026, 10, 17, 6, 0))       # Saturday
+    c.check("a weekend morning uses the weekend start", nxt and nxt["minutes_until"] == 150.0, nxt)
+    c.check("nothing is upcoming during the day",
+            ctrl._next_operating_start(plain, datetime(2026, 10, 12, 12, 0)) is None)
+    c.check("a room with its own schedule is left to it",
+            ctrl._next_operating_start({**plain, "schedule": [{"days": ["mon"]}]},
+                                       datetime(2026, 10, 12, 6, 0)) is None)
+    c.check("a circuit that opts out of operating hours gets none",
+            ctrl._next_operating_start({**plain, "_oh_enabled_for_circuit": False},
+                                       datetime(2026, 10, 12, 6, 0)) is None)
+    ctrl._weather = NS(latitude=None, longitude=None, get_outdoor_temperature=lambda: 5.0,
+                       get_solar_irradiance=lambda: 0.0, get_cloud_fraction=lambda: 1.0)
+    ctrl._get_room_profile = lambda room: {"w_per_k": 60.0, "tau_seconds": 36000.0,
+                                           "radiator_watts": 1500.0, "confidence": "medium"}
+    target, info = ctrl._maybe_preheat_target(plain, 16.0, datetime(2026, 10, 12, 7, 20))
+    c.check("ten minutes before the day starts, a cold room is already heating to target",
+            target == 20.0 and info and info["preheating"], (target, info))
+    target, info = ctrl._maybe_preheat_target(plain, 19.5, datetime(2026, 10, 12, 4, 0))
+    c.check("hours ahead of what the room needs, it is left at setback",
+            target is None and info and not info["preheating"], (target, info))
+
     c.section("TRV settings re-apply")
     async def reapply():
         ctrl, dev, s = make(heating_cfg(trvs=[{"ieee": TRV, "child_lock": False}]))

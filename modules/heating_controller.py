@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from modules.thermal_profile import (
@@ -2537,6 +2537,34 @@ class HeatingController:
             "minutes_until": minutes_until,
         }
 
+    def _next_operating_start(self, room: dict, now: datetime) -> Optional[Dict[str, Any]]:
+        """The coming start of the operating day, as an upcoming slot at the
+        room's target. Only for a room the operating hours actually govern: no
+        schedule of its own, hours enabled for its circuit, and night now."""
+        if room.get("schedule"):
+            return None
+        oh_circuit = room.get("_oh_enabled_for_circuit")
+        if not (self._oh_enabled if oh_circuit is None else bool(oh_circuit)):
+            return None
+        if self._is_within_operating_hours(now)[0]:
+            return None
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        for days_ahead in (0, 1):
+            day = midnight + timedelta(days=days_ahead)
+            weekend = DAY_KEYS[day.weekday()] in self.WEEKEND_DAYS
+            start_m = _parse_hhmm(self._oh_weekend_start if weekend else self._oh_weekday_start)
+            if start_m is None:
+                continue
+            start = day + timedelta(minutes=start_m)
+            minutes_until = (start - now).total_seconds() / 60.0
+            if minutes_until <= 0:
+                continue
+            if minutes_until > PREHEAT_LOOKAHEAD_MAX_MIN:
+                return None
+            return {"start_dt": start, "minutes_until": minutes_until,
+                    "temp": float(room.get("target_temp", self._default_target))}
+        return None
+
     def _get_room_profile(self, room: dict) -> Optional[Dict[str, Any]]:
         """
         Lazily compute and cache w_per_k + tau for a room. Returns None if
@@ -2637,13 +2665,14 @@ class HeatingController:
             self, room: dict, current_temp: Optional[float], now: datetime
     ) -> Tuple[Optional[float], Optional[Dict[str, Any]]]:
         """
-        Decide if we should pre-heat for an upcoming schedule slot.
-        Returns (override_target, preheat_info) where override_target is None
-        when no preheat is needed.
+        Decide if we should pre-heat for the room's next warm period: its next
+        schedule slot, or — for a room with no schedule — the start of the
+        operating day. Returns (override_target, preheat_info) where
+        override_target is None when no preheat is needed.
         """
         if current_temp is None:
             return None, None
-        upcoming = self._next_schedule_slot(room, now)
+        upcoming = self._next_schedule_slot(room, now) or self._next_operating_start(room, now)
         if not upcoming:
             return None, None
 

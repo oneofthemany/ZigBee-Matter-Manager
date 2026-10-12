@@ -85,7 +85,11 @@ In `advisory` mode the TRV still judges by its own reading beside the radiator, 
 3. Operating hours on: in hours → `target_temp`; out of hours by `out_of_hours_action` — `setback` (target + offset, floored at `min_temp`), `min_only` (`min_temp`), `off` (`OUT_OF_HOURS_OFF_C`, the lowest TRV setpoint: neither calling nor holding valves open).
 4. Otherwise the fixed 22:00–06:00 `night_setback`.
 
-Preheat may raise the target ahead of an upcoming slot; it never lowers the one in force.
+Preheat may raise the target ahead of the room's next warm period — its next
+schedule slot, or, for a room with no schedule on a circuit with operating
+hours on, the start of the operating day — starting early enough (thermal
+profile × `PREHEAT_SAFETY_MARGIN`, at most `PREHEAT_LOOKAHEAD_MAX_MIN` ahead)
+to be at target when it begins. It never lowers the target in force.
 
 ## Solar suppression
 
