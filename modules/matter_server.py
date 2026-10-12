@@ -146,6 +146,18 @@ class MatterServerManager:
         return False
 
 
+    @staticmethod
+    def _is_matter_server(pid: int) -> bool:
+        """Whether `pid` is a matter-server and not this process or its parent."""
+        if pid in (os.getpid(), os.getppid()):
+            return False
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            return False
+        return "matter-server" in cmdline or "matter_server.server" in cmdline
+
     async def _kill_orphans(self):
         """Kill any leftover matter-server processes from previous runs."""
         pid_file = os.path.join(self.storage_path, "matter-server.pid")
@@ -154,13 +166,16 @@ class MatterServerManager:
         if os.path.exists(pid_file):
             try:
                 old_pid = int(open(pid_file).read().strip())
-                os.kill(old_pid, signal.SIGTERM)
-                logger.warning(f"Killed previous matter-server from PID file: {old_pid}")
-                await asyncio.sleep(2)
-                try:
-                    os.kill(old_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                # The file outlives the container that wrote it, and a new
+                # container hands the same low PIDs to other processes.
+                if self._is_matter_server(old_pid):
+                    os.kill(old_pid, signal.SIGTERM)
+                    logger.warning(f"Killed previous matter-server from PID file: {old_pid}")
+                    await asyncio.sleep(2)
+                    try:
+                        os.kill(old_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
             except (ProcessLookupError, ValueError, OSError):
                 pass
             try:
