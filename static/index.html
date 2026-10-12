@@ -64,6 +64,11 @@
 <body>
 <nav class="navbar navbar-dark bg-dark hive-header">
     <div class="container-fluid">
+        <!-- Below md the sidebar is a drawer; this opens it (nav-sidebar.js) -->
+        <button class="btn btn-sm btn-outline-light border-0 d-md-none" type="button" id="mainTabsOpen"
+                aria-controls="mainTabs" aria-expanded="false" aria-label="Open navigation" title="Menu">
+            <i class="fas fa-bars"></i>
+        </button>
         <span class="navbar-brand mb-0 h1 d-flex align-items-center">
             <img src="/static/images/zigbee-manager-logo.png" alt="" class="brand-logo">
             <span class="brand-text">ZigBee Matter Manager
@@ -164,13 +169,8 @@
 </nav>
 
 <div class="container-fluid app-main">
+   <div class="nav-drawer-backdrop d-md-none" id="mainTabsBackdrop"></div>
    <ul class="nav nav-tabs mb-3" id="mainTabs" role="tablist">
-       <li class="nav-item d-md-none" id="mainTabsToggleItem">
-           <button class="nav-link" type="button" id="mainTabsLabelToggle" title="Toggle tab labels" aria-label="Toggle tab labels"
-                   onclick="document.getElementById('mainTabs').classList.toggle('labels-expanded')">
-               <i class="fas fa-text-width"></i>
-           </button>
-       </li>
        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#devices"><i class="fas fa-list"></i> <span class="tab-label">Devices</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#groups"><i class="fas fa-layer-group"></i> <span class="tab-label">Groups</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#frames"><i class="fas fa-border-all"></i> <span class="tab-label">Frames</span></button></li>
@@ -183,7 +183,7 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#drive"><i class="fas fa-car"></i> <span class="tab-label">Drive</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#zones"><i class="fas fa-bullseye"></i> <span class="tab-label">Zones</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cog"></i> <span class="tab-label">Settings</span></button></li>
-       <!-- Admin and developer pages. Fixed strategy so the phone rail's overflow-x doesn't clip the menu. -->
+       <!-- Admin and developer pages. Fixed strategy so the sidebar's overflow doesn't clip the menu. -->
        <li class="nav-item dropdown" id="mainTabsTools">
            <button class="nav-link dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"
                    data-bs-popper-config='{"strategy":"fixed"}' title="Tools" aria-label="Tools">

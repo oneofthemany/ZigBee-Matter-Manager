@@ -132,42 +132,7 @@ html, body {
     mask-image: none !important;
 }
 
-/* 2. MAIN TABS (#mainTabs) — 8 tabs won't fit on mobile */
-
-@media (max-width: 991.98px) {
-    #mainTabs {
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        padding-bottom: 2px;
-    }
-
-    #mainTabs::-webkit-scrollbar {
-        display: none;
-    }
-
-    #mainTabs .nav-item {
-        flex-shrink: 0;
-    }
-
-    #mainTabs .nav-link {
-        white-space: nowrap;
-        padding: 0.5rem 0.6rem;
-        font-size: 0.8rem;
-    }
-
-    /* On small phones, hide tab text and show only icons */
-    @media (max-width: 480px) {
-        #mainTabs .nav-link {
-            padding: 0.5rem 0.75rem;
-            font-size: 0.9rem;
-        }
-        #mainTabs:not(.labels-expanded) .nav-link .fas {
-            margin-right: 0 !important;
-        }
-    }
-}
+/* 2. MAIN TABS — the drawer itself is in hive-components.css */
 
 @media (max-width: 767.98px) {
     /* Code editor is unusable at phone size — remove the tab and its pane */
@@ -178,7 +143,7 @@ html, body {
 
     /* Shared icon-rail pattern for sub-tab bars (settings, config, API,
        network) — icon-only with a sticky text-width toggle that expands
-       the labels, same behaviour as the main tab rail below */
+       the labels */
     .zmm-icon-rail {
         flex-wrap: nowrap;
         overflow-x: auto;
@@ -226,32 +191,6 @@ html, body {
     }
 
     .zmm-icon-rail.labels-expanded .rail-toggle {
-        color: inherit;
-    }
-
-    /* Tab rail — icon-only so all tabs fit without a long scroll;
-       the text-width toggle expands the labels back */
-    #mainTabs .tab-label {
-        display: none;
-    }
-
-    #mainTabs.labels-expanded .tab-label {
-        display: inline;
-    }
-
-    /* Toggle stays reachable while the rail scrolls */
-    #mainTabsToggleItem {
-        position: sticky;
-        left: 0;
-        z-index: 2;
-        background: var(--bs-body-bg);
-    }
-
-    #mainTabsLabelToggle {
-        color: #6c757d;
-    }
-
-    #mainTabs.labels-expanded #mainTabsLabelToggle {
         color: inherit;
     }
 }
