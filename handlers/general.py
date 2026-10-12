@@ -371,6 +371,8 @@ class OnOffHandler(ClusterHandler):
         }
 
     def get_configuration_options(self) -> List[Dict]:
+        if self.subordinate_to():
+            return []       # a thermostat's or cover's power control has no power-on state
         return [{
             "name": f"startup_behaviour_{self.endpoint.endpoint_id}",
             "label": f"Power On Behaviour (EP{self.endpoint.endpoint_id})",
@@ -389,7 +391,7 @@ class OnOffHandler(ClusterHandler):
         ep_id = self.endpoint.endpoint_id
         key = f"startup_behaviour_{ep_id}"
 
-        if key in updates:
+        if key in updates and not self.subordinate_to():
             try:
                 value = int(updates[key])
                 await self.cluster.write_attributes({self.ATTR_STARTUP_ON_OFF: value})

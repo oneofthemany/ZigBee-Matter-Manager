@@ -152,11 +152,22 @@ def run() -> Checker:
         asyncio.run(end_mid_trial())
         c.check("and when the session ends", fc.values[0x0203] == 1)
 
-        c.section("sleepy devices")
+        c.section("battery devices")
         sleepy, sfc = _device(mains=False)
         device_learning.start(sleepy)
-        c.check("are never written: one might not be put back",
-                not device_learning.candidates(sleepy, KEY)["success"] and sfc.writes == [])
+        c.check("are offered candidates",
+                [x["attr"] for x in device_learning.candidates(sleepy, KEY)["candidates"]]
+                == ["0x0009", "0x0203"])
+        awake = asyncio.run(device_learning.try_write(sleepy, KEY, LEDS, INPUTS))
+        c.check("one that answers is flipped", awake["success"] and sfc.values[0x0203] == 0, awake)
+        asyncio.run(device_learning.answer(sleepy, KEY, True))
+        c.check("and put back", sfc.values[0x0203] == 1)
+        asleep = dict(sfc.values)
+        sfc.values.clear()              # no answer to the read
+        out = asyncio.run(device_learning.try_write(sleepy, KEY, LEDS, INPUTS))
+        c.check("one that does not answer is never written",
+                not out["success"] and "did not answer" in out["error"] and len(sfc.writes) == 2, out)
+        sfc.values.update(asleep)
         asyncio.run(device_learning.end(sleepy))
     finally:
         device_learning.TRY_TIMEOUT = real_timeout

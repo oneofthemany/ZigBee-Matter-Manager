@@ -150,6 +150,12 @@ def run() -> Checker:
     p = attribute_that_toggled([rec(1, 0xFCC0, 0x0777, 1, 0x115F)], {(1, 0xFCC0, 0x0777, 0x115F): 0},
                                s, {"writable": writable})
     c.check("a read-only attribute that changed is not a setting", not paths(p))
+    bare = {"ep": None, "label": "the device", "inputs": {"setting_id": "child_lock"}}
+    p = attribute_that_toggled([rec(1, 0xFC11, 0x0000, 1)], {(1, 0xFC11, 0x0000, None): 0}, bare,
+                               {"writable": {(1, 0xFC11, 0x0000, None): "bool"}})
+    got = paths(p).get("zmm.settings") or {}
+    c.check("left unnamed, a bool is Off/On and the label comes from the id",
+            got.get("values") == {"0": "Off", "1": "On"} and got.get("label") == "Child lock", p)
 
     c.section("blob tags against known readings")
     p = correlate_blob_tags([rec(1, 0xFCC0, 0x00F7, AEU002_F7, 0x115F)], {}, step(1, rating_w=2000),

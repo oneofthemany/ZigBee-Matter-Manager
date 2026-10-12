@@ -132,6 +132,8 @@ async def _read(device, targets) -> List[Dict[str, Any]]:
                     v = rec.value.value
                     if isinstance(v, (bytes, bytearray)):
                         v = bytes(v).hex()
+                    elif isinstance(v, int):
+                        v = int(v)      # zigpy's Bool and enums, as a frame carries them
                     out.append({"t": time.time(), "ep": ep, "cluster": cid,
                                 "attr": int(rec.attrid), "mfr": mfr, "value": v})
     return out
@@ -195,7 +197,7 @@ def state(device) -> Dict[str, Any]:
         ep, cid, aid, mfr = t["key"]
         trial = {"step": t["step"], "ep": ep, "cluster": f"0x{cid:04X}", "attr": f"0x{aid:04X}",
                  "old": t["old"], "new": t["new"],
-                 "expires_in": max(0, round(t["t0"] + TRY_TIMEOUT - time.time()))}
+                 "expires_in": max(0, round(t["t0"] + t["timeout"] - time.time()))}
     return {"success": True, "active": True, "running": s.active["key"] if s.active else None,
             "trial": trial, "steps": steps, "live": _live(device, s)}
 
@@ -281,6 +283,8 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
     baseline = await _read(device, _sample_targets(device, st, ctx))
     s.active = {"key": key, "t0": time.time(), "inputs": clean, "baseline": baseline, "ctx": ctx}
     s.results[key] = {"status": "running", "proposals": []}
+    logger.info(f"[{device.ieee}] Learning step {key} begun: {len(baseline)} of "
+                f"{len(_sample_targets(device, st, ctx))} attributes read, inputs {clean}")
     return state(device)
 
 
@@ -313,6 +317,9 @@ async def finish(device, key: str) -> Dict[str, Any]:
                 continue            # outside what the recipe may settle
             proposals.append({**p, "op": op["op"]})
     s.results[key] = {"status": "done", "proposals": proposals, "inputs": a["inputs"]}
+    logger.info(f"[{device.ieee}] Learning step {key} finished: {len(after)} read back, "
+                f"{len(window) - len(after)} frames seen; "
+                + "; ".join(f"{p['confidence']}: {p['evidence']}" for p in proposals))
     if _is_power_test(st):
         from modules.learning_ops import moved_endpoints
         s.results[key].update(target=st["ep"], moved=moved_endpoints(window, baseline))
@@ -344,6 +351,9 @@ def decide(device, key: str, accept: List[int]) -> Dict[str, Any]:
     if facts:
         record(str(device.ieee), facts)
     res["status"] = "accepted" if facts else "skipped"
+    logger.info(f"[{device.ieee}] Learning step {key} {res['status']}: "
+                f"{', '.join(f.subject for f in facts) or 'nothing kept'} "
+                "(not in use until the review is saved)")
     return state(device)
 
 
@@ -362,14 +372,11 @@ TOGGLE_TYPES = {"bool": 0x10, "uint8": 0x20, "enum8": 0x30}
 NEVER_WRITE = {(0xFCC0, 0x0270)}      # Aqara TRV: start motor calibration
 
 
-def _mains(device) -> bool:
-    nd = getattr(device.zigpy_dev, "node_desc", None)
-    return bool(nd is not None and getattr(nd, "is_mains_powered", False))
-
-
 def candidates(device, key: str) -> Dict[str, Any]:
     """Settings ZMM may flip for this step: writable manufacturer toggles
-    (bool, or a small integer now 0 or 1), mains devices only."""
+    (bool, or a small integer now 0 or 1). A battery device is offered them
+    too: `try_write` reads the value first, so one that is asleep is refused
+    before anything is written."""
     import json
     from modules.device_facts import attr_subject, mfr_hex
     from modules.zigbee_cache import get_facts
@@ -378,9 +385,6 @@ def candidates(device, key: str) -> Dict[str, Any]:
         return {"success": False, "error": err}
     if st.get("mode") != "try_write":
         return {"success": False, "error": "this step does not write"}
-    if not _mains(device):
-        return {"success": False, "error": "only mains-powered devices: a sleeping one "
-                                           "might not be put back"}
     values = {}
     for f in get_facts(str(device.ieee)):
         if f["source"] == "answered" and f["subject"].startswith("attr:"):
@@ -436,7 +440,7 @@ async def _revert(device, trial) -> bool:
 
 
 async def _auto_revert(device, trial) -> None:
-    await asyncio.sleep(TRY_TIMEOUT)
+    await asyncio.sleep(trial["timeout"])
     s = _sessions.get(str(device.ieee))
     if s is not None and s.trial is trial:
         s.trial = None
@@ -467,11 +471,17 @@ async def try_write(device, key: str, candidate: Dict[str, Any],
     tkey = (pick["ep"], int(pick["cluster"], 16), int(pick["attr"], 16),
             int(pick["mfr"], 16) if pick.get("mfr") else None)
     now = await _read(device, [tkey])
-    if not now or now[-1]["value"] not in (0, 1, True, False):
-        return {"success": False, "error": "could not read its current value"}
+    if not now:
+        return {"success": False, "error": "the device did not answer: wake it (press a "
+                                           "button on it) and try again"}
+    if now[-1]["value"] not in (0, 1, True, False):
+        return {"success": False, "error": "its value is no longer 0 or 1: not a toggle"}
     old = int(now[-1]["value"])
     trial = {"step": key, "key": tkey, "type": pick["type"], "old": old, "new": 1 - old,
-             "t0": time.time(), "inputs": clean}
+             "t0": time.time(), "inputs": clean,
+             # A behaviour takes longer to show than a light does: a step with
+             # a longer window holds its trial that many times longer.
+             "timeout": TRY_TIMEOUT * max(1.0, float(st.get("window_s") or 0) / 60)}
     if not await _write(device, tkey, pick["type"], trial["new"]):
         return {"success": False, "error": "the device refused the write"}
     s.trial = trial
@@ -672,15 +682,18 @@ def save(device, entry: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": f"this entry is not for {model}"}
     saved = get_profile_store().upsert_profile(entry)
     refresh(device)
+    logger.info(f"[{device.ieee}] Learning saved as profile {saved['id']}: settings "
+                f"{[s.get('id') for s in (saved.get('zmm') or {}).get('settings') or []]}")
     return {"success": True, "saved_profile": saved["id"]}
 
 
 def export(device) -> Dict[str, Any]:
     """The device's entry plus what settled it; no IEEE, no file names."""
     import json
-    from modules.device_profiles import profile_for_device
     from modules.zigbee_cache import get_facts
-    entry = profile_for_device(device) or review(device)["entry"]
+    # What saving would store: the entry in use with what was learned on top,
+    # so a result not yet saved is not left out of its own export.
+    entry = review(device)["entry"]
     entry = {k: v for k, v in entry.items() if k not in ("ieee_overrides",)}
     zmm = dict(entry.get("zmm") or {})
     if "evidence" in zmm:

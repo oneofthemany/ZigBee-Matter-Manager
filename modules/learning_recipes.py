@@ -25,7 +25,7 @@ USER_DIR = os.path.join(os.environ.get("ZMM_DATA_DIR", "./data"), "learning_reci
 
 FOR_EACH = ("switch_endpoint", "light_endpoint")          # or "endpoint_with:0xXXXX"
 INPUT_TYPES = ("number", "text", "select")
-WINDOW_S = (5, 300)
+WINDOW_S = (5, 900)
 _ID = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 
@@ -126,6 +126,14 @@ def _eps(device):
     return {e: ep for e, ep in (device.zigpy_dev.endpoints or {}).items() if e and ep is not None}
 
 
+def _own_clusters(ep) -> set:
+    """The EP's server clusters, less the On/Off and Level that only power a
+    thermostat, cover or lock: those are not a lamp or a socket to learn."""
+    from modules.endpoint_kind import primary_function
+    clusters = set(ep.in_clusters or {})
+    return clusters - {0x0006, 0x0008} if primary_function(clusters) else clusters
+
+
 def _kind(device, ep_id) -> Optional[str]:
     h = (device.handlers or {}).get((ep_id, 0x0006))
     k = h.endpoint_kind() if h is not None and hasattr(h, "endpoint_kind") else None
@@ -135,7 +143,7 @@ def _kind(device, ep_id) -> Optional[str]:
 def applies(recipe: Dict[str, Any], device) -> bool:
     aw = recipe["applies_when"]
     eps = _eps(device)
-    if aw["in_clusters_any"] and not any(set(ep.in_clusters or {}) & set(aw["in_clusters_any"])
+    if aw["in_clusters_any"] and not any(_own_clusters(ep) & set(aw["in_clusters_any"])
                                          for ep in eps.values()):
         return False
     if aw["not_in_clusters_any"] and any(set(ep.in_clusters or {}) & set(aw["not_in_clusters_any"])

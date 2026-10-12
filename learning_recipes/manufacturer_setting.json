@@ -59,7 +59,7 @@
         },
         {
           "name": "unit",
-          "label": "Unit (e.g. °C, %)",
+          "label": "Unit (e.g. \u00b0C, %)",
           "type": "text"
         }
       ],
@@ -98,6 +98,40 @@
         }
       ],
       "window_s": 60,
+      "infer": [
+        {
+          "op": "confirmed_write",
+          "yields": "zmm.settings"
+        }
+      ]
+    },
+    {
+      "id": "try_behaviour",
+      "mode": "try_write",
+      "instruction": "For a setting that changes how the device behaves rather than what it shows (e.g. open-window detection): name it, then let ZMM flip one candidate and hold it for up to 15 minutes while you provoke the behaviour (open the window by the valve). Answer when the device reacts, or that it did not. It is put back when you answer.",
+      "inputs": [
+        {
+          "name": "setting_id",
+          "label": "Short name (e.g. window_detection)",
+          "type": "text"
+        },
+        {
+          "name": "label",
+          "label": "Label",
+          "type": "text"
+        },
+        {
+          "name": "from_label",
+          "label": "What it is now (e.g. On)",
+          "type": "text"
+        },
+        {
+          "name": "to_label",
+          "label": "What the flip should show (e.g. Off)",
+          "type": "text"
+        }
+      ],
+      "window_s": 900,
       "infer": [
         {
           "op": "confirmed_write",

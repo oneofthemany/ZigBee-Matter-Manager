@@ -263,14 +263,28 @@ def attribute_that_toggled(records, baseline, step, ctx) -> List[Dict[str, Any]]
     r = hits[-1]
     ep, cluster, attr, mfr = _key(r)
     old, new = baseline[_key(r)], r["value"]
-    values = {str(int(old)): str(inputs.get("from_label") or old),
-              str(int(new)): str(inputs.get("to_label") or new)} \
-        if _num(old) is not None and _num(new) is not None else {}
+    values = _value_names(old, new, inputs, writable[_key(r)]) \
+        if isinstance(old, (int, float)) and isinstance(new, (int, float)) else {}
     return [proposal("zmm.settings", {
-        "id": sid, "label": str(inputs.get("label") or sid), "type": writable[_key(r)],
+        "id": sid, "label": _label(inputs, sid), "type": writable[_key(r)],
         "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}", "mfr": mfr_hex(mfr),
         "values": values}, "high",
         f"EP{ep} 0x{cluster:04X}/0x{attr:04X} went {old} -> {new}")]
+
+
+def _label(inputs: Dict[str, Any], sid: str) -> str:
+    return str(inputs.get("label") or "").strip() or sid.replace("_", " ").capitalize()
+
+
+def _value_names(old, new, inputs: Dict[str, Any], type_name: str) -> Dict[str, str]:
+    """{raw: name} for a setting's two states; a bool left unnamed is Off/On."""
+    def name(v, given):
+        given = str(given or "").strip()
+        if given:
+            return given
+        return ("On" if int(v) else "Off") if type_name == "bool" else str(int(v))
+    return {str(int(old)): name(old, inputs.get("from_label")),
+            str(int(new)): name(new, inputs.get("to_label"))}
 
 
 # A setting stored scaled is a power of ten from the number a person sees.
@@ -303,7 +317,7 @@ def attribute_that_became(records, baseline, step, ctx) -> List[Dict[str, Any]]:
                              f" ({len(changed)} changed to something else)" if changed else "")
                          if n == 0 else f"{n} settings became {known:g}: change just one")]
     (ep, cluster, attr, mfr), scale = matches[0]
-    setting = {"id": sid, "label": str(inputs.get("label") or sid),
+    setting = {"id": sid, "label": _label(inputs, sid),
                "type": writable[(ep, cluster, attr, mfr)],
                "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}",
                "mfr": mfr_hex(mfr), "values": {}}
@@ -356,10 +370,9 @@ def confirmed_write(records, baseline, step, ctx) -> List[Dict[str, Any]]:
     ep, cluster, attr, mfr = trial["key"]
     old, new = trial["old"], trial["new"]
     return [proposal("zmm.settings", {
-        "id": sid, "label": str(inputs.get("label") or sid), "type": trial["type"],
+        "id": sid, "label": _label(inputs, sid), "type": trial["type"],
         "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}", "mfr": mfr_hex(mfr),
-        "values": {str(int(old)): str(inputs.get("from_label") or old),
-                   str(int(new)): str(inputs.get("to_label") or new)}}, "high",
+        "values": _value_names(old, new, inputs, trial["type"])}, "high",
         f"writing EP{ep} 0x{cluster:04X}/0x{attr:04X} {int(old)} -> {int(new)} changed the device; "
         f"put back to {int(old)}")]
 

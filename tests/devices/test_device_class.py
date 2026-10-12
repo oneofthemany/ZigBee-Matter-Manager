@@ -156,6 +156,10 @@ def run() -> Checker:
     c.check("the settings recipe applies to any maker's cluster",
             learning_recipes.applies(recipe, _device({1: [0, 0xFC99]}))
             and not learning_recipes.applies(recipe, _device({1: [0, 6]})))
+    lamp = learning_recipes.load()["light"]
+    c.check("the lamp recipe is for a switched load, not a thermostat's power control",
+            learning_recipes.applies(lamp, _device({1: [0, 6]}))
+            and not learning_recipes.applies(lamp, _device({1: [0, 6, 0x201, 0xFC11]})))
 
     c.section("a discovery is evidence, like a probe")
     tmp = tempfile.mkdtemp(prefix="zmm_cls_")

@@ -94,7 +94,7 @@ def run() -> Checker:
                 "and the metering map",
                 keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.change_setting",
                          "manufacturer_setting.set_number",
-                         "manufacturer_setting.try_setting", "metered_outlet.switch_test.1",
+                         "manufacturer_setting.try_setting", "manufacturer_setting.try_behaviour", "metered_outlet.switch_test.1",
                          "metered_outlet.switch_test.2", "metered_outlet.switch_test.3",
                          "metering_map"], keys)
         relay = NS(ieee="aa:01", zigpy_dev=NS(endpoints={0: None, 1: NS(
