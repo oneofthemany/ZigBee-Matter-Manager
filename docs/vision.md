@@ -116,8 +116,10 @@ If the Coral can't be opened the sidecar falls back to the CPU and says so on
 the Object detection card in the app, with the reason. Intel, AMD, NVIDIA and
 Hailo hardware is detected (§Hardware) but has no backend yet.
 
-**The Coral path has not been run against a real Coral.** Everything up to
-loading the delegate has; the CPU path is exercised end to end.
+On the M.2 Coral in the reference hub (J3455, Fedora Silverblue), the rootful
+sidecar opens `/dev/apex_0`, loads the delegate and reports `detector ready on
+coral`. Detection quality on real frames through the Coral hasn't been compared
+with the CPU's; the CPU path is exercised end to end.
 
 ## Models
 
