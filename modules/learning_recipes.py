@@ -77,7 +77,7 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if st.get("expect_kind") not in (None, "light", "switch"):
             return None
         mode = st.get("mode") or "observe"
-        if mode not in ("observe", "try_write") or \
+        if mode not in ("observe", "try_write", "history") or \
                 (mode == "try_write") != all(i["op"] == "confirmed_write" for i in infer):
             return None                 # only a write step may confirm a write, and only that
         watch = st.get("watch") or {}

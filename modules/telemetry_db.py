@@ -1388,6 +1388,17 @@ def query_distinct_values(ieee: str, attributes: List[str],
     return int(row[0] or 0), int(row[1] or 0)
 
 
+def query_device_state_series(ieee: str, hours: int = 720) -> List[tuple]:
+    """(epoch, attribute, value, numeric) for every state recorded for a device, oldest first."""
+    db = _rcursor()
+    return db.execute(f"""
+        SELECT epoch(ts), attribute, value, numeric_val
+        FROM device_states
+        WHERE ieee = ? AND ts >= now() - INTERVAL '{int(hours)} hours'
+        ORDER BY ts ASC
+    """, [ieee]).fetchall()
+
+
 def query_device_attributes(ieee: str, hours: int = 720) -> List[str]:
     """
     Distinct attribute names recorded for a device within lookback.

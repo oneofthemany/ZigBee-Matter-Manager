@@ -33,7 +33,8 @@ ZONE_TYPES = {
 }
 
 # Settings only a device that drives a valve pin takes.
-VALVE_SETTINGS = frozenset({"valve_detection", "motor_calibration"})
+VALVE_SETTINGS = frozenset({"valve_detection", "motor_calibration",
+                            "valve_opening_degree", "valve_closing_degree"})
 
 # What a remote's endpoint sends rather than serves.
 CONTROL_OUTPUTS = frozenset({ON_OFF, LEVEL, COLOR})
@@ -64,7 +65,7 @@ def classify(ev: Evidence) -> DeviceClass:
 
     if THERMOSTAT in fns:
         if ev.settings & VALVE_SETTINGS:
-            return DeviceClass("trv", "a thermostat endpoint that detects or calibrates its valve")
+            return DeviceClass("trv", "a thermostat endpoint that takes a valve setting")
         return DeviceClass("thermostat", "a thermostat endpoint")
     if COVER in fns or "cover" in ev.capabilities:
         return DeviceClass("blind", "a window-covering endpoint" if COVER in fns

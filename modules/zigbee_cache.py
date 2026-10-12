@@ -528,6 +528,24 @@ def get_devices_with_stale_discovery(max_age_days: int = 14) -> List[str]:
 
 # READ: ATTRIBUTE HISTORY
 
+def get_vendor_history(ieee, since_days: int = 30, limit: int = 20000) -> List[Dict]:
+    """Every recorded numeric value of the device's vendor-cluster attributes,
+    oldest first, for learning to line up against known states."""
+    _init_schema()
+    cursor = _safe_execute(
+        f"""
+        SELECT epoch(ts), endpoint_id, cluster_id, attribute_id, value_numeric
+        FROM attribute_history
+        WHERE ieee = ? AND cluster_id >= 64512 AND value_numeric IS NOT NULL
+          AND ts >= now() - INTERVAL '{int(since_days)} days'
+        ORDER BY ts ASC
+        LIMIT {int(limit)}
+        """,
+        [str(ieee)], context="select vendor history")
+    return [{"t": float(t), "ep": ep, "cluster": cid, "attr": aid, "mfr": None,
+             "value": int(v) if float(v).is_integer() else float(v)}
+            for t, ep, cid, aid, v in (cursor.fetchall() if cursor else [])]
+
 def get_attribute_history(ieee, endpoint_id, cluster_id, attribute_id,
                           since_seconds=86400, limit=5000) -> List[Dict]:
     _init_schema()

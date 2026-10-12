@@ -78,7 +78,8 @@ Order: the user's correction, then a ZMM entry's or profile's `device_type`,
 then rules over the device's own evidence, first match wins:
 
 1. A thermostat endpoint → radiator valve if the device takes a valve
-   setting (`valve_detection`, `motor_calibration`), else thermostat. A cover endpoint, or the cover
+   setting (`valve_detection`, `motor_calibration`, a valve opening or closing
+   limit), else thermostat. A cover endpoint, or the cover
    capability its handler gives a datapoint device → blind. A lock endpoint →
    lock.
 2. A light endpoint → colour light if that endpoint has Colour Control, else

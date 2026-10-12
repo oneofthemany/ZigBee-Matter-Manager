@@ -161,6 +161,25 @@ def run() -> Checker:
             learning_recipes.applies(lamp, _device({1: [0, 6]}))
             and not learning_recipes.applies(lamp, _device({1: [0, 6, 0x201, 0xFC11]})))
 
+    c.section("a step that reads the device's history")
+    import asyncio
+    from modules import device_learning
+    trv = _device({1: [0, 0x201, 0xFC99]})
+    real = device_learning._history
+    device_learning._history = lambda ieee: (
+        [{"t": t, "ep": 1, "cluster": 0xFC99, "attr": 2, "mfr": None, "value": v}
+         for t, v in ((5, 1900), (105, 1600), (204, 1900), (303, 1500))],
+        {"heating_setpoint": [(0, 19.0), (100, 16.0), (200, 19.0), (300, 15.0)]}, {})
+    try:
+        device_learning.start(trv)
+        out = asyncio.run(device_learning.begin(trv, "manufacturer_setting.from_history", {}))
+        step = next(x for x in out["steps"] if x["key"] == "manufacturer_setting.from_history")
+        c.check("is done as soon as it is started, with its proposals",
+                step["status"] == "done" and step["proposals"], step)
+        asyncio.run(device_learning.end(trv))
+    finally:
+        device_learning._history = real
+
     c.section("a discovery is evidence, like a probe")
     tmp = tempfile.mkdtemp(prefix="zmm_cls_")
     zigbee_cache.DB_PATH = str(Path(tmp) / "cache.duckdb")

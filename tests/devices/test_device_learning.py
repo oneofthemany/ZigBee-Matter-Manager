@@ -92,7 +92,7 @@ def run() -> Checker:
         keys = [s["key"] for s in st["steps"]]
         c.check("the outlet gets a switch test per socket and USB, a press per button, a setting "
                 "and the metering map",
-                keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.change_setting",
+                keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.from_history", "manufacturer_setting.change_setting",
                          "manufacturer_setting.set_number",
                          "manufacturer_setting.try_setting", "manufacturer_setting.try_behaviour", "metered_outlet.switch_test.1",
                          "metered_outlet.switch_test.2", "metered_outlet.switch_test.3",

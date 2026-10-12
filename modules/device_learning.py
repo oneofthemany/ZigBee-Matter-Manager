@@ -274,6 +274,8 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "this step flips settings one at a time: use Try"}
     if st.get("mode") == "summary":
         return {"success": False, "error": "this step is built from the others: run those"}
+    if st.get("mode") == "history":
+        return await _from_history(device, s, st)
     if not inputs and (s.results.get(key) or {}).get("inputs"):
         inputs = s.results[key]["inputs"]        # Redo: the same inputs as last time
     clean, err = _clean_inputs(st, inputs)
@@ -285,6 +287,47 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
     s.results[key] = {"status": "running", "proposals": []}
     logger.info(f"[{device.ieee}] Learning step {key} begun: {len(baseline)} of "
                 f"{len(_sample_targets(device, st, ctx))} attributes read, inputs {clean}")
+    return state(device)
+
+
+def _history(ieee: str):
+    """(vendor records, numeric states, text states) from both stores. Blocking."""
+    from modules.telemetry_db import query_device_state_series
+    from modules.zigbee_cache import get_vendor_history
+    known: Dict[str, list] = {}
+    texts: Dict[str, list] = {}
+    for t, name, value, numeric in query_device_state_series(ieee):
+        if numeric is not None:
+            known.setdefault(name, []).append((float(t), float(numeric)))
+        elif value is not None:
+            texts.setdefault(name, []).append((float(t), str(value)))
+    return get_vendor_history(ieee), known, texts
+
+
+async def _from_history(device, s: "Session", st: Dict[str, Any]) -> Dict[str, Any]:
+    """A step nobody acts for: conclude from what the device has already reported."""
+    from modules.learning_ops import OPS
+    from modules.learning_recipes import yields_allows
+    key = st["key"]
+    try:
+        records, known, texts = await asyncio.to_thread(_history, str(device.ieee))
+    except Exception as e:
+        logger.warning(f"[{device.ieee}] learning history unavailable: {e}")
+        return {"success": False, "error": "the device's history could not be read"}
+    ctx = {**_context(device, st), "known": known, "texts": texts}
+    proposals = []
+    for op in st["infer"]:
+        try:
+            got = OPS[op["op"]](records, {}, {**st, "inputs": {}}, ctx)
+        except Exception as e:
+            logger.warning(f"[{device.ieee}] {op['op']} failed: {e}")
+            got = []
+        proposals += [{**p, "op": op["op"]} for p in got
+                      if not p["path"] or yields_allows(op["yields"], p["path"])]
+    s.results[key] = {"status": "done", "proposals": proposals, "inputs": {}}
+    logger.info(f"[{device.ieee}] Learning step {key} from history: {len(records)} vendor "
+                f"values against {len(known)} states; "
+                + "; ".join(f"{p['confidence']}: {p['evidence']}" for p in proposals))
     return state(device)
 
 

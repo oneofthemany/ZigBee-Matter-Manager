@@ -6,6 +6,19 @@
   },
   "steps": [
     {
+      "id": "from_history",
+      "mode": "history",
+      "window_s": 5,
+      "inputs": [],
+      "instruction": "Nothing to do on the device. ZMM looks back over what it has reported since it joined, and proposes the maker's attributes that changed in step with something already known (a target temperature, say). The longer the device has been in use, the more this finds.",
+      "infer": [
+        {
+          "op": "attribute_that_tracked",
+          "yields": "zmm.settings"
+        }
+      ]
+    },
+    {
       "id": "change_setting",
       "instruction": "Name one setting, then change it on the device itself (its manual says how, e.g. holding a button to turn the LED off). Change only that one.",
       "inputs": [

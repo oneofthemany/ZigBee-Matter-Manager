@@ -10,6 +10,8 @@ holds each (ep, cluster, attr, mfr)'s last value before the step began.
 """
 from __future__ import annotations
 
+import re
+
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from modules.device_facts import mfr_hex, vendor_scoped
@@ -332,6 +334,93 @@ def attribute_that_became(records, baseline, step, ctx) -> List[Dict[str, Any]]:
                      + (f": stored x{scale}" if scale != 1 else ""))]
 
 
+# How far apart a vendor attribute and the state it mirrors may be recorded.
+TRACK_WINDOW_S = 30.0
+# Changes that must all agree, over at least two values, before it is no coincidence.
+TRACK_MIN_CHANGES = 3
+# Link quality moves all the time and means nothing about a setting.
+UNTRACKED_STATES = frozenset({"rssi", "lqi", "linkquality", "last_seen"})
+
+
+def _changes(series: List[Tuple[float, Any]]) -> List[Tuple[float, Any]]:
+    """The points where a series took a new value; its first is not a change."""
+    out, last = [], object()
+    for i, (t, v) in enumerate(sorted(series, key=lambda p: p[0])):
+        if i and v != last:
+            out.append((t, v))
+        last = v
+    return out
+
+
+def _in_force(series: List[Tuple[float, Any]], t: float) -> Any:
+    """The series' value as of `t`, allowing it to be recorded slightly later."""
+    held = None
+    for ts, v in series:
+        if ts > t + TRACK_WINDOW_S:
+            break
+        held = v
+    return held
+
+
+def attribute_that_tracked(records, baseline, step, ctx) -> List[Dict[str, Any]]:
+    """Vendor attributes whose every recorded change landed on a state the app
+    already knows (a setpoint, say), times a power of ten. Nobody acts: the
+    evidence is the device's own history, and says which text states (a
+    mode) held throughout, since the attribute may only apply under them."""
+    known = {n: sorted(s) for n, s in (ctx.get("known") or {}).items()
+             if n not in UNTRACKED_STATES and len({v for _, v in s}) > 1}
+    texts = {n: sorted(s) for n, s in (ctx.get("texts") or {}).items()
+             if len({v for _, v in s}) > 1}
+    writable = {k[:3]: (k[3], t) for k, t in (ctx.get("writable") or {}).items()}
+    # States recorded under several names are one state: keep the first name.
+    families: Dict[tuple, str] = {}
+    for name in sorted(known):
+        families.setdefault(tuple(v for _, v in _changes(known[name])), name)
+    series: Dict[Tuple[int, int, int], List[Tuple[float, Any]]] = {}
+    for r in records:
+        if vendor_scoped(r["cluster"], r.get("mfr")) and _num(r["value"]) is not None:
+            series.setdefault((r["ep"], r["cluster"], r["attr"]), []).append((r["t"], r["value"]))
+    out, used = [], set()
+    for key in sorted(series):
+        changes = _changes(series[key])
+        if not changes:
+            continue
+        ep, cluster, attr = key
+        where = f"EP{ep} 0x{cluster:04X}/0x{attr:04X}"
+        for name in sorted(set(families.values())):
+            scale = next((s for s in NUMBER_SCALES if all(
+                _num(_in_force(known[name], t)) is not None
+                and raw == round(_in_force(known[name], t) * s) for t, raw in changes)), None)
+            if scale is None:
+                continue
+            seen = f"{where} took {name}" + (f" x{scale}" if scale != 1 else "") \
+                + f" at each of its {len(changes)} changes"
+            if len(changes) < TRACK_MIN_CHANGES or len({raw for _, raw in changes}) < 2:
+                out.append(proposal("", None, "low", seen + ": too few to rule out chance"))
+                break
+            if key not in writable:
+                out.append(proposal("", None, "low", seen + ": read-only, so not a setting"))
+                break
+            held = [f"{n} was {v}" for n, ts in sorted(texts.items())
+                    for v in [_in_force(ts, changes[0][0])]
+                    if v is not None and all(_in_force(ts, t) == v for t, _ in changes)]
+            sid = re.sub(r"[^a-z0-9_]", "_", f"{name}_stored".lower())[:40]
+            if sid in used:
+                sid = f"{sid[:35]}_{attr:04x}"
+            used.add(sid)
+            mfr, type_name = writable[key]
+            setting = {"id": sid, "label": sid.replace("_", " ").capitalize(), "type": type_name,
+                       "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}",
+                       "mfr": mfr_hex(mfr), "values": {}}
+            if scale != 1:
+                setting["scale"] = scale
+            out.append(proposal("zmm.settings", setting, "high",
+                                seen + (f", all while {' and '.join(held)}" if held else "")))
+            break
+    return out or [proposal("", None, "none",
+                            "no vendor attribute has changed in step with a known state yet")]
+
+
 def correlate_blob_tags(records, baseline, step, ctx) -> List[Dict[str, Any]]:
     """Aqara blob tags whose value matches a known reading in the same step."""
     from handlers.aqara import parse_xiaomi_struct
@@ -384,6 +473,7 @@ OPS: Dict[str, Callable] = {
     "scale_from_known": scale_from_known,
     "attribute_that_toggled": attribute_that_toggled,
     "attribute_that_became": attribute_that_became,
+    "attribute_that_tracked": attribute_that_tracked,
     "correlate_blob_tags": correlate_blob_tags,
     "confirmed_write": confirmed_write,
     "power_follows_switch": power_follows_switch,

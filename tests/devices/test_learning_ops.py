@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from harness import Checker
 
-from modules.learning_ops import (attribute_that_toggled, correlate_blob_tags, metering_map,
+from modules.learning_ops import (attribute_that_toggled, attribute_that_tracked, correlate_blob_tags, metering_map,
                                   moved_endpoints, power_follows_switch, press_signature,
                                   scale_from_known, which_endpoint_changed, which_endpoints_moved)
 
@@ -156,6 +156,30 @@ def run() -> Checker:
     got = paths(p).get("zmm.settings") or {}
     c.check("left unnamed, a bool is Off/On and the label comes from the id",
             got.get("values") == {"0": "Off", "1": "On"} and got.get("label") == "Child lock", p)
+
+    c.section("a setting found in the device's own history")
+    def hist(attr, points):
+        return [{"t": t, "ep": 1, "cluster": 0xFC11, "attr": attr, "mfr": None, "value": v}
+                for t, v in points]
+    setpoint = [(0, 19.0), (100, 16.0), (200, 19.0), (300, 15.0), (405, 19.0)]
+    ctx = {"writable": {(1, 0xFC11, 0x6009, None): "int16", (1, 0xFC11, 0x600A, None): "int16"},
+           "known": {"heating_setpoint": setpoint, "target_temp": setpoint,
+                     "rssi": [(0, -60.0), (100, -1600.0)]},
+           "texts": {"system_mode": [(0, "heat"), (400, "auto")]}}
+    records = hist(0x6009, [(5, 1900), (105, 1600), (204, 1900), (303, 1500)]) \
+        + hist(0x600A, [(5, 0), (410, 1900)]) + hist(0x6003, [(5, 165), (500, 165)])
+    p = attribute_that_tracked(records, {}, {}, ctx)
+    got = paths(p).get("zmm.settings") or {}
+    c.check("the attribute that followed the setpoint at every change is proposed with its scale",
+            (got.get("attr"), got.get("scale"), got.get("id")) == ("0x6009", 100, "heating_setpoint_stored"), p)
+    c.check("the mode that held throughout is in the evidence",
+            any("system_mode was heat" in x["evidence"] for x in p if x["path"]), p)
+    c.check("one change is reported but not proposed",
+            any(not x["path"] and "0x600A" in x["evidence"] for x in p), p)
+    c.check("an attribute that never changed is not mentioned",
+            not any("0x6003" in x["evidence"] for x in p), p)
+    p = attribute_that_tracked(hist(0x6009, [(5, 1900), (105, 1601), (204, 1900), (303, 1500)]), {}, {}, ctx)
+    c.check("one change that disagrees rules it out", not paths(p), p)
 
     c.section("blob tags against known readings")
     p = correlate_blob_tags([rec(1, 0xFCC0, 0x00F7, AEU002_F7, 0x115F)], {}, step(1, rating_w=2000),
