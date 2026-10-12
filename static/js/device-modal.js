@@ -12,7 +12,6 @@ import { renderOverviewTab, saveConfig } from './modal/overview.js';
 import { renderControlTab, updateControlValues, refreshHeatingManaged } from './modal/control.js';
 import { renderBindingTab } from './modal/binding.js';
 import { renderCapsTab } from './modal/clusters.js';
-import { renderIdentityTab, initIdentityTab } from './modal/identity.js';
 import { renderAutomationTab, initAutomationTab } from './modal/automation.js';
 import { renderProfileTab, initProfileTab, cleanupProfileInspector } from './modal/profile.js';
 import { bindScheduleEvents } from './modal/schedule.js';
@@ -123,7 +122,7 @@ export async function openDeviceModal(d) {
                 <ul class="dropdown-menu dropdown-menu-end">
                     ${isZigbee
                         ? devMenuTab('tab-binding', 'Binding') + devMenuTab('tab-caps', 'Clusters')
-                          + devMenuTab('tab-identity', 'Identity') + devMenuTab('tab-profile', 'Profile')
+                          + devMenuTab('tab-profile', 'Device definition')
                         : devMenuTab('tab-caps', 'Clusters') + devMenuTab('tab-endpoints', 'Endpoints')}
                 </ul>
             </li>
@@ -151,11 +150,6 @@ export async function openDeviceModal(d) {
             <div class="tab-pane fade" id="tab-caps">
                 ${isZigbee ? renderCapsTab(cachedDev) : renderMatterClustersTab(cachedDev)}
             </div>
-            ${isZigbee ? `
-            <div class="tab-pane fade" id="tab-identity">
-                ${renderIdentityTab(cachedDev)}
-            </div>
-            ` : ''}
             ${!isZigbee ? `
             <div class="tab-pane fade" id="tab-endpoints">
                 ${renderMatterEndpointsTab(cachedDev)}
@@ -205,11 +199,6 @@ export async function openDeviceModal(d) {
     // Bind schedule calendar events for thermostat devices
     if (hasCluster(cachedDev, 0x0201)) {
         bindScheduleEvents(cachedDev.ieee);
-    }
-
-    const identityTab = modalBody.querySelector('[data-bs-target="#tab-identity"]');
-    if (identityTab && cachedDev.ieee) {
-        identityTab.addEventListener('shown.bs.tab', () => initIdentityTab(cachedDev.ieee));
     }
 
     // Hydrate automation tab when clicked (lazy load API data)

@@ -345,7 +345,7 @@ class DeviceLifecycleMixin:
             # attribute mappings) OR when the device has any learned IEEE
             # mappings (state-key mappings cover Tuya DPs / derived keys).
             if isinstance(changed_data, dict) and changed_data and (
-                    any(k.startswith("cluster_") for k in changed_data)
+                    any(k.startswith(("cluster_", "attr_")) for k in changed_data)
                     or get_profile_store().has_ieee_mappings(zha_device.ieee)
                     or getattr(zha_device, "_profile_live_transform", False)):
                 merged = {**zha_device.state, **changed_data}

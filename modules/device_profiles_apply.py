@@ -126,6 +126,14 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
                         continue
                     profile_attrs[(cid, aid)] = attr
 
+    # An entry's setting names the attribute it writes, so the same definition
+    # names what the device reports for it: one name for both directions.
+    settings: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    for st in ((profile or {}).get("zmm") or {}).get("settings") or []:
+        cid, aid = _to_int(st.get("cluster")), _to_int(st.get("attr"))
+        if cid is not None and aid is not None and st.get("ep") != "each":
+            settings[(cid, aid)] = st
+
     for key, raw_value in list(out.items()):
         # Two spellings of an unnamed attribute: cluster_XXXX_attr_YYYY from the
         # generic handler, attr_XXXX_YYYY from a registered handler's fallback
@@ -139,6 +147,14 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
             else:
                 continue
         except ValueError:
+            continue
+
+        setting = settings.get((cid, aid))
+        if setting is not None:
+            from modules.zmm_settings import _from_raw
+            # The report is the device's own word: it replaces what a write left.
+            out[setting["id"]] = _from_raw(setting, int(raw_value) if isinstance(raw_value, bool)
+                                           else raw_value)
             continue
 
         mapping = mappings.get(key) or profile_attrs.get((cid, aid))

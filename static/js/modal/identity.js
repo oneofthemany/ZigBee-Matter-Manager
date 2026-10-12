@@ -52,7 +52,7 @@ function decisionRow(ep, d) {
         <td><span class="badge bg-dark">${escapeHtml(d.value ?? '—')}</span></td>
         <td><span class="badge ${cls}">${escapeHtml(label)}</span></td>
         <td class="small">${escapeHtml(d.reason || '')}${change}</td>
-        <td class="text-end text-nowrap">${confirm}${choices}${reset}</td>
+        <td class="text-end"><div class="d-flex flex-wrap justify-content-end gap-1">${confirm}${choices}${reset}</div></td>
     </tr>`;
 }
 
@@ -98,7 +98,7 @@ function endpointCard(ep) {
             <span class="ms-auto small text-muted">type ${escapeHtml(ep.device_type)} · ${escapeHtml(ep.in_clusters.join(' '))}</span>
         </div>
         <div class="card-body p-0">
-            <table class="table table-sm mb-0 align-middle"><tbody>${rows}</tbody></table>
+            <div class="table-responsive"><table class="table table-sm mb-0 align-middle"><tbody>${rows}</tbody></table></div>
         </div>
     </div>`;
 }
@@ -124,29 +124,7 @@ function render(root, data) {
         </div>
         ${deviceClassCard(data.device_class)}
         ${data.endpoints.map(endpointCard).join('')}
-        <div class="mt-2">
-            <button class="btn btn-outline-secondary btn-sm" data-identity-draft>Draft ZMM entry</button>
-            <div data-identity-draft-panel></div>
-        </div>
         ${renderLearningPanel()}`;
-}
-
-function renderDraft(root, data) {
-    const panel = root.querySelector('[data-identity-draft-panel]');
-    if (!panel) return;
-    if (!data.success) {
-        panel.innerHTML = `<div class="alert alert-danger small py-1 mt-2">${escapeHtml(data.error)}</div>`;
-        return;
-    }
-    const candidates = (data.candidates || []).map(c =>
-        `<li><code>EP${c.ep} ${escapeHtml(c.cluster)}/${escapeHtml(c.attr)}</code>
-             ${escapeHtml(c.type || '')}${c.value !== undefined && c.value !== null ? ` = ${escapeHtml(c.value)}` : ''}</li>`).join('');
-    panel.innerHTML = `
-        <div class="small text-muted mt-2">Only what the evidence supports is filled in. Review, then save as your profile for this model.</div>
-        <textarea class="form-control font-monospace small mt-1" rows="16" data-identity-draft-json>${escapeHtml(JSON.stringify(data.entry, null, 2))}</textarea>
-        <button class="btn btn-primary btn-sm mt-2" data-identity-draft-save>Save as my profile</button>
-        ${candidates ? `<div class="small mt-2">Writable manufacturer attributes (name them by trying them before adding as settings):
-            <ul class="mb-0">${candidates}</ul></div>` : ''}`;
 }
 
 function send(root, ieee, body) {
@@ -216,23 +194,6 @@ export async function initIdentityTab(ieee) {
                     t.dataset.armed = '1';
                     t.textContent = 'Confirm delete';
                 }
-                return;
-            }
-            if (t.dataset.identityDraft !== undefined) {
-                fetch(`/api/device/${encodeURIComponent(ieee)}/identity/draft`)
-                    .then(r => r.json()).then(d => renderDraft(root, d))
-                    .catch(e => renderDraft(root, { success: false, error: e.message }));
-                return;
-            }
-            if (t.dataset.identityDraftSave !== undefined) {
-                let entry;
-                try {
-                    entry = JSON.parse(root.querySelector('[data-identity-draft-json]').value);
-                } catch (e) {
-                    renderDraft(root, { success: false, error: `Not valid JSON: ${e.message}` });
-                    return;
-                }
-                sendTo(root, `/api/device/${encodeURIComponent(ieee)}/identity/draft`, { entry });
                 return;
             }
             if (t.dataset.identitySet !== undefined) {

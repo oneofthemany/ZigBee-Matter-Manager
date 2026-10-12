@@ -126,6 +126,15 @@ def run() -> Checker:
     c.check("the generic handler's key still is", out.get("mode") == "comfort", out)
     c.check("an attribute the entry does not name is left alone",
             out.get("attr_fc99_0009") == 4 and len(out) == 5, out)
+    device_profiles._store = _Store(normalise_profile(
+        {"id": "X1", "match": {"model": "X1", "manufacturer": "Acme"}, "zmm": {"settings": [
+            {"id": "child_lock", "type": "bool", "ep": 1, "cluster": "0xFC99", "attr": "0x0000"},
+            {"id": "frost_temperature", "type": "int16", "ep": 1, "cluster": "0xFC99",
+             "attr": "0x0002", "scale": 100}]}}))
+    out = transform_state_with_profile(dev, {"attr_fc99_0000": True, "attr_fc99_0002": 700,
+                                             "child_lock": 0})
+    c.check("a setting's report is filed under the setting's name, over what a write left",
+            out.get("child_lock") == 1 and out.get("frost_temperature") == 7.0, out)
     device_profiles._store = None
 
     c.section("learning a numeric setting by setting it on the device")

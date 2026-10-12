@@ -13,12 +13,13 @@
 
 import { state } from '../state.js';
 import { createSignalInspector } from './signals.js';
+import { renderIdentityTab, initIdentityTab } from './identity.js';
 
 // Module-level cache for the currently-open device
 
 let _data = null;               // last response from /api/profiles/device/{ieee}
 let _draft = null;              // profile draft being edited in Assemble view
-let _activeSubview = 'signals'; // 'discover' | 'signals' | 'assemble'
+let _activeSubview = 'identity'; // 'identity' | 'signals' | 'discover' | 'assemble'
 let _deviceTypes = null;        // cached /api/profiles/device_types result
 let _inspector = null;          // Signal Inspector instance mounted in Signals subview
 
@@ -97,7 +98,7 @@ function _render(root, ieee) {
         ? `${profile.device_type} · ${profile.protocol}`
         : 'No profile applied';
     const matchLine = profile
-        ? `Matched <code>${_esc(profile.id)}</code> ${profile.meta?.source === 'bundled' ? '(bundled)' : '(user)'}`
+        ? `Matched <code>${_esc(profile.id)}</code> (${_esc({ bundled: 'bundled', zmm: 'ZMM entry' }[profile.meta?.source] || 'yours')})`
         : 'This device is using built-in handlers only. Map attributes below or build a profile.';
 
     root.innerHTML = `
@@ -112,10 +113,11 @@ function _render(root, ieee) {
             </div>
         </div>
 
-        <ul class="nav nav-pills nav-justified mb-3" id="profileSubNav" role="tablist">
-            <li class="nav-item"><button class="nav-link ${_activeSubview === 'discover' ? 'active' : ''}" data-sub="discover"><i class="fas fa-search"></i> Discover</button></li>
-            <li class="nav-item"><button class="nav-link ${_activeSubview === 'signals' ? 'active' : ''}"  data-sub="signals"><i class="fas fa-wave-square"></i> Signals</button></li>
-            <li class="nav-item"><button class="nav-link ${_activeSubview === 'assemble' ? 'active' : ''}" data-sub="assemble"><i class="fas fa-cube"></i> Assemble</button></li>
+        <ul class="nav nav-pills nav-fill flex-nowrap mb-3" id="profileSubNav" role="tablist">
+            <li class="nav-item"><button class="nav-link text-nowrap px-2 ${_activeSubview === 'identity' ? 'active' : ''}" data-sub="identity"><i class="fas fa-fingerprint d-none d-sm-inline"></i> Identity</button></li>
+            <li class="nav-item"><button class="nav-link text-nowrap px-2 ${_activeSubview === 'signals' ? 'active' : ''}"  data-sub="signals"><i class="fas fa-wave-square d-none d-sm-inline"></i> Signals</button></li>
+            <li class="nav-item"><button class="nav-link text-nowrap px-2 ${_activeSubview === 'discover' ? 'active' : ''}" data-sub="discover"><i class="fas fa-search d-none d-sm-inline"></i> Discover</button></li>
+            <li class="nav-item"><button class="nav-link text-nowrap px-2 ${_activeSubview === 'assemble' ? 'active' : ''}" data-sub="assemble"><i class="fas fa-cube d-none d-sm-inline"></i> Assemble</button></li>
         </ul>
 
         <div id="profileSubBody"></div>
@@ -132,6 +134,7 @@ function _render(root, ieee) {
     });
 
     const body = root.querySelector('#profileSubBody');
+    if (_activeSubview === 'identity') _renderIdentity(body, ieee);
     if (_activeSubview === 'discover') _renderDiscover(body, ieee);
     if (_activeSubview === 'signals')  _renderSignals(body, ieee);
     if (_activeSubview === 'assemble') _renderAssemble(body, ieee);
@@ -140,6 +143,14 @@ function _render(root, ieee) {
 // SUBVIEW: SIGNALS — the unified live-signal + learn + mapped surface.
 // Replaces the old "Map" subview; the Signal Inspector component does all
 // per-device mapping (values, Tuya DPs, command→action, promote to profile).
+
+// SUBVIEW: IDENTITY — what the device is, why, and the guided learning that
+// settles what the evidence could not (modal/identity.js, modal/learning.js).
+
+function _renderIdentity(container, ieee) {
+    container.innerHTML = renderIdentityTab({ ieee });
+    initIdentityTab(ieee);
+}
 
 function _renderSignals(container, ieee) {
     container.innerHTML = '<div class="signal-inspector-mount"></div>';
