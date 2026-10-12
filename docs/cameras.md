@@ -142,6 +142,7 @@ zones (Settings → Security → Alarm).
 |---|---|
 | Watch, snapshots, list | `camera:read` |
 | Add, edit, remove, discover, go2rtc | admin |
+| People: see and enrol faces | `vision:enrol` (no built-in group has it) — [vision.md](vision.md) §Faces |
 | A camera's name and motion in the device list | `device:read` (no video) |
 
 `camera:read` is not part of `device:*` (see [auth.md](auth.md)). The default

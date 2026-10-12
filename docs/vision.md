@@ -17,7 +17,9 @@ on the hub; no picture leaves it.
 
 What each signal covers: `person`; `vehicle` — car, truck, bus, motorcycle,
 bicycle; `animal` — cat, dog, bird, horse, sheep, cow, bear. There is no
-package or face detection: the model (§Models) doesn't know them.
+package detection: the model (§Models) doesn't know them. People can be
+enrolled for face recognition (§Faces); recognising them on the cameras is not
+built yet.
 
 Notification rules have **Person / Vehicle / Animal seen on camera** triggers,
 and a notification about a camera can carry the detected frame — see
@@ -74,6 +76,61 @@ fractions of the picture. The detector sees the same picture stretched to
 the model resizes to a square anyway, so the stretch costs it nothing. (A
 non-16:9 camera's **Last detection** frame looks stretched for the same reason.)
 
+## Faces
+
+Cameras → **People**: who face recognition knows. So far this is enrolment
+only — nothing recognises anyone on a camera yet; the plan is
+[plans/vision-enrolment.md](plans/vision-enrolment.md).
+
+A person is a name and pictures of their face:
+
+- **Photos** — four posed ones: **Front**, **Left**, **Right** and **Tilt**
+  (head tipped down, as a camera above the door sees it). One per slot; a new
+  one replaces the old. Taken with the phone's camera or picked from its
+  library. The browser shrinks the picture and drops its EXIF before sending,
+  so where it was taken never leaves the phone.
+- **From cameras** — *Look now* takes the camera's full-resolution still and
+  lists every face in it, each with who it looks like; **This is …** adds one to
+  the person. Up to 40 each. These teach more than phone photos: the real lens,
+  angle and light, by day and by night. *Use a saved picture* does the same
+  with an uploaded one.
+
+What a picture is checked for:
+
+| | |
+|---|---|
+| No face, or the file isn't a picture | refused |
+| Two faces of similar size (a posed photo only) | refused — it can't tell whose it is |
+| Under 24 px between the eyes | refused: too little face to compare |
+| Front photo that's turned; Left / Right that's straight on; Tilt that isn't | kept, with a note |
+
+Pose is measured from the face, not taken from the slot. Left and right are as
+the picture shows them — a mirrored selfie swaps them, and recognition needs
+both sides, not which is which.
+
+**How well it holds together.** Every picture carries a score against the same
+person's other pictures: *strong* (0.5 and up), *ok*, or *weak* (under the
+match threshold, 0.363) — a weak one is a poor photo or the wrong person, and
+worth replacing. A person whose pictures come close to someone else's gets a
+warning naming them; more camera pictures of both is the cure.
+
+**Who.** `vision:enrol` sees and changes faces; `camera:read` alone does
+neither, and *Look now* needs both. No built-in group has it
+([auth.md](auth.md)).
+
+**Where it's kept.** `data/vision/gallery/`, owned by the sidecar:
+`people.json`, and per person `<id>/samples.json` plus `<sample>.jpg` — the
+aligned 112×112 face, never the whole photo. The crop is kept so a later model
+can re-read it rather than everyone enrolling again. Removing a person removes
+the folder. A person's id is fixed when they're added and survives renaming.
+The gallery is **not in backups** yet.
+
+**How.** `vision/faces.py`: YuNet finds faces and five landmarks on a copy at
+most 640 px across; the face is aligned from the original picture, measured,
+and turned into a 128-number vector by SFace. Two vectors are compared by
+cosine. About 180 ms a face on the reference hub's CPU. The models download on
+the first picture (about 40 MB), which can take a minute.
+
 ## Metrics
 
 The sidecar appends a sample every 30 s to `data/vision/metrics.jsonl`: the
@@ -124,7 +181,11 @@ with the CPU's; the CPU path is exercised end to end.
 ## Models
 
 SSDLite MobileDet, COCO, 320×320 (Google, Apache-2.0), in CPU and Edge TPU
-builds. The models, the label list and the Edge TPU library are not in the app
+builds. For faces: YuNet (MIT) and SFace (Apache-2.0), both from OpenCV Zoo,
+run by ONNX Runtime on the CPU, fetched only when someone is first enrolled.
+Like every face model, SFace was trained on photos of people who were not
+asked; why it was still chosen is in
+[plans/vision-enrolment.md](plans/vision-enrolment.md) §1. The models, the label list and the Edge TPU library are not in the app
 image: `vision/assets.py` downloads them on first start into
 `data/vision/models/`, each from a fixed URL and checked against a pinned
 SHA-256. The Edge TPU library is a build made for the TFLite version
@@ -151,6 +212,12 @@ Loopback only (`127.0.0.1:8556`), bearer token from `data/vision/token`
 | `PUT /config` | `{cameras: [{id, url, labels, threshold, fps?, zones?, zones_only?}]}` — held in memory only, since URLs carry go2rtc's password |
 | `GET /snapshot/<id>.jpg` | the latest detection's frame, boxes and zones drawn |
 | `GET /frame/<id>.jpg` | the frame the detector sees now, zones outlined |
+| `GET /faces` | people, their pictures (never the vectors), each picture's agreement and each person's nearest other |
+| `POST /faces` `{name}` · `PATCH /faces/<id>` `{name}` · `DELETE /faces/<id>` | add, rename, remove a person |
+| `PUT /faces/<id>/slot/<front\|left\|right\|down>` | image body: the posed photo for that slot; 422 with the reason if it can't be used |
+| `POST /faces/detect[?camera=<id>]` | image body: every face, largest first, with a thumbnail and its best match; held 10 minutes under the returned `token` |
+| `POST /faces/<id>/samples` `{token, face}` | add one of those faces to a person |
+| `DELETE /faces/<id>/samples/<sample>` · `GET /faces/<id>/<sample>.jpg` | remove a picture; its crop |
 
 Presence is keyed `person`, and `person:<zone>` for a zone; the app stores the
 latter as `person_<zone>`.
@@ -166,6 +233,7 @@ sidecar has none), and clears every object signal if the sidecar goes away.
 | `PUT /api/cameras/{id}` | `detect: {enabled, labels, threshold, url?, zones_only?, zones?: [{id?, name, points: [[x, y]…], labels?}]}`; leaving `zones` out keeps them, and sending a zone's `id` back keeps its signals through a rename |
 | `GET /api/cameras/{id}/detection` | latest detection frame (JPEG), `camera:read`; `?view=frame` for what the detector sees now |
 | `GET /api/cameras/vision` | sidecar reachability, backend, per-camera health (admin) |
+| `/api/vision/faces…` | the sidecar's `/faces` API, `vision:enrol`: `GET`, `POST {name}`, `PATCH`/`DELETE /{id}`, `PUT /{id}/slot/{slot}` (image body), `POST /detect` (image body), `POST /detect/camera/{camera}` (also `camera:read`), `POST /{id}/samples {token, face}`, `DELETE`/`GET /{id}/samples/{sample}` |
 
 In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 `POST /vision/enable`, `/vision/disable` `{remove?}`, `/vision/restart`,
@@ -173,7 +241,9 @@ In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 
 ## Not yet
 
-Per-object counts, GPU and Hailo backends, and larger models.
+Recognising enrolled people on the cameras, known objects and zone states
+([plans/vision-enrolment.md](plans/vision-enrolment.md)); per-object counts,
+GPU and Hailo backends, and larger models.
 
 ## Hardware
 

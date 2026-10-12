@@ -58,6 +58,7 @@ Permissions are expressed as dotted strings like `device:write` or
 | `security:write`       | Lock and unlock; arm and disarm (disarming also needs your PIN). |
 | `camera:read`          | Watch camera streams and snapshots.                      |
 | `camera:write`         | Reserved; camera setup is admin.                         |
+| `vision:enrol`         | See and change who face recognition knows.               |
 | `presence:read`        | Read presence-user state.                                |
 | `presence:write`       | Update **any** user's presence.                          |
 | `presence:write:<id>`  | Update **only** the named user's presence (mobile-app token). |
@@ -74,6 +75,9 @@ inside of the house. The default `users` group has `camera:read`, `viewers`
 does not. Upgrading to auth schema 3 gives `camera:read` to every group and
 user that already held `security:write` — people trusted with the front door —
 and to no token.
+
+`vision:enrol` is held by no built-in group. Faces are biometric: who may see
+and enrol them is given by name, to a user or a group, or left with admins.
 
 ### How a scope is enforced
 

@@ -42,3 +42,6 @@ aioesphomeapi==29.0.0
 # TFLite runtime for the object-detection sidecar (docs/vision.md). Exact pin:
 # the Edge TPU library vision/assets.py fetches is built against its TFLite 2.19.
 ai-edge-litert==1.2.0
+# Decoding stills and enrolment photos in the vision sidecar: ffmpeg per image
+# costs ~450 ms of process start on the hub (docs/plans/vision-enrolment.md §7).
+pillow

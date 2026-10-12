@@ -293,6 +293,8 @@ pexpect==4.9.0
     # via ipython
 phonemizer-fork==3.3.1
     # via kokoro-onnx
+pillow==12.3.0
+    # via -r requirements.txt
 platformdirs==4.10.0
     # via midea-local
 prompt-toolkit==3.0.52

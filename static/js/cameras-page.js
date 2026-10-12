@@ -1,5 +1,6 @@
-/* Cameras tab, as three views: Live (the grid, anyone with camera:read),
-   Recordings, and Settings (admin: the sidecars' state and the camera list).
+/* Cameras tab, as four views: Live (the grid, anyone with camera:read),
+   Recordings, People (vision:enrol: who face recognition knows) and Settings
+   (admin: the sidecars' state and the camera list).
    A camera is added and edited in its own window, a tab per concern.
    Backend: modules/cameras.py, modules/go2rtc.py — docs/cameras.md. */
 
@@ -7,6 +8,7 @@ import { escapeHtml } from './utils.js';
 import { attachPlayer } from './camera-player.js';
 import { mountZoneEditor } from './camera-zones.js';
 import { renderRecordings } from './camera-recordings.js';
+import { renderPeople } from './camera-people.js';
 
 let cameras = [];
 const players = new Map();            // id -> player, only for cards on screen
@@ -400,12 +402,13 @@ async function show(root, next) {
         b.classList.toggle('active', on);
         b.setAttribute('aria-selected', String(on));
     });
-    for (const v of ['live', 'recordings', 'settings']) root.querySelector(`#cam-view-${v}`)?.classList.toggle('d-none', v !== next);
+    for (const v of ['live', 'recordings', 'people', 'settings']) root.querySelector(`#cam-view-${v}`)?.classList.toggle('d-none', v !== next);
     // Streams run only while Live is showing.
     if (next === 'live') renderGrid(root); else stopAll();
     recordingsView?.stop();
     recordingsView = null;
     if (next === 'recordings') recordingsView = await renderRecordings(root.querySelector('#cam-view-recordings'), cameras);
+    if (next === 'people') await renderPeople(root.querySelector('#cam-view-people'), cameras);
     if (next === 'settings') await renderSettings(root);
 }
 
@@ -415,6 +418,7 @@ function render(root) {
         return;
     }
     const tabs = [['live', 'fa-video', 'Live'], ['recordings', 'fa-film', 'Recordings'],
+                  ...(can('vision:enrol') ? [['people', 'fa-user-group', 'People']] : []),
                   ...(isAdmin() ? [['settings', 'fa-gear', 'Settings']] : [])];
     root.innerHTML = `
         <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
@@ -427,9 +431,10 @@ function render(root) {
         <div id="cam-error"></div>
         <div id="cam-view-live"><div class="row g-2" id="cam-grid"></div></div>
         <div id="cam-view-recordings" class="d-none"></div>
+        <div id="cam-view-people" class="d-none"></div>
         <div id="cam-view-settings" class="d-none"></div>`;
     root.querySelectorAll('[data-cam-view]').forEach(b => b.addEventListener('click', () => show(root, b.dataset.camView)));
-    refresh(root).then(() => show(root, view === 'settings' && !isAdmin() ? 'live' : view));
+    refresh(root).then(() => show(root, tabs.some(t => t[0] === view) ? view : 'live'));
 }
 
 export function openCameraModal(id) {

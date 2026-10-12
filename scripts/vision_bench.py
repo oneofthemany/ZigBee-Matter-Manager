@@ -24,6 +24,9 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from vision.faces import SFace, YuNet, align, measure as pose, resize, sharpness  # noqa: E402
+
 _ZOO = "https://github.com/opencv/opencv_zoo/raw/47534e27c9851bb1128ccc0102f1145e27f23f98/models/"
 _CORAL = "https://raw.githubusercontent.com/google-coral/test_data/104342d2d3480b3e66203073dac24f4e2dbb4c41/"
 
@@ -47,12 +50,6 @@ MODELS = {
                                   "33a249155302975d7e28f72a5250903cdf7f7afb7bd1ceec3d2cd8ca9ce6a609"),
     "face.jpg": (_CORAL + "face.jpg", "270e2bb9a1dce26a042baea93dbc4118d2f9b243c822ae5687ced52715048c56"),
 }
-
-# Where the five landmarks sit in the 112x112 crop face embedders are trained on:
-# eyes, nose tip, mouth corners (subject's right first).
-TEMPLATE = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
-                     [41.5493, 92.3655], [70.7299, 92.2041]], np.float32)
-
 
 def fetch(name: str, root: Path) -> Path:
     url, want = MODELS[name]
@@ -100,134 +97,6 @@ def _draft(Image, path: Path, w: int, h: int) -> np.ndarray:
     im = Image.open(path)
     im.draft("RGB", (w, h))                                     # JPEG decodes at 1/2, 1/4, 1/8 for free
     return np.asarray(im.convert("RGB"))
-
-
-def resize(img: np.ndarray, w: int, h: int) -> np.ndarray:
-    """Bilinear, numpy only."""
-    ih, iw = img.shape[:2]
-    ys = np.clip((np.arange(h) + 0.5) * ih / h - 0.5, 0, ih - 1)
-    xs = np.clip((np.arange(w) + 0.5) * iw / w - 0.5, 0, iw - 1)
-    return _sample(img, *np.meshgrid(xs, ys))
-
-
-def _sample(img: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    ih, iw = img.shape[:2]
-    x0 = np.clip(np.floor(x).astype(np.intp), 0, iw - 1)
-    y0 = np.clip(np.floor(y).astype(np.intp), 0, ih - 1)
-    x1, y1 = np.minimum(x0 + 1, iw - 1), np.minimum(y0 + 1, ih - 1)
-    fx, fy = (x - x0)[..., None], (y - y0)[..., None]
-    f = img.astype(np.float32)
-    top = f[y0, x0] * (1 - fx) + f[y0, x1] * fx
-    bot = f[y1, x0] * (1 - fx) + f[y1, x1] * fx
-    return (top * (1 - fy) + bot * fy).astype(np.uint8)
-
-
-# ---- faces
-
-def ort_session(path: Path, threads: int):
-    import onnxruntime as ort
-    o = ort.SessionOptions()
-    o.intra_op_num_threads, o.inter_op_num_threads = threads, 1
-    o.log_severity_level = 3
-    return ort.InferenceSession(str(path), o, providers=["CPUExecutionProvider"])
-
-
-class YuNet:
-    """Anchor-free: per stride, one prediction per grid cell, offsets in cell units."""
-
-    def __init__(self, path: Path, threads: int):
-        self.s = ort_session(path, threads)
-        shape = self.s.get_inputs()[0].shape
-        self.fixed = shape[2] if isinstance(shape[2], int) else None
-
-    def detect(self, rgb: np.ndarray, min_score: float = 0.6) -> list:
-        h, w = rgb.shape[:2]
-        if self.fixed:
-            ph = pw = self.fixed
-        else:                                                   # pad up to the coarsest stride
-            ph, pw = -(-h // 32) * 32, -(-w // 32) * 32
-        pad = np.zeros((ph, pw, 3), np.float32)
-        pad[:h, :w] = rgb[:ph, :pw, ::-1]                       # the model reads BGR, 0-255
-        out = dict(zip([o.name for o in self.s.get_outputs()],
-                       self.s.run(None, {"input": pad.transpose(2, 0, 1)[None]})))
-        faces = []
-        for st in (8, 16, 32):
-            cols = pw // st
-            score = np.sqrt(np.clip(out[f"cls_{st}"][0, :, 0], 0, 1) * np.clip(out[f"obj_{st}"][0, :, 0], 0, 1))
-            for i in np.nonzero(score >= min_score)[0]:
-                r, c = divmod(int(i), cols)
-                bx = out[f"bbox_{st}"][0, i]
-                cx, cy = (c + bx[0]) * st, (r + bx[1]) * st
-                bw, bh = np.exp(bx[2]) * st, np.exp(bx[3]) * st
-                kp = out[f"kps_{st}"][0, i].reshape(5, 2)
-                kp = (kp + [c, r]) * st
-                faces.append((float(score[i]), (cx - bw / 2, cy - bh / 2, bw, bh), kp.astype(np.float32)))
-        return nms(faces)
-
-
-def nms(faces: list, iou: float = 0.3) -> list:
-    keep = []
-    for f in sorted(faces, key=lambda f: -f[0]):
-        x, y, w, h = f[1]
-        if all(_iou((x, y, w, h), k[1]) < iou for k in keep):
-            keep.append(f)
-    return keep
-
-
-def _iou(a, b) -> float:
-    ix = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
-    inter = ix * iy
-    return inter / (a[2] * a[3] + b[2] * b[3] - inter + 1e-9)
-
-
-def similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
-    """2x3 least-squares rotation + scale + shift taking src points onto dst (Umeyama)."""
-    ms, md = src.mean(0), dst.mean(0)
-    s, d = src - ms, dst - md
-    u, sig, vt = np.linalg.svd(d.T @ s / len(src))
-    e = np.diag([1.0, np.sign(np.linalg.det(u @ vt))])
-    rot = u @ e @ vt
-    scale = (sig * np.diag(e)).sum() / s.var(0).sum()
-    m = np.zeros((2, 3), np.float32)
-    m[:, :2] = scale * rot
-    m[:, 2] = md - scale * rot @ ms
-    return m
-
-
-def align(rgb: np.ndarray, kp: np.ndarray) -> np.ndarray:
-    m = similarity(kp, TEMPLATE)
-    inv = np.linalg.inv(np.vstack([m, [0, 0, 1]]))[:2]         # output pixel -> source pixel
-    gx, gy = np.meshgrid(np.arange(112, dtype=np.float32), np.arange(112, dtype=np.float32))
-    sx = inv[0, 0] * gx + inv[0, 1] * gy + inv[0, 2]
-    sy = inv[1, 0] * gx + inv[1, 1] * gy + inv[1, 2]
-    return _sample(rgb, sx, sy)
-
-
-def pose(kp: np.ndarray) -> dict:
-    """Yaw: nose across the eye line, in eye widths (+ = nose toward image right).
-    Pitch: nose down the eye-to-mouth span (larger = head further down)."""
-    eyes, nose, mouth = kp[:2].mean(0), kp[2], kp[3:].mean(0)
-    ew = float(np.linalg.norm(kp[1] - kp[0])) or 1.0
-    span = float(mouth[1] - eyes[1]) or 1.0
-    return {"yaw": round(float(nose[0] - eyes[0]) / ew, 2),
-            "pitch": round(float(nose[1] - eyes[1]) / span, 2), "eye_px": round(ew, 1)}
-
-
-def sharpness(face: np.ndarray) -> float:
-    g = face.astype(np.float32) @ [0.299, 0.587, 0.114]
-    lap = g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:] - 4 * g[1:-1, 1:-1]
-    return round(float(lap.var()), 1)
-
-
-class SFace:
-    def __init__(self, path: Path, threads: int):
-        self.s = ort_session(path, threads)
-
-    def embed(self, face: np.ndarray) -> np.ndarray:
-        x = face.astype(np.float32).transpose(2, 0, 1)[None]    # RGB, 0-255
-        v = self.s.run(None, {"data": x})[0][0]
-        return v / (np.linalg.norm(v) + 1e-9)
 
 
 # ---- generic embedders (objects, zone states)
@@ -348,7 +217,6 @@ def speed(args) -> None:
             rec(f"{model.split('.')[0]} cpu", threads, timed(lambda: run(x224), n))
 
     if args.coral:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from vision import assets
         lib = assets.edgetpu_library(Path(args.coral_assets))
         x224 = resize(img, 224, 224)
@@ -438,7 +306,6 @@ def coral_check(args) -> None:
         print("selinux context:", open("/proc/self/attr/current").read().strip("\x00\n"))
     except OSError:
         pass
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from vision import assets
     lib = str(assets.edgetpu_library(Path(args.coral_assets)))
     from ai_edge_litert.interpreter import load_delegate

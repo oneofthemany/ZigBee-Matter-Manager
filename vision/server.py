@@ -18,12 +18,14 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 from . import GROUPS
+from . import faces as F
 from . import zones as Z
 from .worker import CameraWorker, encode_jpeg
 
 logger = logging.getLogger("vision.server")
 
 MAX_BODY = 256 * 1024
+MAX_IMAGE = 12 * 1024 * 1024
 MAX_WAIT_S = 30
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
@@ -50,8 +52,9 @@ def load_token(path: Path) -> str:
 class Hub:
     """Workers, and a version number that moves whenever anything observable does."""
 
-    def __init__(self, detector: Any, worker_cls=CameraWorker):
+    def __init__(self, detector: Any, worker_cls=CameraWorker, faces: Any = None, gallery: Any = None):
         self.detector, self._worker_cls = detector, worker_cls
+        self.faces, self.gallery = faces, gallery
         self.workers: Dict[str, CameraWorker] = {}
         self.config_hash = ""
         self.version = 0
@@ -129,10 +132,82 @@ def make_handler(hub: Hub, token: str):
             self._json(401, {"error": "unauthorized"})
             return False
 
+        def _body(self, limit: int) -> bytes:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= limit:
+                raise ValueError("body too large or empty")
+            return self.rfile.read(n)
+
+        def _faces(self, method: str, u) -> None:
+            """docs/vision.md §Faces. Faces in a picture are listed largest first."""
+            if hub.faces is None or hub.gallery is None:
+                return self._json(404, {"error": "faces not available"})
+            g, parts = hub.gallery, u.path.strip("/").split("/")[1:]
+            try:
+                if method == "GET" and not parts:
+                    return self._json(200, {"people": g.public(), "ready": hub.faces.ready,
+                                            "note": hub.faces.note, "threshold": F.MATCH})
+                if method == "GET" and len(parts) == 2 and parts[1].endswith(".jpg"):
+                    return self._send(200, g.crop_path(parts[0], parts[1][:-4]).read_bytes(), "image/jpeg")
+                if method == "POST" and not parts:
+                    return self._json(200, g.add_person(json.loads(self._body(MAX_BODY)).get("name")))
+                if method == "POST" and parts == ["detect"]:
+                    camera = parse_qs(u.query).get("camera", [None])[0]
+                    found = hub.faces.read(F.decode(self._body(MAX_IMAGE)))
+                    token = g.hold(found, camera if camera and _ID_RE.match(camera) else None)
+                    return self._json(200, {"token": token, "faces": [_face_public(i, f, g) for i, f in enumerate(found)]})
+                if method == "POST" and len(parts) == 2 and parts[1] == "samples":
+                    b = json.loads(self._body(MAX_BODY))
+                    return self._json(200, g.add_from_camera(parts[0], b.get("token"), b.get("face", -1)))
+                if method == "PUT" and len(parts) == 3 and parts[1] == "slot":
+                    g._person(parts[0])                   # refuse before the work, not after
+                    if parts[2] not in F.SLOTS:
+                        raise ValueError(f"slot is one of {', '.join(F.SLOTS)}")
+                    face = F.subject(hub.faces.read(F.decode(self._body(MAX_IMAGE))))
+                    return self._json(200, g.set_slot(parts[0], parts[2], face))
+                if method == "PATCH" and len(parts) == 1:
+                    return self._json(200, g.rename(parts[0], json.loads(self._body(MAX_BODY)).get("name")))
+                if method == "DELETE" and len(parts) == 1:
+                    g.delete(parts[0])
+                    return self._json(200, {"ok": True})
+                if method == "DELETE" and len(parts) == 3 and parts[1] == "samples":
+                    g.delete_sample(parts[0], parts[2])
+                    return self._json(200, {"ok": True})
+            except KeyError:
+                return self._json(404, {"error": "no such person or picture"})
+            except F.FaceError as e:
+                return self._json(422, {"error": str(e)})
+            except (ValueError, AttributeError, TypeError) as e:
+                return self._json(400, {"error": str(e)})
+            self._json(404, {"error": "not found"})
+
+        def do_POST(self) -> None:                        # noqa: N802
+            if self._authed():
+                u = urlparse(self.path)
+                if u.path.startswith("/faces"):
+                    return self._faces("POST", u)
+                self._json(404, {"error": "not found"})
+
+        def do_PATCH(self) -> None:                       # noqa: N802
+            if self._authed():
+                u = urlparse(self.path)
+                if u.path.startswith("/faces/"):
+                    return self._faces("PATCH", u)
+                self._json(404, {"error": "not found"})
+
+        def do_DELETE(self) -> None:                      # noqa: N802
+            if self._authed():
+                u = urlparse(self.path)
+                if u.path.startswith("/faces/"):
+                    return self._faces("DELETE", u)
+                self._json(404, {"error": "not found"})
+
         def do_GET(self) -> None:                         # noqa: N802
             if not self._authed():
                 return
             u = urlparse(self.path)
+            if u.path == "/faces" or u.path.startswith("/faces/"):
+                return self._faces("GET", u)
             if u.path == "/status":
                 q = parse_qs(u.query)
                 if "after" in q:
@@ -157,7 +232,10 @@ def make_handler(hub: Hub, token: str):
         def do_PUT(self) -> None:                         # noqa: N802
             if not self._authed():
                 return
-            if urlparse(self.path).path != "/config":
+            u = urlparse(self.path)
+            if u.path.startswith("/faces/"):
+                return self._faces("PUT", u)
+            if u.path != "/config":
                 return self._json(404, {"error": "not found"})
             try:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -169,6 +247,15 @@ def make_handler(hub: Hub, token: str):
             self._json(200, {"config": hub.config_hash})
 
     return Handler
+
+
+def _face_public(i: int, f: Dict[str, Any], gallery: Any) -> Dict[str, Any]:
+    import base64
+    out = {k: f[k] for k in ("box", "pose", "yaw", "pitch", "eye_px", "sharp", "score") if k in f}
+    out["index"], out["error"] = i, f.get("error")
+    out["thumb"] = "data:image/jpeg;base64," + base64.b64encode(F.encode_jpeg(f["crop"], 80)).decode()
+    out["match"] = gallery.best_match(f["vector"]) if "vector" in f else None
+    return out
 
 
 def serve(hub: Hub, token: str, host: str, port: int) -> ThreadingHTTPServer:

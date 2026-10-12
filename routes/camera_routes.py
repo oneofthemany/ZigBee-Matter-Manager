@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Dict, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import Response
 
 from modules.auth import LAN_ONLY_SCOPE, get_auth_manager, scope_matches
@@ -241,3 +242,97 @@ async def _pump(ws: WebSocket, up) -> None:
     finally:
         for t in tasks:
             t.cancel()
+
+
+MAX_FACE_IMAGE = 12 * 1024 * 1024
+
+
+def register_face_routes(app: FastAPI) -> None:
+    """Enrolling people for face recognition: a pass-through to the vision
+    sidecar, which owns the gallery. vision:enrol sees and changes faces;
+    camera:read alone does neither. See docs/vision.md §Faces."""
+    from modules.vision import VisionError, get_vision_bridge
+
+    async def _faces(method: str, path: str = "", **kw) -> Any:
+        b = get_vision_bridge()
+        if b is None:
+            raise HTTPException(503, "Detection not initialised")
+        try:
+            return await b.client.faces(method, path, **kw)
+        except VisionError as e:
+            if e.status and 400 <= e.status < 500:
+                raise HTTPException(e.status, e.detail or str(e))
+            raise HTTPException(503, "Object detection isn't running — enable it in the ZMM Manager")
+
+    def _ids(pid: str, sid: str = "00000000", slot: str = "front") -> None:
+        # These become part of the sidecar's URL.
+        if not (re.fullmatch(r"[a-z0-9][a-z0-9_]{0,31}", pid) and re.fullmatch(r"[0-9a-f]{8}", sid)
+                and slot in ("front", "left", "right", "down")):
+            raise HTTPException(404, "No such person or picture")
+
+    async def _image(request: Request) -> bytes:
+        if int(request.headers.get("content-length") or 0) > MAX_FACE_IMAGE:
+            raise HTTPException(413, "That picture is too large")
+        data = await request.body()
+        if not data or len(data) > MAX_FACE_IMAGE:
+            raise HTTPException(400, "Send a picture")
+        return data
+
+    @app.get("/api/vision/faces")
+    async def faces_list(_=Depends(require_scope("vision:enrol"))):
+        return await _faces("GET")
+
+    @app.post("/api/vision/faces")
+    async def faces_add(body: Dict[str, Any], _=Depends(require_scope("vision:enrol"))):
+        return await _faces("POST", body={"name": body.get("name")})
+
+    # Fixed paths first: /api/vision/faces/{pid} would take them.
+    @app.post("/api/vision/faces/detect")
+    async def faces_detect(request: Request, _=Depends(require_scope("vision:enrol"))):
+        """The faces in an uploaded picture, each with who it looks like."""
+        return await _faces("POST", "/detect", content=await _image(request))
+
+    @app.post("/api/vision/faces/detect/camera/{cid}")
+    async def faces_detect_camera(cid: str, _=Depends(require_scope("vision:enrol")),
+                                  __=Depends(require_scope("camera:read"))):
+        """The faces a camera sees now, from its full-resolution still."""
+        m = get_camera_manager()
+        if m is None or cid not in m.cameras:
+            raise HTTPException(404, "No such camera")
+        try:
+            img = await m.go2rtc.snapshot(STREAM_PREFIX + cid)   # not the cached one: this is the moment asked for
+        except Go2rtcError as e:
+            raise HTTPException(502, str(e))
+        return await _faces("POST", "/detect", params={"camera": cid}, content=img)
+
+    @app.patch("/api/vision/faces/{pid}")
+    async def faces_rename(pid: str, body: Dict[str, Any], _=Depends(require_scope("vision:enrol"))):
+        _ids(pid)
+        return await _faces("PATCH", f"/{pid}", body={"name": body.get("name")})
+
+    @app.delete("/api/vision/faces/{pid}")
+    async def faces_delete(pid: str, _=Depends(require_scope("vision:enrol"))):
+        _ids(pid)
+        return await _faces("DELETE", f"/{pid}")
+
+    @app.put("/api/vision/faces/{pid}/slot/{slot}")
+    async def faces_slot(pid: str, slot: str, request: Request, _=Depends(require_scope("vision:enrol"))):
+        _ids(pid, slot=slot)
+        return await _faces("PUT", f"/{pid}/slot/{slot}", content=await _image(request))
+
+    @app.post("/api/vision/faces/{pid}/samples")
+    async def faces_add_sample(pid: str, body: Dict[str, Any], _=Depends(require_scope("vision:enrol"))):
+        _ids(pid)
+        return await _faces("POST", f"/{pid}/samples", body={"token": body.get("token"), "face": body.get("face")})
+
+    @app.delete("/api/vision/faces/{pid}/samples/{sid}")
+    async def faces_delete_sample(pid: str, sid: str, _=Depends(require_scope("vision:enrol"))):
+        _ids(pid, sid)
+        return await _faces("DELETE", f"/{pid}/samples/{sid}")
+
+    @app.get("/api/vision/faces/{pid}/samples/{sid}")
+    async def faces_sample(pid: str, sid: str, _=Depends(require_scope("vision:enrol"))):
+        _ids(pid, sid)
+        img = await _faces("GET", f"/{pid}/{sid}.jpg", raw=True)
+        return Response(img, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})

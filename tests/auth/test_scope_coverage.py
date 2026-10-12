@@ -155,8 +155,10 @@ def run() -> Checker:
         })
         # What remains must be system:write: admin work, not a lockout. Viewers
         # are also kept off cameras on purpose — live video of the inside of
-        # the house is a grant of its own (docs/cameras.md §Who can see).
-        withheld = ("system:write",) + (("camera:read",) if group == "viewers" else ())
+        # the house is a grant of its own (docs/cameras.md §Who can see). Faces
+        # are biometric: nobody enrols or sees them without being given
+        # vision:enrol by name (docs/vision.md §Faces).
+        withheld = ("system:write", "vision:enrol") + (("camera:read",) if group == "viewers" else ())
         leaked = [d for d in denied
                   if scope_for_path(d.split(" ", 1)[1],
                                     d.split(" ", 1)[0]) not in withheld]

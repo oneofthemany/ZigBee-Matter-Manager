@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import PORT
 from .detector import Detector
+from .faces import FaceModels, Gallery
 from .metrics import Sampler
 from .server import Hub, load_token, serve
 
@@ -41,7 +42,7 @@ def main() -> None:
     log = logging.getLogger("vision")
     detector = Detector(DATA / "models", want=os.environ.get("ZMM_VISION_BACKEND", "cpu"),
                         threads=int(os.environ.get("ZMM_VISION_THREADS", "2")))
-    hub = Hub(detector)
+    hub = Hub(detector, faces=FaceModels(DATA / "models"), gallery=Gallery(DATA / "gallery"))
     host, port = os.environ.get("ZMM_VISION_HOST", "127.0.0.1"), int(os.environ.get("ZMM_VISION_PORT", PORT))
     serve(hub, load_token(DATA / "token"), host, port)
     log.info("listening on %s:%s", host, port)

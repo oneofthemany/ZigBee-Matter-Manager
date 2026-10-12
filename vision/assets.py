@@ -17,6 +17,7 @@ logger = logging.getLogger("vision.assets")
 
 _CORAL = "https://raw.githubusercontent.com/google-coral/test_data/104342d2d3480b3e66203073dac24f4e2dbb4c41/"
 _EDGETPU = "https://github.com/feranick/libedgetpu/releases/download/16.0TF2.19.1-1/"
+_ZOO = "https://github.com/opencv/opencv_zoo/raw/47534e27c9851bb1128ccc0102f1145e27f23f98/models/"
 
 # SSDLite MobileDet, COCO, 320x320, Apache-2.0 (Google). name -> (url, sha256)
 FILES = {
@@ -26,6 +27,11 @@ FILES = {
                                  "b69e508ef2a670e06b80bd3e5559a827d5cd8d557c95d5e332cbf1d31d434a2e"),
     "coco_labels.txt": (_CORAL + "coco_labels.txt",
                         "dc183f003fc753c4c43fae6fdf7f387559449573f13fa32e517fb7453fd380f1"),
+    # Faces (vision/faces.py): YuNet MIT, SFace Apache-2.0, both via OpenCV Zoo.
+    "yunet.onnx": (_ZOO + "face_detection_yunet/face_detection_yunet_2026may.onnx",
+                   "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0"),
+    "sface.onnx": (_ZOO + "face_recognition_sface/face_recognition_sface_2021dec.onnx",
+                   "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"),
     # Built against the TFLite 2.19 that ai-edge-litert 1.2 ships; the two must move together.
     "libedgetpu_amd64.deb": (_EDGETPU + "libedgetpu1-std_16.0tf2.19.1-1.bookworm_amd64.deb",
                              "23be53c72eff4d44afc2f727700da185791d3ca0867bd0b5e082ec3a0de21925"),

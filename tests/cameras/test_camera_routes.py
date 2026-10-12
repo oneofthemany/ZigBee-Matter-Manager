@@ -55,6 +55,7 @@ def run() -> Checker:
 
     from modules import auth as Auth
     from modules import cameras as C
+    from modules import vision as V
     from modules.auth_middleware import AuthMiddleware, _derive_session_secret, issue_session_cookie
     from modules.go2rtc import Go2rtc
     from routes.camera_routes import register_camera_routes
@@ -146,7 +147,57 @@ def run() -> Checker:
                     and seen.get("sent") == '{"type":"mse","value":"avc1.640029"}', (reply, frag, seen))
             c.check("go2rtc is asked for ZMM's stream, with ZMM's credentials",
                     seen.get("src") == "zmm_front" and seen.get("auth", "").startswith("Basic "), seen)
+
+            c.section("faces")
+            from routes.camera_routes import register_face_routes
+            asyncio.run(auth.create_user("keeper", "correct-horse-4", groups=["users"], extra_scopes=["vision:enrol"]))
+            cookie["keeper"] = issue_session_cookie("keeper", secret)
+            calls, answer = [], {"r": (200, {"people": []})}
+
+            async def sidecar(method, url, token, **kw):
+                calls.append((method, url.split("8556", 1)[-1], kw))
+                if isinstance(answer["r"], Exception):
+                    raise answer["r"]
+                return answer["r"]
+            V.set_vision_bridge(V.VisionBridge(m, V.VisionClient(token=lambda: "t", http=sidecar)))
+            register_face_routes(app)
+            m.go2rtc = fake                    # the still for "look now"
+            as_("resident")
+            c.check("a household member without the grant can't list faces", api.get("/api/vision/faces").status_code == 403)
+            c.check("…or enrol one", api.put("/api/vision/faces/sean/slot/front", content=b"jpg").status_code == 403)
+            c.check("and none of that reached the sidecar", calls == [], calls)
+            as_("keeper")
+            c.check("with vision:enrol the list comes through", api.get("/api/vision/faces").json() == {"people": []})
+            answer["r"] = (200, {"id": "ab12cd34", "slot": "front"})
+            r = api.put("/api/vision/faces/sean/slot/front", content=b"\xff\xd8photo")
+            c.check("a photo is passed to the sidecar byte for byte",
+                    r.status_code == 200 and calls[-1][:2] == ("PUT", "/faces/sean/slot/front")
+                    and calls[-1][2]["content"] == b"\xff\xd8photo", calls[-1])
+            n = len(calls)
+            c.check("an id that isn't one never reaches the sidecar's URL",
+                    api.put("/api/vision/faces/Sean%3Fx/slot/front", content=b"j").status_code == 404
+                    and api.delete("/api/vision/faces/sean/samples/not-a-hex").status_code == 404
+                    and api.put("/api/vision/faces/sean/slot/up", content=b"j").status_code == 404 and len(calls) == n, calls[n:])
+            c.check("an empty upload is refused here", api.put("/api/vision/faces/sean/slot/front", content=b"").status_code == 400)
+            answer["r"] = (422, {"error": "No face found — face the camera, in good light"})
+            r = api.put("/api/vision/faces/sean/slot/front", content=b"jpg")
+            c.check("the sidecar's reason for refusing a photo reaches the phone as it was written",
+                    r.status_code == 422 and r.json()["detail"] == "No face found — face the camera, in good light", r.text)
+            answer["r"] = (200, {"token": "tok", "faces": []})
+            r = api.post("/api/vision/faces/detect/camera/front")
+            c.check("looking through a camera sends its still, and says which camera",
+                    r.status_code == 200 and calls[-1][1] == "/faces/detect" and calls[-1][2]["params"] == {"camera": "front"}
+                    and calls[-1][2]["content"], calls[-1])
+            c.check("an unknown camera is a 404", api.post("/api/vision/faces/detect/camera/nope").status_code == 404)
+            answer["r"] = (200, b"\xff\xd8crop")
+            r = api.get("/api/vision/faces/sean/samples/ab12cd34")
+            c.check("a face crop is served as a private JPEG",
+                    r.status_code == 200 and r.content == b"\xff\xd8crop" and r.headers["content-type"] == "image/jpeg"
+                    and r.headers["cache-control"].startswith("private"), r.headers)
+            answer["r"] = ConnectionError("down")
+            c.check("with detection not running it says so, as a 503", api.get("/api/vision/faces").status_code == 503)
         finally:
+            V.set_vision_bridge(None)
             C.set_camera_manager(None)
             Auth.set_auth_manager(None)
             C.SECRETS_FILE = saved

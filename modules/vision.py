@@ -28,7 +28,12 @@ HttpFn = Callable[..., Awaitable[Tuple[int, Any]]]
 
 
 class VisionError(Exception):
-    pass
+    """`status` and `detail` are the sidecar's own when it answered: a 4xx
+    there is the caller's mistake, worth passing on as one."""
+
+    def __init__(self, message: str, status: Optional[int] = None, detail: str = ""):
+        super().__init__(message)
+        self.status, self.detail = status, detail
 
 
 def load_token(path: Path = TOKEN_FILE) -> str:
@@ -50,11 +55,11 @@ def load_token(path: Path = TOKEN_FILE) -> str:
     return tok
 
 
-async def _httpx(method: str, url: str, token: str, params=None, body=None,
+async def _httpx(method: str, url: str, token: str, params=None, body=None, content: Optional[bytes] = None,
                  raw: bool = False, timeout: float = 10) -> Tuple[int, Any]:
     import httpx
     async with httpx.AsyncClient(timeout=timeout) as cx:
-        r = await cx.request(method, url, params=params, json=body,
+        r = await cx.request(method, url, params=params, json=body, content=content,
                              headers={"Authorization": f"Bearer {token}"})
     if raw:
         return r.status_code, r.content
@@ -75,7 +80,8 @@ class VisionClient:
             raise VisionError(f"detection sidecar unreachable ({type(e).__name__})") from e
         if status >= 400:
             detail = body.get("error") if isinstance(body, dict) else ""
-            raise VisionError(f"detection sidecar answered {status}" + (f": {detail}" if detail else ""))
+            raise VisionError(f"detection sidecar answered {status}" + (f": {detail}" if detail else ""),
+                              status, detail or "")
         return body
 
     async def status(self, after: Optional[int] = None, wait: float = POLL_WAIT_S) -> Dict[str, Any]:
@@ -93,6 +99,11 @@ class VisionClient:
         if not isinstance(body, (bytes, bytearray)) or not body.startswith(b"\xff\xd8"):
             raise VisionError("nothing detected on this camera yet")
         return bytes(body)
+
+    async def faces(self, method: str, path: str = "", **kw) -> Any:
+        """The sidecar's /faces API (docs/vision.md §Faces). The first picture
+        waits for the face models to download, hence the long timeout."""
+        return await self._call(method, "/faces" + path, timeout=180, **kw)
 
 
 class VisionBridge:

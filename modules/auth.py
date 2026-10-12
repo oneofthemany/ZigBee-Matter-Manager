@@ -57,6 +57,8 @@ KNOWN_SCOPES: Dict[str, str] = {
     # Live video of the inside of a home is its own grant, not part of device:*.
     "camera:read":            "View camera streams and snapshots.",
     "camera:write":           "Control cameras (reserved; setup is admin).",
+    # Not in any built-in group: who may see and enrol faces is a decision.
+    "vision:enrol":           "See and change the people enrolled for face recognition.",
     "presence:read":          "Read all presence users' state.",
     "presence:write":         "Update any presence user's location.",
     # Per-user presence scopes are checked dynamically as

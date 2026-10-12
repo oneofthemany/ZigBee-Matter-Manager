@@ -1445,8 +1445,9 @@ register_adblock_routes(app)
 register_worker_routes(app, lambda: zigbee_service.automation)
 from routes.house_routes import register_house_routes
 register_house_routes(app)
-from routes.camera_routes import register_camera_routes
+from routes.camera_routes import register_camera_routes, register_face_routes
 register_camera_routes(app)
+register_face_routes(app)
 from routes.recording_routes import register_recording_routes
 register_recording_routes(app)
 from routes.logbook_routes import register_logbook_routes
