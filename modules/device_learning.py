@@ -464,9 +464,8 @@ async def _write(device, key, type_name: str, value) -> bool:
     cluster = (device.zigpy_dev.endpoints[ep].in_clusters or {}).get(cid)
     if cluster is None:
         return False
-    tv = foundation.TypeValue()
-    tv.type = TOGGLE_TYPES[type_name]
-    tv.value = bool(value) if type_name == "bool" else int(value)
+    from modules.zmm_settings import typed_value
+    tv = typed_value(TOGGLE_TYPES[type_name], int(value))
     attr = foundation.Attribute()
     attr.attrid = aid
     attr.value = tv

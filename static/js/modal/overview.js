@@ -41,6 +41,9 @@ export function renderOverviewTab(device) {
     // force check against our strict conditions in CONFIG_DEFINITIONS.
     const schema = rawSchema.filter(item => {
         // Find if we have a strict definition for this key
+        // An option from the device's own entry is offered on evidence; the
+        // maker tests below are for handler options only.
+        if (item.entry) return true;
         const localDef = CONFIG_DEFINITIONS.find(d => d.key === item.name);
         
         // If we have a local definition with a condition, strictly enforce it.

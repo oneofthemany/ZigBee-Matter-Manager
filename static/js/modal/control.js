@@ -1001,8 +1001,11 @@ export function renderControlTab(device) {
         }
     }
 
-    // Aqara TRV local features (always shown for Aqara TRVs with 0x0201)
-    if (isAqaraTRV(device) && hasCluster(device, 0x0201)) {
+    // Valve features: one control per setting the device says it takes
+    // (device.valve_settings), whoever made it.
+    const valveSettings = device.valve_settings || [];
+    const takes = name => valveSettings.includes(name);
+    if (valveSettings.length && hasCluster(device, 0x0201)) {
         controlsFound = true;
         const managed = isHeatingManaged(device.ieee);
         const windowDet = !!s.window_detection;
@@ -1011,9 +1014,9 @@ export function renderControlTab(device) {
         const valveAlarm = !!s.valve_alarm;
         const windowOpen = !!s.window_open;
         const calStatus = s.calibration_status || s.motor_calibration || 'idle';
-        const sensorType = s.sensor_type === 'external' ? 'external' : 'internal';
-        const extTemp = (s.external_temperature != null)
-            ? Number(s.external_temperature).toFixed(1) : '';
+        const sensorType = ['external', 1, '1', true].includes(s.sensor_type) ? 'external' : 'internal';
+        const extRaw = s.external_temperature ?? s.external_temp;
+        const extTemp = (extRaw != null) ? Number(extRaw).toFixed(1) : '';
         // TRV sensor-type and external-temp push are always user-editable.
         // When the heating controller is managing the circuit it still drives
         // the receiver, but TRV-local config (sensor, external temp, window
@@ -1026,15 +1029,16 @@ export function renderControlTab(device) {
         <div class="col-12">
             <div class="card">
                 <div class="card-header bg-light d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <strong><i class="fas fa-temperature-low"></i> Aqara TRV Features${viaCtrl}</strong>
+                    <strong><i class="fas fa-temperature-low"></i> Valve features${viaCtrl}</strong>
                     <div data-aqara-trv-badges="${device.ieee}">
                         ${windowOpen ? '<span class="badge bg-warning text-dark me-1"><i class="fas fa-window-maximize"></i> Window open</span>' : ''}
                         ${valveAlarm ? '<span class="badge bg-danger me-1"><i class="fas fa-exclamation-triangle"></i> Valve alarm</span>' : ''}
-                        <span class="badge bg-secondary">${String(calStatus).replace(/_/g, ' ')}</span>
+                        ${takes('motor_calibration') ? `<span class="badge bg-secondary">${String(calStatus).replace(/_/g, ' ')}</span>` : ''}
                     </div>
                 </div>
                 <div class="card-body">
                     <div class="row g-3">
+                        ${takes('window_detection') ? `
                         <div class="col-md-6">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="aq-wd-${device.ieee}" ${windowDet ? 'checked' : ''}
@@ -1045,6 +1049,8 @@ export function renderControlTab(device) {
                             </div>
                             <div class="form-text small">Pause heating when a window is detected open.</div>
                         </div>
+                        ` : ''}
+                        ${takes('child_lock') ? `
                         <div class="col-md-6">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="aq-cl-${device.ieee}" ${childLock ? 'checked' : ''}
@@ -1055,6 +1061,8 @@ export function renderControlTab(device) {
                             </div>
                             <div class="form-text small">Lock the physical dial on the TRV.</div>
                         </div>
+                        ` : ''}
+                        ${takes('valve_detection') ? `
                         <div class="col-md-6">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="aq-vd-${device.ieee}" ${valveDet ? 'checked' : ''}
@@ -1065,11 +1073,15 @@ export function renderControlTab(device) {
                             </div>
                             <div class="form-text small">Detect and report a seized valve.</div>
                         </div>
+                        ` : ''}
+                        ${takes('motor_calibration') ? `
                         <div class="col-md-6 d-flex align-items-end">
                             <button class="btn btn-outline-secondary w-100" onclick="window.aqaraCalibrate('${device.ieee}')">
                                 <i class="fas fa-wrench me-1"></i> Calibrate Valve
                             </button>
                         </div>
+                        ` : ''}
+                        ${takes('sensor_type') ? `
                         <div class="col-12"><hr class="my-0"></div>
                         <div class="col-md-4">
                             <label class="form-label small text-muted">Temperature Sensor</label>
@@ -1102,6 +1114,7 @@ export function renderControlTab(device) {
                             </div>
                             <div class="form-text small">Pre-filled when a source is selected. Editable.</div>
                         </div>
+                        ` : ''}
                     </div>
                 </div>
             </div>

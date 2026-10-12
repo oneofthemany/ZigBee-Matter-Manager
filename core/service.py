@@ -94,6 +94,10 @@ from core.naming import NamingMixin
 from core.command_router import CommandRouterMixin
 from core.lifecycle import DeviceLifecycleMixin
 
+# Settings the Control tab's valve card has a control for.
+VALVE_CONTROL_SETTINGS = ("window_detection", "child_lock", "valve_detection",
+                          "motor_calibration", "sensor_type", "external_temp")
+
 class ZigbeeService(
     ConfigBuilderMixin,
     MQTTHandlerMixin,
@@ -2156,6 +2160,10 @@ class ZigbeeService(
                     "settings": self.device_settings.get(ieee, {}),
                     "available": zdev.is_available(),
                     "config_schema": zdev.get_device_config_schema() if hasattr(zdev, 'get_device_config_schema') else [],
+                    # Which valve controls the Control tab may draw: asked of
+                    # the device, never inferred from who made it.
+                    "valve_settings": [n for n in VALVE_CONTROL_SETTINGS
+                                       if hasattr(zdev, 'supports_setting') and zdev.supports_setting(n)],
                     "polling_interval": self.polling_scheduler._intervals.get(ieee, 0)
                 })
 

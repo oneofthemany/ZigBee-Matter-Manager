@@ -90,6 +90,15 @@ def _real_library(c: Checker) -> None:
     c.check("a response schema of successes is accepted",
             zmm_settings._write_ok(Schema(status_records=ok)))
     c.check("one refused record is a refusal", not zmm_settings._write_ok(Schema(status_records=bad)))
+    for type_id, raw in ((0x10, 1), (0x20, 100), (0x29, 700), (0x30, 1), (0x23, 300), (0x28, -3)):
+        attr = foundation.Attribute()
+        attr.attrid = 0x6000
+        attr.value = zmm_settings.typed_value(type_id, raw)
+        try:
+            ok_bytes = len(attr.serialize()) > 3
+        except Exception as e:
+            ok_bytes = repr(e)
+        c.check(f"a value of type 0x{type_id:02X} serialises for the radio", ok_bytes is True, ok_bytes)
     c.check("a default response carries its own status",
             not zmm_settings._write_ok(foundation.DefaultResponse(
                 command_id=2, status=foundation.Status.UNSUP_MANUF_GENERAL_COMMAND)))

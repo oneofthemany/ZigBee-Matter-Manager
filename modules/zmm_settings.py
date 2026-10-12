@@ -92,7 +92,10 @@ def options(device) -> List[Dict[str, Any]]:
         if current is None:
             listed = listed if listed is not None else _listed(device)
             current = _from_raw(st, (_shown(listed, ep, st) or {}).get("value"))
+        # `entry`: the device's own definition offers it, so the UI need not
+        # second-guess it with a maker test.
         opt: Dict[str, Any] = {"name": name, "label": label, "description": st["description"],
+                               "entry": True,
                                "attribute_id": int(st["attr"], 16), "current_value": current}
         for k in ("min", "max", "step", "unit"):
             if st.get(k) is not None:
@@ -126,9 +129,7 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         try:
             shown = updates[name]
             value = _to_raw(st, shown)
-            tv = foundation.TypeValue()
-            tv.type = SETTING_TYPES[st["type"]]
-            tv.value = bool(value) if st["type"] == "bool" else value
+            tv = typed_value(SETTING_TYPES[st["type"]], value)
             attr = foundation.Attribute()
             attr.attrid = int(st["attr"], 16)
             attr.value = tv
@@ -146,6 +147,19 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         else:
             logger.warning(f"[{device.ieee}] ZMM setting {name} refused by the device")
     return results
+
+
+def typed_value(type_id: int, value: Any):
+    """A ZCL TypeValue zigpy can serialise: the value must be of zigpy's own
+    type for the data type, not a bare Python int or bool."""
+    from zigpy.zcl import foundation
+    tv = foundation.TypeValue()
+    tv.type = type_id
+    try:
+        tv.value = foundation.DataType.from_type_id(type_id).python_type(value)
+    except (AttributeError, KeyError, ValueError):
+        tv.value = value        # a zigpy without the lookup, or a test stub
+    return tv
 
 
 def _to_raw(st: Dict[str, Any], shown: Any) -> int:
