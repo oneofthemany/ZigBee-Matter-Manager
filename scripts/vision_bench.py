@@ -425,6 +425,30 @@ def faces(args) -> None:
         print(f"wrote {args.out}")
 
 
+def coral_check(args) -> None:
+    """Why the Edge TPU delegate won't load: the device node first, then the library."""
+    import errno
+    for node in sorted(Path("/dev").glob("apex_*")) or [Path("/dev/apex_0")]:
+        try:
+            os.close(os.open(node, os.O_RDWR))
+            print(f"{node}: opens read-write")
+        except OSError as e:
+            print(f"{node}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}")
+    try:
+        print("selinux context:", open("/proc/self/attr/current").read().strip("\x00\n"))
+    except OSError:
+        pass
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from vision import assets
+    lib = str(assets.edgetpu_library(Path(args.coral_assets)))
+    from ai_edge_litert.interpreter import load_delegate
+    try:
+        load_delegate(lib)
+        print("delegate: loads")
+    except ValueError as e:
+        print(f"delegate: fails — {str(e).splitlines()[-1] if str(e).strip() else 'no message'}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -441,8 +465,10 @@ def main() -> None:
     fp.add_argument("--gallery", required=True)
     fp.add_argument("--probes", required=True)
     fp.add_argument("--embedder", default="sface.onnx", choices=["sface.onnx", "sface_int8.onnx"])
+    cp = sub.add_parser("coral-check")
+    cp.add_argument("--coral-assets", default="data/vision/models")
     args = ap.parse_args()
-    {"speed": speed, "faces": faces}[args.cmd](args)
+    {"speed": speed, "faces": faces, "coral-check": coral_check}[args.cmd](args)
 
 
 if __name__ == "__main__":
