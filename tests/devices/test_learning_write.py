@@ -38,11 +38,11 @@ class _Fcc0:
         return NS(status_records=[NS(attrid=a, status=0, value=NS(value=self.values[a]))
                                   for a in attrs if a in self.values])
 
-    async def write_attributes_raw(self, attrs, manufacturer=None):
+    async def write_attributes_raw(self, attrs, manufacturer_code=None):
         a = attrs[0]
         if self.refuse_after is not None and len(self.writes) >= self.refuse_after:
             return [[NS(status=0x87)]]
-        self.writes.append((a.attrid, int(a.value.value), manufacturer))
+        self.writes.append((a.attrid, int(a.value.value), manufacturer_code))
         self.values[a.attrid] = int(a.value.value)
         return [[NS(status=0)]]
 

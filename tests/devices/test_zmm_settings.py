@@ -65,14 +65,39 @@ class _Fcc0:
         self.refuse = refuse
         self.writes = []
 
-    async def write_attributes_raw(self, attrs, manufacturer=None):
+    async def write_attributes_raw(self, attrs, manufacturer_code=None):
         a = attrs[0]
-        self.writes.append((a.attrid, a.value.type, a.value.value, manufacturer))
+        self.writes.append((a.attrid, a.value.type, a.value.value, manufacturer_code))
         return [[NS(status=0x87 if self.refuse else 0)]]
+
+
+def _real_library(c: Checker) -> None:
+    """The write goes through zigpy itself: its parameter names and its answer."""
+    import inspect
+    try:
+        from zigpy.zcl import Cluster, foundation
+    except ImportError:
+        return          # host python has no zigpy; the venv run covers this
+    c.section("against zigpy itself")
+    params = list(inspect.signature(Cluster.write_attributes_raw).parameters)
+    c.check("the manufacturer code is the raw write's second positional parameter",
+            params[:3] == ["self", "attributes", "manufacturer_code"], params)
+    ok = foundation.WriteAttributesResponse(
+        [foundation.WriteAttributesStatusRecord(status=foundation.Status.SUCCESS)])
+    bad = foundation.WriteAttributesResponse(
+        [foundation.WriteAttributesStatusRecord(status=foundation.Status.READ_ONLY, attrid=1)])
+    Schema = foundation.WriteAttributesResponseSchema
+    c.check("a response schema of successes is accepted",
+            zmm_settings._write_ok(Schema(status_records=ok)))
+    c.check("one refused record is a refusal", not zmm_settings._write_ok(Schema(status_records=bad)))
+    c.check("a default response carries its own status",
+            not zmm_settings._write_ok(foundation.DefaultResponse(
+                command_id=2, status=foundation.Status.UNSUP_MANUF_GENERAL_COMMAND)))
 
 
 def run() -> Checker:
     c = Checker("zmm_settings")
+    _real_library(c)
     device_profiles._store = _Store()
     tmp = tempfile.mkdtemp(prefix="zmm_set_")
     zigbee_cache.DB_PATH = str(Path(tmp) / "cache.duckdb")

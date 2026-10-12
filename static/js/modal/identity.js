@@ -41,7 +41,7 @@ function decisionRow(ep, d) {
     const choices = (CHOICES[d.subject] || []).filter(v => v !== d.value).map(v =>
         `<button class="btn btn-outline-secondary btn-sm me-1" data-identity-set="${escapeHtml(v)}"
                  data-ep="${ep}" data-subject="${escapeHtml(d.subject)}">Make ${escapeHtml(v.replace('_', ' '))}</button>`).join('');
-    const confirm = d.user_set || !d.value ? '' :
+    const confirm = d.user_set || !d.value || d.settable === false ? '' :
         `<button class="btn btn-outline-success btn-sm me-1" data-identity-set="${escapeHtml(d.value)}"
                  data-ep="${ep}" data-subject="${escapeHtml(d.subject)}">Confirm</button>`;
     const reset = d.user_set

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from modules import device_class
 from modules.device_profiles import DEVICE_TYPES
+from modules.endpoint_kind import device_endpoint_function
 
 logger = logging.getLogger("modules.device_identity")
 
@@ -88,14 +89,20 @@ def identity(device) -> Dict[str, Any]:
         decisions = []
         handler = device.handlers.get((ep_id, 0x0006))
         live = handler.endpoint_kind() if handler is not None and hasattr(handler, "endpoint_kind") else None
-        subjects = {s for (e, s) in stored if e == ep_id} | ({"kind"} if live else set())
+        # Neither light nor switch: the EP's primary function, never the kind
+        # stored from before it was recognised.
+        function = None if live else device_endpoint_function(device, ep)
+        subjects = {s for (e, s) in stored if e == ep_id} - {"kind"} \
+            | ({"kind"} if live or function else set())
         for subject in sorted(subjects):
             row = stored.get((ep_id, subject)) or {}
             value, source, reason = row.get("value"), row.get("source"), row.get("reason")
-            if subject == "kind" and live:
-                value, source, reason = live.kind, live.source, live.reason
+            if subject == "kind":
+                now = live or function
+                value, source, reason = now.kind, now.source, now.reason
             decisions.append({
                 "subject": subject, "value": value, "source": source, "reason": reason,
+                "settable": not (subject == "kind" and function is not None),
                 "previous_value": row.get("previous_value"),
                 "changed_at": _iso(row.get("changed_at")),
                 "user_set": (ep_id, subject) in user,

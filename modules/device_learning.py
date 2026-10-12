@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
@@ -138,6 +139,11 @@ async def _read(device, targets) -> List[Dict[str, Any]]:
                                 "attr": int(rec.attrid), "mfr": mfr, "value": v})
     return out
 
+
+# A setting's id is its command name: refused before the user acts, not after.
+SETTING_ID = re.compile(r"[a-z][a-z0-9_]{0,39}")
+SETTING_ID_HELP = ("give the setting a short name first: lower-case letters, digits and "
+                   "underscores, e.g. child_lock")
 
 # lifecycle
 
@@ -281,6 +287,8 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
     clean, err = _clean_inputs(st, inputs)
     if err:
         return {"success": False, "error": err}
+    if "setting_id" in clean and not SETTING_ID.fullmatch(clean["setting_id"]):
+        return {"success": False, "error": SETTING_ID_HELP}
     ctx = _context(device, st)
     baseline = await _read(device, _sample_targets(device, st, ctx))
     s.active = {"key": key, "t0": time.time(), "inputs": clean, "baseline": baseline, "ctx": ctx}
@@ -464,7 +472,7 @@ async def _write(device, key, type_name: str, value) -> bool:
     attr.value = tv
     try:
         async with asyncio.timeout(READ_TIMEOUT):
-            return _write_ok(await cluster.write_attributes_raw([attr], manufacturer=mfr))
+            return _write_ok(await cluster.write_attributes_raw([attr], mfr))
     except Exception as e:
         logger.warning(f"[{device.ieee}] learning write failed: {e}")
         return False
@@ -504,6 +512,8 @@ async def try_write(device, key: str, candidate: Dict[str, Any],
     clean, err = _clean_inputs(st, inputs)
     if err:
         return {"success": False, "error": err}
+    if "setting_id" in clean and not SETTING_ID.fullmatch(clean["setting_id"]):
+        return {"success": False, "error": SETTING_ID_HELP}
     offered = candidates(device, key)
     if not offered["success"]:
         return offered

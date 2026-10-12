@@ -133,7 +133,8 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             attr.attrid = int(st["attr"], 16)
             attr.value = tv
             mfr = int(st["mfr"], 16) if st.get("mfr") else None
-            rsp = await cluster.write_attributes_raw([attr], manufacturer=mfr)
+            # Positional: zigpy names this parameter `manufacturer_code`.
+            rsp = await cluster.write_attributes_raw([attr], mfr)
             ok = _write_ok(rsp)
         except Exception as e:
             logger.warning(f"[{device.ieee}] ZMM setting {name} write failed: {e}")
@@ -190,14 +191,19 @@ async def apply_command(device, command: str, value: Any) -> Optional[bool]:
 
 
 def _write_ok(rsp: Any) -> bool:
-    records = rsp
+    """Whether a raw write was accepted. zigpy answers with a schema holding
+    `status_records`, a default response holding `status`, or bare lists."""
+    records = getattr(rsp, "status_records", None)
+    if records is None and hasattr(rsp, "status") and not isinstance(rsp, (list, tuple)):
+        records = [rsp]
+    if records is None:
+        records = rsp
     while isinstance(records, (list, tuple)) and len(records) == 1 \
             and isinstance(records[0], (list, tuple)):
         records = records[0]
     if not isinstance(records, (list, tuple)) or not records:
         return False
-    status: Optional[Any] = getattr(records[0], "status", records[0])
     try:
-        return int(status) == 0
+        return all(int(getattr(r, "status", r)) == 0 for r in records)
     except (TypeError, ValueError):
         return False

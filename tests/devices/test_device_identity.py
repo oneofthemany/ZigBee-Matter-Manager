@@ -75,6 +75,19 @@ def run() -> Checker:
     device_decisions.forget(IEEE)
     zigbee_cache.warm()
     try:
+        c.section("a thermostat's endpoint")
+        tep = _ep(1, (0x0000, 0x0006, 0x0201, 0xFC11))
+        trv = NS(ieee="18:69:0a:ff:fe:00:00:01", state={}, handlers={},
+                 zigpy_dev=NS(endpoints={0: None, 1: tep}, node_desc=NS(is_mains_powered=False),
+                              model="X-TRV", manufacturer="Acme"))
+        trv.handlers[(1, 0x0006)] = OnOffHandler(trv, tep.in_clusters[0x0006])
+        trv.capabilities = DeviceCapabilities(trv)
+        device_decisions.record(trv.ieee, 1, "kind", "switch", "rule", "load cluster 0xFC11")
+        k = _kind(identity(trv), 1)
+        c.check("shows its function, not the switch decided before it was recognised",
+                k["value"] == "thermostat" and "0x0201" in k["reason"] and k["settable"] is False, k)
+        device_decisions.forget(trv.ieee)
+
         dev = _outlet()
         c.section("what the panel shows")
         ident = identity(dev)

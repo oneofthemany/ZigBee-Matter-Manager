@@ -210,6 +210,8 @@
 
             // Skip sensor-typed endpoints
             if (ep.component_type === 'sensor') return;
+            // On/Off on a thermostat, cover or lock is that function's own control.
+            if (!ep.component_type && ['thermostat', 'cover', 'lock'].indexOf(ep.function) !== -1) return;
 
             eps.push(ep.id);
         });
