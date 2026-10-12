@@ -194,6 +194,12 @@ def run() -> Checker:
             c.check("a face crop is served as a private JPEG",
                     r.status_code == 200 and r.content == b"\xff\xd8crop" and r.headers["content-type"] == "image/jpeg"
                     and r.headers["cache-control"].startswith("private"), r.headers)
+            answer["r"] = (404, {"error": "not found"})
+            r = api.get("/api/vision/faces")
+            c.check("a sidecar from before faces is named as out of date, not as a missing page",
+                    r.status_code == 503 and "older version" in r.json()["detail"], r.text)
+            answer["r"] = (404, {"error": "no such person or picture"})
+            c.check("…while a person who isn't there is still a 404", api.delete("/api/vision/faces/nobody").status_code == 404)
             answer["r"] = ConnectionError("down")
             c.check("with detection not running it says so, as a 503", api.get("/api/vision/faces").status_code == 503)
         finally:

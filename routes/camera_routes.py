@@ -260,6 +260,10 @@ def register_face_routes(app: FastAPI) -> None:
         try:
             return await b.client.faces(method, path, **kw)
         except VisionError as e:
+            # A sidecar from before faces has no such path; its own 404s name a person or picture.
+            if e.status == 404 and e.detail in ("not found", "faces not available"):
+                raise HTTPException(503, "Object detection is running an older version than the app — "
+                                         "restart it in the ZMM Manager")
             if e.status and 400 <= e.status < 500:
                 raise HTTPException(e.status, e.detail or str(e))
             raise HTTPException(503, "Object detection isn't running — enable it in the ZMM Manager")
