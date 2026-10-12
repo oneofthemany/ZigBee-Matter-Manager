@@ -243,7 +243,7 @@ class DeviceLifecycleMixin:
             # MQTT announce so the capability set reaches discovery, and before poll()
             # so friendly keys are in the first snapshot. Idempotent.
             try:
-                from modules.device_profile_apply import apply_profile
+                from modules.device_profiles_apply import apply_profile
                 await apply_profile(zdev)
             except Exception as _e:
                 logger.debug(f"[{ieee}] apply_profile skipped: {_e}")
