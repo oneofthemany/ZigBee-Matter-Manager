@@ -65,9 +65,27 @@ def run() -> Checker:
                 not (caps.get_capabilities() & ACTUATOR_CAPS), caps.get_capabilities())
         c.check("and is still a motion sensor", "motion_sensor" in caps.get_capabilities())
         caps = DeviceCapabilities(_sml("SML004"))
-        c.check("a model with no entry still gets the old quirk",
+        c.check("a model with no entry gets the same from its cluster lists",
                 caps.get_endpoint_role(1) == "controller"
                 and not (caps.get_capabilities() & ACTUATOR_CAPS), caps.get_capabilities())
+
+        remote = DeviceCapabilities(_device("remote", "Acme", {
+            1: _ep(1, (0x0000, 0x0001), (0x0006, 0x0008))}))
+        c.check("a remote with no sensor endpoint keeps its outputs",
+                "on_off" in remote.get_capabilities(), remote.get_capabilities())
+
+        c.section("a contact that reports on a client On/Off cluster")
+        magnet = {1: _ep(1, (0x0000, 0x0001, 0x0003), (0x0000, 0x0004, 0x0006), 0x5F01)}
+        caps = DeviceCapabilities(_device("lumi.sensor_magnet.aq2", "LUMI", magnet))
+        c.check("its entry makes it a contact sensor",
+                "contact_sensor" in caps.get_capabilities()
+                and not (caps.get_capabilities() & {"switch", "light", "motion_sensor"}),
+                caps.get_capabilities())
+        c.check("and keeps the capability its OPEN/CLOSED state field is filed under",
+                caps.allows_field("state") and caps.allows_field("contact"))
+        caps = DeviceCapabilities(_device("lumi.sensor_magnet.zz9", "LUMI", magnet))
+        c.check("a model name alone does not",
+                "contact_sensor" not in caps.get_capabilities(), caps.get_capabilities())
 
         c.section("a controller EP does not strip a real actuator")
         zdir = tmp / "z2"

@@ -338,6 +338,8 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
                    if k == "device_type" and v == "ignore"}
     if corrections:
         out["corrections"] = corrections
+    if z.get("battery") == "voltage":       # reported % is useless: derive it
+        out["battery"] = "voltage"
 
     measurements: Dict[str, Any] = {}
     for name, m in (z.get("measurements") or {}).items():

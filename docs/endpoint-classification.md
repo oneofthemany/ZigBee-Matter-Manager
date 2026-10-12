@@ -77,7 +77,8 @@ endpoint 0, subject `device_type`).
 Order: the user's correction, then a ZMM entry's or profile's `device_type`,
 then rules over the device's own evidence, first match wins:
 
-1. A thermostat endpoint → thermostat. A cover endpoint, or the cover
+1. A thermostat endpoint → radiator valve if the device takes a valve
+   setting (`valve_detection`, `motor_calibration`), else thermostat. A cover endpoint, or the cover
    capability its handler gives a datapoint device → blind. A lock endpoint →
    lock.
 2. A light endpoint → colour light if that endpoint has Colour Control, else
@@ -93,8 +94,14 @@ then rules over the device's own evidence, first match wins:
 
 An actuator outranks a sensor on the same device, and a sensor outranks a
 remote's outputs (a motion sensor with a scene-controller endpoint is a motion
-sensor). Nothing here tells a radiator valve from a wall thermostat: both are
-a thermostat endpoint on a battery. An entry says `trv`.
+sensor).
+
+The thermostat cluster alone does not tell a radiator valve from a wall
+thermostat or a boiler receiver: a receiver lists PIHeatingDemand and a valve
+may not. What does is a setting only a valve has — detecting or calibrating
+the pin it drives — known from a handler or from an entry's (or a learned)
+setting of that name, via `device.supports_setting`. A valve whose settings
+are still unnamed is a thermostat until one is learned or an entry says `trv`.
 
 Related evidence that replaced a name test:
 
@@ -105,6 +112,14 @@ Related evidence that replaced a name test:
 | heat-only from "TRV" / "AGL001" in the model | ControlSequenceOfOperation (0x001B) |
 | boiler receiver vs valve from "SLR" / "SLT" / "TRV" | a thermostat endpoint, and mains or battery |
 | which valve settings to offer, from the maker's name | `device.supports_setting(name)` |
+| a Hue sensor's scene endpoint, from "SML" in the model | any sensor's endpoint that sends On/Off, Level or Colour and serves none |
+| Hue and Lumi sensitivity and LED options, from the maker's name | the manufacturer code in the node descriptor |
+| a contact sensor, from `lumi.sensor_magnet` in the model | the entry's `device_type` (or the user's): its clusters match a button's |
+| battery % from voltage, from "SML" in the model | the entry's `zmm.battery: "voltage"` |
+
+Still decided by name, for want of evidence: which datapoint map a Tuya
+0xEF00 device gets when it has no standard cluster and no entry, and the Hive
+receiver's write protocol and its heating endpoint.
 
 ## What is never evidence
 

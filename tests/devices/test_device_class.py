@@ -16,7 +16,7 @@ from harness import Checker
 import modules.device_profiles as device_profiles
 import modules.zigbee_cache as zigbee_cache
 from modules import device_class, device_facts, learning_ops, learning_recipes
-from modules.device_class import Evidence, classify
+from modules.device_class import Evidence, classify, gather
 from modules.device_profiles import normalise_profile
 from modules.device_profiles_apply import transform_state_with_profile
 
@@ -77,6 +77,18 @@ def run() -> Checker:
     c.check("an IAS zone that never gave its type is not guessed at", got.kind == "generic", got)
     got = classify(Evidence({1: "thermostat"}, {1: {6, 0x201, 0x402}}, {}, set(), {"motion_sensor"}))
     c.check("an actuator outranks a sensor on the same device", got.kind == "thermostat", got)
+    valve = Evidence({1: "thermostat"}, {1: {0, 1, 0x201}}, {}, set(), set(),
+                     frozenset({"motor_calibration"}))
+    c.check("a thermostat that calibrates a valve is a radiator valve",
+            classify(valve).kind == "trv", classify(valve))
+    stat = NS(ieee="", capabilities=None, supports_setting=lambda n: False,
+              zigpy_dev=NS(endpoints={1: NS(endpoint_id=1, in_clusters={0x201: NS()}, out_clusters={},
+                                            profile_id=0x104, device_type=0x301)}))
+    c.check("a thermostat that takes no valve setting is not one",
+            classify(gather(stat)).kind == "thermostat", classify(gather(stat)))
+    stat.supports_setting = lambda n: n == "valve_detection"
+    c.check("the valve settings a device takes are gathered as evidence",
+            classify(gather(stat)).kind == "trv", classify(gather(stat)))
 
     c.section("overrides, and where the answer is read")
     device_profiles._store = _Store()

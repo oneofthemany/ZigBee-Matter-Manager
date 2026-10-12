@@ -51,7 +51,6 @@ class DeviceDiscoveryProviderMixin:
     def get_binding_preferences(self) -> Dict[str, Dict[int, int]]:
         """Get device-specific binding endpoint preferences."""
         model = str(self.zigpy_dev.model or "").upper()
-        if "SLT6" in model: return {'source_endpoints': {0x0201: 9}}
         if "SLR" in model or "RECEIVER" in model: return {'target_endpoints': {0x0201: 5}}
         return {}
 

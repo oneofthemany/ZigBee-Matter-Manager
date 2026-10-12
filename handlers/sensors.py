@@ -183,15 +183,25 @@ class OccupancySensingHandler(ClusterHandler):
     # and LED indication (genBasic 0x0033) — are only readable/writable with this
     # code attached to the ZCL frame; without it the device ignores the write.
     PHILIPS_MFR = 0x100B
+    LUMI_MFR = 0x115F
 
     # On Basic (0x0000), not occupancy, but it is a motion-sensor setting to the
     # user, so it is exposed here alongside sensitivity.
     ATTR_LED_INDICATION = 0x0033  # genBasic, boolean, manufacturer-specific
 
+    def _mfr_code(self) -> Optional[int]:
+        """The manufacturer code in the device's node descriptor."""
+        nd = getattr(self.device.zigpy_dev, "node_desc", None)
+        code = getattr(nd, "manufacturer_code", None)
+        return int(code) if code is not None else None
+
     def _philips_mfr(self) -> Optional[int]:
-        """Return the Signify manufacturer code for Hue devices, else None."""
-        man = (self.device.zigpy_dev.manufacturer or "").lower()
-        return self.PHILIPS_MFR if ('philips' in man or 'signify' in man) else None
+        """The Signify manufacturer code where the device declares it, else None."""
+        return self.PHILIPS_MFR if self._mfr_code() == self.PHILIPS_MFR else None
+
+    def _has_sensitivity(self) -> bool:
+        """Sensitivity (0x0030) is a Signify and Lumi attribute."""
+        return self._mfr_code() in (self.PHILIPS_MFR, self.LUMI_MFR)
 
     def _basic_cluster(self):
         """The Basic cluster (0x0000) on this handler's endpoint, or None."""
@@ -310,7 +320,7 @@ class OccupancySensingHandler(ClusterHandler):
 
             # Read sensitivity (Philips/Aqara specific). Hue needs the Signify
             # manufacturer code or the read comes back UNSUPPORTED_ATTRIBUTE.
-            if 'philips' in manufacturer or 'lumi' in manufacturer or 'signify' in manufacturer:
+            if self._has_sensitivity():
                 mfr = self._philips_mfr()
                 try:
                     result = await self.cluster.read_attributes(
@@ -364,8 +374,7 @@ class OccupancySensingHandler(ClusterHandler):
         ]
 
         # Only expose sensitivity if it's supported (Hue/Aqara)
-        man = (self.device.zigpy_dev.manufacturer or "").lower()
-        if 'philips' in man or 'lumi' in man or 'signify' in man:
+        if self._has_sensitivity():
             options.append({
                 "name": "sensitivity",
                 "label": "Motion Sensitivity",
@@ -381,7 +390,7 @@ class OccupancySensingHandler(ClusterHandler):
             })
 
         # Hue LED indication toggle (Signify only).
-        if 'philips' in man or 'signify' in man:
+        if self._philips_mfr():
             options.append({
                 "name": "led_indication",
                 "label": "Motion LED",
@@ -562,14 +571,12 @@ class TemperatureMeasurementHandler(ClusterHandler, SensorReportingMixin):
         Uses device_settings paired_receiver to target the correct receiver
         in multi-zone setups.
         """
-        model = str(self.device.zigpy_dev.model or "").upper()
-        if "SLT" not in model:
-            return
-
         try:
             # Find specific paired receiver from device_settings
             settings = self.device.service.device_settings.get(self.device.ieee, {})
             paired_ieee = settings.get("paired_receiver")
+            if not paired_ieee:
+                return      # only a thermostat paired to a receiver has one
 
             if paired_ieee and paired_ieee in self.device.service.devices:
                 dev = self.device.service.devices[paired_ieee]
@@ -913,13 +920,12 @@ class PowerConfigurationHandler(ClusterHandler):
 
     def _is_coarse_battery(self) -> bool:
         """
-        True for devices whose reported batteryPercentageRemaining is useless —
-        Philips Hue SML motion sensors report a flat 100% for months then drop
-        off a cliff. For these we derive % from battery_voltage instead.
+        True where the device's entry says its reported percentage is useless
+        (flat 100 % for months, then a cliff): % is derived from voltage instead.
         """
-        man = (self.device.zigpy_dev.manufacturer or "").lower()
-        model = (self.device.zigpy_dev.model or "").lower()
-        return ('philips' in man or 'signify' in man) and 'sml' in model
+        from modules.device_profiles import profile_for_device
+        zmm = (profile_for_device(self.device) or {}).get("zmm") or {}
+        return zmm.get("battery") == "voltage"
 
     @classmethod
     def _voltage_to_pct(cls, voltage: Optional[float]) -> Optional[int]:

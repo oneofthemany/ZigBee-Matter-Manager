@@ -8,7 +8,7 @@ evidence: docs/endpoint-classification.md § Device class.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, NamedTuple, Optional, Set
+from typing import Any, Dict, FrozenSet, Iterable, NamedTuple, Optional, Set
 
 from modules.endpoint_kind import COVER, LIGHT, LOCK, SWITCH, THERMOSTAT
 
@@ -32,6 +32,9 @@ ZONE_TYPES = {
     0x002D: "vibration_sensor",
 }
 
+# Settings only a device that drives a valve pin takes.
+VALVE_SETTINGS = frozenset({"valve_detection", "motor_calibration"})
+
 # What a remote's endpoint sends rather than serves.
 CONTROL_OUTPUTS = frozenset({ON_OFF, LEVEL, COLOR})
 
@@ -49,6 +52,7 @@ class Evidence(NamedTuple):
     clusters_out: Dict[int, Set[int]]   # ep -> client clusters
     zone_types: Set[int]
     capabilities: Set[str]              # handler knowledge: Tuya datapoints, model quirks
+    settings: FrozenSet[str] = frozenset()  # of VALVE_SETTINGS, those the device takes
 
 
 def classify(ev: Evidence) -> DeviceClass:
@@ -59,6 +63,8 @@ def classify(ev: Evidence) -> DeviceClass:
     all_out = set().union(*ev.clusters_out.values()) if ev.clusters_out else set()
 
     if THERMOSTAT in fns:
+        if ev.settings & VALVE_SETTINGS:
+            return DeviceClass("trv", "a thermostat endpoint that detects or calibrates its valve")
         return DeviceClass("thermostat", "a thermostat endpoint")
     if COVER in fns or "cover" in ev.capabilities:
         return DeviceClass("blind", "a window-covering endpoint" if COVER in fns
@@ -101,6 +107,17 @@ def _ids(clusters: Any) -> Set[int]:
     return {int(c) for c in (clusters or {})}
 
 
+def _valve_settings(device) -> FrozenSet[str]:
+    supports = getattr(device, "supports_setting", None)
+    if supports is None:
+        return frozenset()
+    try:
+        return frozenset(n for n in VALVE_SETTINGS if supports(n))
+    except Exception as e:
+        logger.debug(f"[{getattr(device, 'ieee', '?')}] valve settings unavailable: {e}")
+        return frozenset()
+
+
 def gather(device) -> Evidence:
     from modules.endpoint_kind import device_endpoint_function
 
@@ -126,7 +143,28 @@ def gather(device) -> Evidence:
                 pass    # never read, or a cluster stub without a cache
     caps = getattr(device, "capabilities", None)
     capabilities = set(caps.get_capabilities()) if caps is not None else set()
-    return Evidence(functions, clusters_in, clusters_out, zone_types, capabilities)
+    settings = _valve_settings(device) if THERMOSTAT in functions.values() else frozenset()
+    return Evidence(functions, clusters_in, clusters_out, zone_types, capabilities, settings)
+
+
+def pinned_class(device) -> Optional[DeviceClass]:
+    """What a person said the device is — the user's correction, else an
+    entry's or profile's `device_type` — or None. Reads no capabilities, so
+    capability detection can ask it."""
+    from modules.device_facts import DEVICE, user_facts
+    from modules.device_profiles import DEVICE_TYPES, profile_for_device
+
+    ieee = str(getattr(device, "ieee", "") or "")
+    user = user_facts(ieee).get((DEVICE, SUBJECT)) if ieee else None
+    if user in DEVICE_TYPES:
+        return DeviceClass(user, "set by user", "user")
+    profile = profile_for_device(device)
+    pinned = (profile or {}).get("device_type")
+    if pinned in DEVICE_TYPES and pinned != "generic":
+        zmm = (profile.get("meta") or {}).get("source") == "zmm"
+        return DeviceClass(pinned, f"{'ZMM entry' if zmm else 'profile'} {profile['id']}",
+                           "zmm" if zmm else "profile")
+    return None
 
 
 def device_class(device, refresh: bool = False) -> DeviceClass:
@@ -137,23 +175,10 @@ def device_class(device, refresh: bool = False) -> DeviceClass:
         return cached
 
     from modules.device_decisions import record
-    from modules.device_facts import DEVICE, user_facts
-    from modules.device_profiles import DEVICE_TYPES, profile_for_device
+    from modules.device_facts import DEVICE
 
     ieee = str(getattr(device, "ieee", "") or "")
-    result: Optional[DeviceClass] = None
-    user = user_facts(ieee).get((DEVICE, SUBJECT)) if ieee else None
-    if user in DEVICE_TYPES:
-        result = DeviceClass(user, "set by user", "user")
-    if result is None:
-        profile = profile_for_device(device)
-        pinned = (profile or {}).get("device_type")
-        if pinned in DEVICE_TYPES and pinned != "generic":
-            zmm = (profile.get("meta") or {}).get("source") == "zmm"
-            result = DeviceClass(pinned, f"{'ZMM entry' if zmm else 'profile'} {profile['id']}",
-                                 "zmm" if zmm else "profile")
-    if result is None:
-        result = classify(gather(device))
+    result = pinned_class(device) or classify(gather(device))
 
     try:
         device._device_class = result

@@ -89,13 +89,6 @@ class DeviceHandlerManagerMixin:
         manufacturer = str(self.zigpy_dev.manufacturer or "").lower()
         model = str(self.zigpy_dev.model or "").lower()
 
-        if "philips" in manufacturer or "signify" in manufacturer:
-            if "sml" in model:
-                preferred_endpoints[0x0406] = 2
-                preferred_endpoints[0x0400] = 2
-                preferred_endpoints[0x0402] = 2
-                logger.info(f"[{self.ieee}] Applied Philips Hue Motion quirk: sensors on EP2")
-
         for ep_id, ep in self.zigpy_dev.endpoints.items():
             if ep_id == 0: continue
 

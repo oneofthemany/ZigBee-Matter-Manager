@@ -416,6 +416,9 @@ class DeviceCapabilities:
             elif kinds:
                 self._capabilities.add('switch')
 
+        from modules.device_class import pinned_class
+        pinned = getattr(pinned_class(self.device), 'kind', None)
+
         # Sensors
         if self.OCCUPANCY_SENSING in self._cluster_ids:
             self._capabilities.add('occupancy_sensing')
@@ -429,8 +432,8 @@ class DeviceCapabilities:
                          if z in self.IAS_ZONE_CAPABILITY}
             if zone_caps:
                 self._capabilities |= zone_caps
-            elif 'lumi.sensor_magnet' in model:
-                self._capabilities.add('contact_sensor')
+            elif pinned in ('contact_sensor', 'motion_sensor'):
+                self._capabilities.add(pinned)
             elif not self._ias_zone_types():
                 self._capabilities.add('motion_sensor')
 
@@ -462,8 +465,9 @@ class DeviceCapabilities:
 
         # PHASE 3: Context-Aware Quirks
 
-        # XIAOMI / LUMI Specific
-        if "lumi.sensor_magnet" in model:
+        # A contact that states itself on a client On/Off cluster looks, to
+        # every cluster rule, like a button: only a person can say which.
+        if pinned == 'contact_sensor':
             self._capabilities.add('contact_sensor')
             self._capabilities.add('battery')
             self._capabilities.discard('switch')
@@ -473,17 +477,22 @@ class DeviceCapabilities:
 
         # Controller endpoints: an entry (or profile) that marks an EP
         # `role: controller` says its On/Off/Level/Color are a remote's outputs,
-        # not a load. The model-name quirk below only covers what no entry does.
+        # not a load. Without one, a sensor's EP that sends those commands and
+        # serves none is the same thing, by the device's own cluster lists.
         from modules.device_profiles import profile_for_device
         entry = profile_for_device(self.device)
         controllers = sorted(int(e) for e, v in ((entry or {}).get("endpoints") or {}).items()
                              if (v or {}).get("role") == "controller")
         if controllers:
             self._apply_controller_endpoints(controllers, f"entry {entry['id']}")
-        elif ("philips" in manufacturer or "signify" in manufacturer) \
-                and "sml" in model and self.ON_OFF in self._cluster_ids:
-            self._capabilities.add('motion_sensor')
-            self._apply_controller_endpoints([1], "Philips SML model quirk")
+        else:
+            actuating = {self.ON_OFF, self.LEVEL_CONTROL, self.COLOR_CONTROL}
+            sends_only = sorted(ep for ep, info in self._configurable_endpoints.items()
+                                if info['output_clusters'] & actuating
+                                and not info['input_clusters'] & actuating)
+            senses = any(info['role'] == 'sensor' for info in self._configurable_endpoints.values())
+            if sends_only and senses:
+                self._apply_controller_endpoints(sends_only, "sends commands, serves none")
 
         # TUYA / SMART LIFE
         if self.TUYA_MANUFACTURER in self._cluster_ids:

@@ -546,15 +546,12 @@ class ThermostatHandler(ClusterHandler):
 
     def _is_heat_only(self) -> bool:
         """ControlSequenceOfOperation (0x001B) is the device's own statement:
-        2 and 3 are heating only. Model names stand in only until it is read."""
+        2 and 3 are heating only. Unread, nothing says so."""
         try:
             seq = self.cluster.get("ctrl_sequence_of_oper")
-            if seq is not None:
-                return int(seq) in (2, 3)
+            return seq is not None and int(seq) in (2, 3)
         except Exception:
-            pass
-        model = str(self.device.zigpy_dev.model or "").upper()
-        return any(m in model for m in ("AGL001", "SRTS", "TRV"))
+            return False
 
     def process_command(self, command: str, value: Any):
         # Return the coroutine rather than create_task: the command executor runs it

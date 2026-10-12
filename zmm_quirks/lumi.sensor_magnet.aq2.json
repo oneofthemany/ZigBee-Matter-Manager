@@ -1,0 +1,12 @@
+{
+  "id": "lumi.sensor_magnet.aq2",
+  "protocol": "zigbee",
+  "match": { "model": "lumi.sensor_magnet.aq2", "manufacturer": "LUMI" },
+  "device_type": "contact_sensor",
+  "capabilities": ["contact_sensor", "battery"],
+  "endpoints": {
+    "1": { "label": "Contact" }
+  },
+  "zmm": {},
+  "meta": { "author": "zmm", "source": "zmm" }
+}

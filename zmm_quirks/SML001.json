@@ -9,6 +9,7 @@
     "2": { "label": "Sensor" }
   },
   "zmm": {
+    "battery": "voltage",
     "evidence": { "verified_fw": ["6.1.1.27575", "67.115.5"] }
   },
   "meta": { "author": "zmm", "source": "zmm" }

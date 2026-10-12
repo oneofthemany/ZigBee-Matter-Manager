@@ -196,12 +196,7 @@ class TuyaClusterHandler(ClusterHandler):
         model = str(getattr(self.device.zigpy_dev, 'model', '')).lower()
         manufacturer = str(getattr(self.device.zigpy_dev, 'manufacturer', '')).lower()
 
-        # PRIORITY 1: EXPLICIT MANUFACTURER ID CHECK (FIX for TS0601 Cover)
-        if '_tze200_zah67ekd' in manufacturer:
-            logger.info(f"[{self.device.ieee}] Identified _TZE200_zah67ekd - Using Tuya Cover DP map")
-            return TUYA_COVER_DPS
-
-        # PRIORITY 2: CLUSTER-BASED DETECTION
+        # PRIORITY 1: CLUSTER-BASED DETECTION
         # If the device has the Window Covering Cluster (0x0102), it IS a cover.
         has_cover_cluster = False
         try:
@@ -216,7 +211,7 @@ class TuyaClusterHandler(ClusterHandler):
             logger.info(f"[{self.device.ieee}] Detected Cover Cluster 0x0102 - Using Tuya Cover DP map")
             return TUYA_COVER_DPS
 
-        # PRIORITY 3: MODEL NAME MATCHING
+        # PRIORITY 2: MODEL NAME MATCHING
         if any(x in model for x in ['curtain', 'blind', 'shade', 'roller', 'shutter', 'awning', 'cover']):
             logger.info(f"[{self.device.ieee}] Detected Cover Model - Using Tuya Cover DP map")
             return TUYA_COVER_DPS
