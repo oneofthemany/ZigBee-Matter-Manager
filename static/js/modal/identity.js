@@ -56,6 +56,33 @@ function decisionRow(ep, d) {
     </tr>`;
 }
 
+/** What the device is, as one decision: its source, its reason, and a way to
+ *  confirm or correct it (endpoint 0 is the whole device). */
+function deviceClassCard(dc) {
+    if (!dc) return '';
+    const [cls, label] = SOURCE_BADGE[dc.source] || ['bg-light text-dark', dc.source || '?'];
+    const options = (dc.choices || []).map(c =>
+        `<option value="${escapeHtml(c.type)}" ${c.type === dc.type ? 'selected' : ''}>${escapeHtml(c.label)}</option>`).join('');
+    const power = dc.power ? ` · ${escapeHtml(dc.power)} powered` : '';
+    const confirm = dc.user_set ? '' :
+        `<button class="btn btn-outline-success btn-sm" data-identity-set="${escapeHtml(dc.type)}"
+                 data-ep="0" data-subject="device_type">Confirm</button>`;
+    const reset = dc.user_set
+        ? `<button class="btn btn-outline-danger btn-sm" data-identity-reset data-ep="0"
+                   data-subject="device_type">Reset</button>` : '';
+    return `<div class="card mb-2"><div class="card-body py-2">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <span class="fw-bold small">This device is a</span>
+            <span class="badge bg-dark">${escapeHtml(dc.label)}</span>
+            <span class="badge ${cls}">${escapeHtml(label)}</span>
+            <span class="small text-muted flex-grow-1">${escapeHtml(dc.reason || '')}${power}</span>
+            <select class="form-select form-select-sm w-auto" data-identity-type
+                    aria-label="Correct the device type">${options}</select>
+            ${confirm}${reset}
+        </div>
+    </div></div>`;
+}
+
 function endpointCard(ep) {
     const rows = ep.decisions.map(d => decisionRow(ep.id, d)).join('')
         || '<tr><td colspan="5" class="small text-muted">Nothing decided for this endpoint.</td></tr>';
@@ -95,6 +122,7 @@ function render(root, data) {
             <div data-identity-error></div>
             <div data-identity-history></div>
         </div>
+        ${deviceClassCard(data.device_class)}
         ${data.endpoints.map(endpointCard).join('')}
         <div class="mt-2">
             <button class="btn btn-outline-secondary btn-sm" data-identity-draft>Draft ZMM entry</button>
@@ -215,6 +243,13 @@ export async function initIdentityTab(ieee) {
                 const input = root.querySelector(`[data-identity-label-for="${ep}"]`);
                 send(root, ieee, { endpoint_id: ep, subject: 'label', value: input?.value ?? '' });
             }
+        });
+    }
+    if (!root.dataset.boundType) {
+        root.dataset.boundType = '1';
+        root.addEventListener('change', ev => {
+            const sel = ev.target.closest('[data-identity-type]');
+            if (sel) send(root, ieee, { endpoint_id: 0, subject: 'device_type', value: sel.value });
         });
     }
     try {

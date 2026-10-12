@@ -1,7 +1,27 @@
-# Endpoint classification: light or switch
+# Endpoint classification: what an endpoint is for
 
-`modules/endpoint_kind.py` decides whether an On/Off endpoint is a **light** or
-a **switch**. It is the only place that decision is made. Its consumers:
+`modules/endpoint_kind.py` decides what an endpoint is for. It is the only place
+that decision is made, and it is made in two steps:
+
+1. **Primary function** (`primary_function`). A server cluster that says what
+   the endpoint does: Thermostat (0x0201) → thermostat, Window Covering
+   (0x0102) → cover, Door Lock (0x0101) → lock. On/Off beside one of these is
+   that function's own power control, not a second device.
+2. **Light or switch** (`classify`), asked only of an On/Off endpoint with no
+   primary function.
+
+`endpoint_function` gives the combined answer for any endpoint; the device list
+carries it per endpoint as `function`, beside `component_type` (the
+light/switch half).
+
+Nothing downstream may turn "neither" back into a switch. Three places once
+did — the On/Off handler built a switch entity, kept writing `on`/`state`, and
+the Control tab read `component_type || 'switch'` — which is how a SONOFF
+TRVZB, declaring itself a thermostat by cluster and by device type, showed a
+switch beside its thermostat controls. In the zhaquirks corpus the same shape
+is 27 thermostat endpoints across 5 models and 9 cover endpoints.
+
+Consumers:
 
 | Consumer | Uses it for |
 |---|---|
@@ -20,10 +40,13 @@ a light.
 An elimination: each rule fires only on positive evidence, and an EP that
 offers none of it falls through to switch.
 
-1. No On/Off input cluster → not classified (controller, sensor, cover).
+1. No On/Off input cluster → not classified (controller, sensor).
 2. Override, strongest first: the user's correction (Identity tab), then a
    ZMM entry's or profile's `endpoints[ep].kind`. An entry's
    `zmm.corrections.device_type: ignore` drops the declared type from rule 4.
+   An override is also how a thermostat whose On/Off is worth exposing (a
+   wall thermostat's power button) gets its switch back.
+2a. A primary function (above) → not classified as light or switch.
 3. Colour Control (0x0300) → light. No outlet carries it.
 4. Outlet device type → switch: HA Mains Power Outlet (0x0009), Smart Plug
    (0x0051), On/Off Plug-in Unit (0x010A), On/Off Output (0x0002); ZLL On/Off
@@ -41,6 +64,47 @@ offers none of it falls through to switch.
 7. Touchlink (0x1000) → light.
 8. Otherwise → switch. On/Off with no light evidence drives a relay; HA's
    switch and on/off light behave the same, so this is the safe miss.
+
+## Device class
+
+`modules/device_class.py` answers the question one level up — what the whole
+device is — once, for every consumer that used to guess it from a model name.
+It is a key of `device_profiles.DEVICE_TYPES`, carried in the device list as
+`device_class` (`type`, `label`, `source`, `reason`, `power`) and shown in the
+Identity tab, where it can be confirmed or corrected (a `user` fact on
+endpoint 0, subject `device_type`).
+
+Order: the user's correction, then a ZMM entry's or profile's `device_type`,
+then rules over the device's own evidence, first match wins:
+
+1. A thermostat endpoint → thermostat. A cover endpoint, or the cover
+   capability its handler gives a datapoint device → blind. A lock endpoint →
+   lock.
+2. A light endpoint → colour light if that endpoint has Colour Control, else
+   light. A switch endpoint → plug if the device meters a load, else switch.
+3. IAS Zone `zone_type`, the device's own statement: 0x000D motion, 0x0015
+   contact, 0x0028 smoke, 0x002A leak, 0x002D vibration. A zone that never
+   gave its type is not guessed at.
+4. A handler's contact capability; Occupancy Sensing or a handler's motion
+   capability; Temperature; Humidity.
+5. On/Off, Level or Colour as client clusters only, or Multistate Input →
+   button.
+6. Otherwise generic.
+
+An actuator outranks a sensor on the same device, and a sensor outranks a
+remote's outputs (a motion sensor with a scene-controller endpoint is a motion
+sensor). Nothing here tells a radiator valve from a wall thermostat: both are
+a thermostat endpoint on a battery. An entry says `trv`.
+
+Related evidence that replaced a name test:
+
+| Was | Now |
+|---|---|
+| battery-or-mains from "plug", "bulb", "switch" in the model | the node descriptor (`is_mains_powered`) |
+| every IAS Zone device a motion sensor unless `lumi.sensor_magnet` | `zone_type` |
+| heat-only from "TRV" / "AGL001" in the model | ControlSequenceOfOperation (0x001B) |
+| boiler receiver vs valve from "SLR" / "SLT" / "TRV" | a thermostat endpoint, and mains or battery |
+| which valve settings to offer, from the maker's name | `device.supports_setting(name)` |
 
 ## What is never evidence
 

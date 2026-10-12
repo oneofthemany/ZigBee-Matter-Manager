@@ -50,6 +50,8 @@ DISCOVERY_READ_BUDGET = 20.0
 
 COORDINATOR_STATE_KEYS = {"manufacturer", "model", "power_source", "last_seen",
                           "lqi", "rssi", "available"}
+from modules import device_class
+from modules.endpoint_kind import device_endpoint_function
 from modules.json_helpers import prepare_for_json, sanitise_device_state
 from modules.packet_stats import packet_stats
 from modules.zones import ZoneManager
@@ -2121,8 +2123,12 @@ class ZigbeeService(
                         if hasattr(h, 'get_component_type'):
                             component_type = h.get_component_type()
 
+                    function = device_endpoint_function(zdev, ep)
                     endpoints.append({
                         "id": ep_id,
+                        # What the EP is for: light, switch, thermostat, cover,
+                        # lock, or null. component_type is the light/switch half.
+                        "function": function.kind if function else None,
                         "device_type": hex(ep.device_type) if ep.device_type else "0x0000",
                         "profile_id": hex(ep.profile_id) if ep.profile_id else "0x0000",
                         "profile": hex(ep.profile_id) if ep.profile_id else "0x0000",
@@ -2134,6 +2140,8 @@ class ZigbeeService(
                 res.append({
                     "ieee": ieee,
                     "nwk": hex(d.nwk),
+                    # What the device is, decided once (modules/device_class.py).
+                    "device_class": device_class.describe(zdev),
                     "friendly_name": self.friendly_names.get(ieee, ieee),
                     "model": str(d.model) if d.model else "Unknown",
                     "manufacturer": str(d.manufacturer) if d.manufacturer else "Unknown",

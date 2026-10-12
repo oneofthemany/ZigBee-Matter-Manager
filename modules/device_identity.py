@@ -8,10 +8,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from modules import device_class
+from modules.device_profiles import DEVICE_TYPES
+
 logger = logging.getLogger("modules.device_identity")
 
 # Subjects a user may set, and the values each accepts (None: free text).
 SETTABLE: Dict[str, Optional[frozenset]] = {
+    "device_type": frozenset(DEVICE_TYPES),     # whole device: endpoint 0
     "kind":     frozenset({"light", "switch"}),
     "metering": frozenset({"self", "device_total", "none"}),
     "label":    None,
@@ -116,6 +120,10 @@ def identity(device) -> Dict[str, Any]:
         "quirk": quirk_name_of(zdev),
         "profile": ({"id": profile["id"], "source": (profile.get("meta") or {}).get("source")}
                     if profile else None),
+        "device_class": {**device_class.describe(device),
+                         "user_set": (0, device_class.SUBJECT) in user,
+                         "choices": [{"type": k, "label": v["label"]}
+                                     for k, v in DEVICE_TYPES.items()]},
         "facts_by_source": dict(sorted(by_source.items(), key=lambda kv: RANK.get(kv[0], 99))),
         "endpoints": endpoints,
     }
@@ -129,7 +137,10 @@ def apply_user_fact(device, endpoint_id: int, subject: str, value: Any) -> Optio
     err = validate(subject, value)
     if err:
         return err
-    if endpoint_id not in (device.zigpy_dev.endpoints or {}):
+    if subject == "device_type":
+        if endpoint_id != 0:
+            return "device_type is set on the device (endpoint 0)"
+    elif endpoint_id not in (device.zigpy_dev.endpoints or {}) or endpoint_id == 0:
         return f"endpoint {endpoint_id} not found"
     ieee = str(device.ieee)
     if value is None:
@@ -141,4 +152,5 @@ def apply_user_fact(device, endpoint_id: int, subject: str, value: Any) -> Optio
             h._kind = None
     if hasattr(device, "capabilities"):
         device.capabilities._detect_capabilities()
+    device_class.invalidate(device)
     return None

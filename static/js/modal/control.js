@@ -1128,6 +1128,11 @@ export function renderControlTab(device) {
             const hasElectrical = clusters.some(c => c.id === 0x0B04);
             const hasMultiState = clusters.some(c => [0x0012, 0x0013, 0x0014].includes(c.id));
 
+            // On/Off on a thermostat, cover or lock is that function's own
+            // control (ep.function, from the endpoint classifier) and is not
+            // drawn as a switch beside the real controls.
+            if (!ep.component_type && ['thermostat', 'cover', 'lock'].includes(ep.function)) return;
+
             const componentType = ep.component_type || 'switch';
             const isLight = componentType === 'light';
 

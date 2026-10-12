@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from modules.device_facts import mfr_hex, vendor_scoped
+
 Key = Tuple[int, int, int, Optional[int]]
 
 POWER = (0x0B04, 0x050B)
@@ -249,7 +251,7 @@ def attribute_that_toggled(records, baseline, step, ctx) -> List[Dict[str, Any]]
     inputs = step.get("inputs") or {}
     sid = str(inputs.get("setting_id") or "").strip()
     writable = ctx.get("writable") or {}          # (ep, cluster, attr, mfr) -> type name
-    hits = [r for r in records if r.get("mfr") and _key(r) in writable
+    hits = [r for r in records if vendor_scoped(r["cluster"], r.get("mfr")) and _key(r) in writable
             and _key(r) in baseline and r["value"] != baseline[_key(r)]]
     if not sid:
         return [proposal("", None, "none", "name the setting first")]
@@ -266,9 +268,54 @@ def attribute_that_toggled(records, baseline, step, ctx) -> List[Dict[str, Any]]
         if _num(old) is not None and _num(new) is not None else {}
     return [proposal("zmm.settings", {
         "id": sid, "label": str(inputs.get("label") or sid), "type": writable[_key(r)],
-        "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}", "mfr": f"0x{mfr:04X}",
+        "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}", "mfr": mfr_hex(mfr),
         "values": values}, "high",
         f"EP{ep} 0x{cluster:04X}/0x{attr:04X} went {old} -> {new}")]
+
+
+# A setting stored scaled is a power of ten from the number a person sees.
+NUMBER_SCALES = (1, 10, 100, 1000)
+
+
+def attribute_that_became(records, baseline, step, ctx) -> List[Dict[str, Any]]:
+    """The writable vendor attribute that took the number the user set on the
+    device. Its raw value over that number is the scale, so a temperature held
+    as hundredths is learned as one, with no table saying so."""
+    inputs = step.get("inputs") or {}
+    sid = str(inputs.get("setting_id") or "").strip()
+    known = _num(inputs.get("new_value"))
+    writable = ctx.get("writable") or {}
+    if not sid or known is None:
+        return [proposal("", None, "none", "name the setting and give the value you set")]
+    if known == 0:
+        return [proposal("", None, "none", "set it to a value other than 0: every scale of 0 is 0")]
+    changed = {}
+    for r in records:
+        if vendor_scoped(r["cluster"], r.get("mfr")) and _key(r) in writable \
+                and _num(r["value"]) is not None and r["value"] != baseline.get(_key(r)):
+            changed[_key(r)] = r["value"]
+    matches = [(key, scale) for key, raw in sorted(changed.items(), key=lambda kv: str(kv[0]))
+               for scale in NUMBER_SCALES if raw == round(known * scale)]
+    if len({key for key, _ in matches}) != 1:
+        n = len({key for key, _ in matches})
+        return [proposal("", None, "none" if n == 0 else "low",
+                         f"no setting became {known:g}" + (
+                             f" ({len(changed)} changed to something else)" if changed else "")
+                         if n == 0 else f"{n} settings became {known:g}: change just one")]
+    (ep, cluster, attr, mfr), scale = matches[0]
+    setting = {"id": sid, "label": str(inputs.get("label") or sid),
+               "type": writable[(ep, cluster, attr, mfr)],
+               "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}",
+               "mfr": mfr_hex(mfr), "values": {}}
+    if scale != 1:
+        setting["scale"] = scale
+    if str(inputs.get("unit") or "").strip():
+        setting["unit"] = str(inputs["unit"]).strip()
+    raw = changed[(ep, cluster, attr, mfr)]
+    return [proposal("zmm.settings", setting, "high",
+                     f"EP{ep} 0x{cluster:04X}/0x{attr:04X} went "
+                     f"{baseline.get((ep, cluster, attr, mfr))} -> {raw} when set to {known:g}"
+                     + (f": stored x{scale}" if scale != 1 else ""))]
 
 
 def correlate_blob_tags(records, baseline, step, ctx) -> List[Dict[str, Any]]:
@@ -310,7 +357,7 @@ def confirmed_write(records, baseline, step, ctx) -> List[Dict[str, Any]]:
     old, new = trial["old"], trial["new"]
     return [proposal("zmm.settings", {
         "id": sid, "label": str(inputs.get("label") or sid), "type": trial["type"],
-        "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}", "mfr": f"0x{mfr:04X}",
+        "ep": ep, "cluster": f"0x{cluster:04X}", "attr": f"0x{attr:04X}", "mfr": mfr_hex(mfr),
         "values": {str(int(old)): str(inputs.get("from_label") or old),
                    str(int(new)): str(inputs.get("to_label") or new)}}, "high",
         f"writing EP{ep} 0x{cluster:04X}/0x{attr:04X} {int(old)} -> {int(new)} changed the device; "
@@ -323,6 +370,7 @@ OPS: Dict[str, Callable] = {
     "which_endpoints_moved": which_endpoints_moved,
     "scale_from_known": scale_from_known,
     "attribute_that_toggled": attribute_that_toggled,
+    "attribute_that_became": attribute_that_became,
     "correlate_blob_tags": correlate_blob_tags,
     "confirmed_write": confirmed_write,
     "power_follows_switch": power_follows_switch,

@@ -186,8 +186,7 @@ class ThermostatHandler(ClusterHandler):
             ]
 
             # Cooling extras for mains-powered multi-mode receivers
-            model = str(self.device.zigpy_dev.model or "").upper()
-            is_heat_only = any(m in model for m in ("AGL001", "SRTS", "TRV"))
+            is_heat_only = self._is_heat_only()
             if not is_heat_only:
                 report_config += [
                     ("occupied_cooling_setpoint", 0, 300, 10),
@@ -544,6 +543,18 @@ class ThermostatHandler(ClusterHandler):
             action = "heating" if is_heating else "idle"
 
         self.device.update_state({"hvac_action": action})
+
+    def _is_heat_only(self) -> bool:
+        """ControlSequenceOfOperation (0x001B) is the device's own statement:
+        2 and 3 are heating only. Model names stand in only until it is read."""
+        try:
+            seq = self.cluster.get("ctrl_sequence_of_oper")
+            if seq is not None:
+                return int(seq) in (2, 3)
+        except Exception:
+            pass
+        model = str(self.device.zigpy_dev.model or "").upper()
+        return any(m in model for m in ("AGL001", "SRTS", "TRV"))
 
     def process_command(self, command: str, value: Any):
         # Return the coroutine rather than create_task: the command executor runs it

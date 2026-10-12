@@ -493,6 +493,11 @@ async def lifespan(app: FastAPI):
     try:
         from modules import zigbee_cache
         await asyncio.to_thread(zigbee_cache.warm)
+        # Off the loop and before any service reads facts: a no-op once every
+        # discovered device has its answered facts.
+        backfilled = await asyncio.to_thread(zigbee_cache.backfill_answered_facts)
+        if backfilled:
+            logger.info(f"Recorded discovery evidence as facts for {backfilled} device(s)")
     except Exception as e:
         logger.warning(f"Zigbee cache DB warm-up failed: {e}")
 

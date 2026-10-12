@@ -28,6 +28,10 @@ VALID_EXT_MODES = ("off", "advisory", "push")
 
 VALID_CONFIG_MODES = ("floor_plan", "manual")
 
+# Per-valve settings the controller and its UI know how to offer.
+TRV_SETTINGS = ("window_detection", "child_lock", "valve_detection",
+                "motor_calibration", "external_temp", "sensor_type")
+
 
 VALID_FLOOR_TYPES = (
     "solid",
@@ -1250,31 +1254,50 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                 model_s = str(model or "").upper()
                 base = {"ieee": ieee_s, "name": name, "manufacturer": manuf, "model": model}
 
-                has_thermostat = any(k in state for k in (
-                    "system_mode", "occupied_heating_setpoint",
-                    "local_temperature", "current_temperature",
-                    "heating_demand", "hvac_action"
-                ))
+                # A real device answers from its own evidence: a thermostat
+                # endpoint, the node descriptor's power source, the settings it
+                # takes (modules/device_class.py). The state and model tests
+                # below only serve a device that is a plain dict.
+                real = not isinstance(dev, dict) and getattr(dev, "zigpy_dev", None) is not None
+                if real:
+                    from modules import device_class
+                    has_thermostat = device_class.has_function(dev, "thermostat")
+                else:
+                    has_thermostat = any(k in state for k in (
+                        "system_mode", "occupied_heating_setpoint",
+                        "local_temperature", "current_temperature",
+                        "heating_demand", "hvac_action"
+                    ))
 
                 if not has_thermostat:
                     continue
 
-                is_mains = False
-                if power_source is True or power_source == "Mains":
-                    is_mains = True
-                elif "SLR" in model_s or "RECEIVER" in model_s:
-                    is_mains = True
-                elif "SLT" not in model_s and "TRV" not in model_s:
-                    if "on_off" in state or state.get("power_source") == "Mains":
+                mains = device_class.is_mains_powered(dev) if real else None
+                if mains is not None:
+                    is_mains = mains
+                else:
+                    is_mains = False
+                    if power_source is True or power_source == "Mains":
                         is_mains = True
+                    elif "SLR" in model_s or "RECEIVER" in model_s:
+                        is_mains = True
+                    elif "SLT" not in model_s and "TRV" not in model_s:
+                        if "on_off" in state or state.get("power_source") == "Mains":
+                            is_mains = True
 
-                # Heuristic for Aqara TRV recognition so the UI can show its
-                # calibration / child-lock / window-detection toggles.
-                manuf_s = str(manuf or "").lower()
-                is_aqara_trv = (
-                                       ("lumi" in manuf_s or "aqara" in manuf_s) and
-                                       any(marker in model_s.lower() for marker in ("airrtc", "agl001", "thermostat"))
-                               ) or "AGL001" in model_s
+                # Drives the UI's calibrate / child-lock / window-detection
+                # controls: whether the device takes them, not who made it.
+                ask = getattr(dev, "supports_setting", None)
+                if callable(ask):
+                    settings = sorted(n for n in TRV_SETTINGS if ask(n))
+                    is_aqara_trv = "motor_calibration" in settings
+                else:
+                    settings = []
+                    manuf_s = str(manuf or "").lower()
+                    is_aqara_trv = (
+                                           ("lumi" in manuf_s or "aqara" in manuf_s) and
+                                           any(marker in model_s.lower() for marker in ("airrtc", "agl001", "thermostat"))
+                                   ) or "AGL001" in model_s
 
                 entry = dict(base)
                 entry["temperature"] = state.get("local_temperature") or state.get("current_temperature")
@@ -1291,6 +1314,9 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                 entry_trv["temperature"] = entry["temperature"]
                 entry_trv["setpoint"] = entry["setpoint"]
                 entry_trv["is_aqara_trv"] = is_aqara_trv
+                entry_trv["settings"] = settings
+                if real:
+                    entry_trv["device_class"] = device_class.describe(dev)
                 entry_trv["assigned"] = assignments_trv.get(ieee_s)
                 thermostats.append(entry_trv)
 

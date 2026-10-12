@@ -2,9 +2,7 @@
   "id": "manufacturer_setting",
   "title": "Device settings",
   "applies_when": {
-    "in_clusters_any": [
-      "0xFCC0"
-    ]
+    "vendor_cluster": true
   },
   "steps": [
     {
@@ -36,6 +34,39 @@
       "infer": [
         {
           "op": "attribute_that_toggled",
+          "yields": "zmm.settings"
+        }
+      ]
+    },
+    {
+      "id": "set_number",
+      "instruction": "For a setting that holds a number (a temperature, a percentage, a time): name it, then set it on the device itself to a value you choose and enter that value here. Change only that one.",
+      "inputs": [
+        {
+          "name": "setting_id",
+          "label": "Short name (e.g. frost_temperature)",
+          "type": "text"
+        },
+        {
+          "name": "label",
+          "label": "Label",
+          "type": "text"
+        },
+        {
+          "name": "new_value",
+          "label": "The value you set it to",
+          "type": "number"
+        },
+        {
+          "name": "unit",
+          "label": "Unit (e.g. °C, %)",
+          "type": "text"
+        }
+      ],
+      "window_s": 90,
+      "infer": [
+        {
+          "op": "attribute_that_became",
           "yields": "zmm.settings"
         }
       ]

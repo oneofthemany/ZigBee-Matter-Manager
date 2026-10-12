@@ -15,6 +15,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from modules.device_facts import mfr_hex, vendor_scoped
+
 # Device types that describe a controller (a remote or wall switch sending
 # commands). Declared on an EP that takes On/Off commands, the type is wrong.
 CONTROLLER_TYPES = frozenset({0x0000, 0x0001, 0x0006, 0x0103, 0x0104, 0x0105, 0x0107, 0x0820})
@@ -149,11 +151,11 @@ def _setting_candidates(facts: Dict[int, Dict]) -> List[Dict[str, Any]]:
     for ep, f in sorted(facts.items()):
         for (subject, source), v in sorted(f.items()):
             p = _parse(subject)
-            if not p or p[0] != "attr" or source != "answered" or p[3] is None:
+            if not p or p[0] != "attr" or source != "answered" or not vendor_scoped(p[1], p[3]):
                 continue
             if "W" not in str((v or {}).get("acl") or ""):
                 continue
             out.append({"ep": ep, "cluster": f"0x{p[1]:04X}", "attr": f"0x{p[2]:04X}",
-                        "mfr": f"0x{p[3]:04X}", "type": (v or {}).get("type"),
+                        "mfr": mfr_hex(p[3]), "type": (v or {}).get("type"),
                         "value": (v or {}).get("value")})
     return out

@@ -15,6 +15,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from modules.device_facts import VENDOR_CLUSTER_MIN
+
 logger = logging.getLogger("modules.learning_recipes")
 
 SHIPPED_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -43,6 +45,8 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     clusters_any = [_hex(c) for c in aw.get("in_clusters_any") or []]
     clusters_none = [_hex(c) for c in aw.get("not_in_clusters_any") or []]
     if None in clusters_any or None in clusters_none or aw.get("kind") not in (None, "light", "switch"):
+        return None
+    if not isinstance(aw.get("vendor_cluster", False), bool):
         return None
     steps = []
     for st in raw.get("steps") or []:
@@ -85,7 +89,8 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     return {"id": raw["id"], "title": str(raw.get("title") or raw["id"]),
             "applies_when": {"in_clusters_any": clusters_any, "not_in_clusters_any": clusters_none,
-                             "kind": aw.get("kind")},
+                             "kind": aw.get("kind"),
+                             "vendor_cluster": bool(aw.get("vendor_cluster", False))},
             "steps": steps}
 
 
@@ -137,6 +142,10 @@ def applies(recipe: Dict[str, Any], device) -> bool:
                                          for ep in eps.values()):
         return False
     if aw["kind"] and not any(_kind(device, e) == aw["kind"] for e in eps):
+        return False
+    # Any maker's own cluster, by id range: no list of vendors to keep up.
+    if aw.get("vendor_cluster") and not any(c >= VENDOR_CLUSTER_MIN for ep in eps.values()
+                                            for c in (ep.in_clusters or {})):
         return False
     return True
 

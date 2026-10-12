@@ -370,6 +370,19 @@ def _is_flatlined(ieee: str) -> bool:
     return bool(cached and cached[1])
 
 
+def _supports(dev: Any, setting: str) -> bool:
+    """Whether a device takes the named setting. A device that can't say (a
+    plain dict in a test, an older wrapper) is assumed to."""
+    ask = getattr(dev, "supports_setting", None)
+    if not callable(ask):
+        return True
+    try:
+        return bool(ask(setting))
+    except Exception as e:
+        logger.debug(f"supports_setting({setting}) failed: {e}")
+        return True
+
+
 def _send_ok(resp: Any) -> bool:
     """The command sender reports failure as {"success": False}, never by raising."""
     if isinstance(resp, dict):
@@ -3081,6 +3094,10 @@ class HeatingController:
             if desired is None:
                 results["skipped"][cfg_key] = "not configured"
                 continue
+            # A setting the valve doesn't have is not a failure to retry.
+            if not _supports(dev, command):
+                results["skipped"][cfg_key] = "not supported by this device"
+                continue
 
             current = current_state.get(state_key)
             # State values may be bool, int, or None
@@ -3107,7 +3124,9 @@ class HeatingController:
         want_external = room.get("external_temp_mode") == "push"
         current_sensor = current_state.get("sensor_type")
         is_external = current_sensor in (1, "1", "external", True)
-        if is_external == want_external or (current_sensor is None and not want_external):
+        if not _supports(dev, "sensor_type"):
+            results["skipped"]["sensor_type"] = "not supported by this device"
+        elif is_external == want_external or (current_sensor is None and not want_external):
             results["skipped"]["sensor_type"] = (
                 "not reported" if current_sensor is None
                 else f"already {'external' if is_external else 'internal'}")
@@ -3237,6 +3256,8 @@ class HeatingController:
                     # write_fail_streak is maintained by the device command
                     # executor; any successful write resets it.
                     trv_dev = devices.get(ieee)
+                    if not _supports(trv_dev, "external_temp"):
+                        continue
                     streak = getattr(trv_dev, "write_fail_streak", 0) if trv_dev is not None else 0
                     if streak >= EXT_PUSH_FAIL_STREAK_THRESHOLD:
                         backoff = min(

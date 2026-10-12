@@ -297,7 +297,57 @@ def record_attribute_metadata(ieee, endpoint_id, cluster_id, attributes,
         if val is not None:
             record_value(ieee, endpoint_id, cluster_id, attr_id, val)
 
+    # A discovery the device answered is evidence like a probe's: without this
+    # it sat in device_attributes, unseen by everything that reads facts
+    # (entry settings, drafts, learning), for any device never probed.
+    _record_answered(ieee, endpoint_id, cluster_id, attributes, manufacturer_code)
     return written
+
+
+def _acl(readable, writable) -> str:
+    return ("R" if readable or readable is None else "") + ("W" if writable else "")
+
+
+def _record_answered(ieee, endpoint_id, cluster_id, attributes, manufacturer_code) -> None:
+    from modules.device_facts import Fact, _j, attr_subject, record
+    facts = [Fact(int(endpoint_id),
+                  attr_subject("attr", int(cluster_id), int(a["id_int"]), manufacturer_code),
+                  "answered",
+                  _j({"type": a.get("type"), "acl": _acl(a.get("readable"), a.get("writable")),
+                      "value": a.get("value")}))
+             for a in attributes or [] if a.get("id_int") is not None]
+    try:
+        record(str(ieee), facts)
+    except Exception as e:
+        logger.debug(f"[{ieee}] answered facts not recorded: {e}")
+
+
+def backfill_answered_facts() -> int:
+    """Devices discovered before discovery fed the fact store: turn their
+    device_attributes rows into answered facts, once. Returns devices done."""
+    _init_schema()
+    cur = _safe_execute(
+        """
+        SELECT a.ieee, a.endpoint_id, a.cluster_id, a.attribute_id, a.data_type,
+               a.readable, a.writable, a.manufacturer_code,
+               (SELECT coalesce(h.value_numeric, try_cast(h.value_text AS DOUBLE))
+                FROM attribute_history h
+                WHERE h.ieee = a.ieee AND h.endpoint_id = a.endpoint_id
+                  AND h.cluster_id = a.cluster_id AND h.attribute_id = a.attribute_id
+                ORDER BY h.ts DESC LIMIT 1) AS last_value
+        FROM device_attributes a
+        WHERE NOT EXISTS (SELECT 1 FROM device_facts f
+                          WHERE f.ieee = a.ieee AND f.source = 'answered')
+        """, context="backfill answered facts")
+    groups: Dict[tuple, list] = {}
+    for ieee, ep, cid, aid, dtype, r, w, mfr, last in (cur.fetchall() if cur else []):
+        if last is not None and float(last).is_integer():
+            last = int(last)
+        groups.setdefault((ieee, ep, cid, mfr), []).append(
+            {"id_int": aid, "type": dtype, "readable": r, "writable": w, "value": last})
+    for (ieee, ep, cid, mfr), attrs in groups.items():
+        _record_answered(ieee, ep, cid, attrs, mfr)
+    return len({k[0] for k in groups})
 
 
 # WRITE: ATTRIBUTE VALUE (time-series)

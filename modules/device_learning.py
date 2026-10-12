@@ -68,8 +68,10 @@ def _context(device, step: Dict[str, Any]) -> Dict[str, Any]:
     from modules.measurement_sanity import SWITCHED_OUTLET_MAX_W
     from modules.zigbee_cache import get_facts
     writable = {}
+    from modules.device_facts import parse_attr_subject, vendor_scoped
     for f in get_facts(str(device.ieee)):
-        if f["source"] != "answered" or "@" not in f["subject"] or not f["subject"].startswith("attr:"):
+        parsed = parse_attr_subject(f["subject"]) if f["source"] == "answered" else None
+        if parsed is None or not vendor_scoped(parsed[0], parsed[2]):
             continue
         try:
             meta = json.loads(f["value"])
@@ -77,10 +79,9 @@ def _context(device, step: Dict[str, Any]) -> Dict[str, Any]:
             continue
         if "W" not in str(meta.get("acl") or ""):
             continue
-        ca, mfr = f["subject"][5:].split("@")
-        cid, aid = (int(x, 16) for x in ca.split("/"))
+        cid, aid, mfr = parsed
         type_name = str(meta.get("type") or "").split("/")[-1]
-        writable[(f["endpoint_id"], cid, aid, int(mfr, 16))] = type_name
+        writable[(f["endpoint_id"], cid, aid, mfr)] = type_name
     ep = step.get("ep")
     switched = ep is not None and 0x0006 in (
         getattr(device.zigpy_dev.endpoints.get(ep), "in_clusters", None) or {})
@@ -104,7 +105,7 @@ def _sample_targets(device, step: Dict[str, Any], ctx) -> List[Tuple[int, int, i
         targets += [(e, 0x0B04, 0x050B, None) for e, ep in eps.items() if 0x0B04 in (ep.in_clusters or {})]
     if ops & {"which_endpoint_changed", "power_follows_switch"}:
         targets += [(e, 0x0006, 0x0000, None) for e, ep in eps.items() if 0x0006 in (ep.in_clusters or {})]
-    if "attribute_that_toggled" in ops:
+    if ops & {"attribute_that_toggled", "attribute_that_became"}:
         targets += [k for k in ctx["writable"] if k[0] in eps]
     return targets
 
@@ -370,6 +371,7 @@ def candidates(device, key: str) -> Dict[str, Any]:
     """Settings ZMM may flip for this step: writable manufacturer toggles
     (bool, or a small integer now 0 or 1), mains devices only."""
     import json
+    from modules.device_facts import attr_subject, mfr_hex
     from modules.zigbee_cache import get_facts
     s, st, err = _session_step(device, key)
     if err:
@@ -381,20 +383,21 @@ def candidates(device, key: str) -> Dict[str, Any]:
                                            "might not be put back"}
     values = {}
     for f in get_facts(str(device.ieee)):
-        if f["source"] == "answered" and f["subject"].startswith("attr:") and "@" in f["subject"]:
+        if f["source"] == "answered" and f["subject"].startswith("attr:"):
             try:
                 values[(f["endpoint_id"], f["subject"])] = json.loads(f["value"]).get("value")
             except ValueError:
                 pass
     out = []
-    for (ep, cid, aid, mfr), type_name in sorted(_context(device, st)["writable"].items()):
+    for (ep, cid, aid, mfr), type_name in sorted(_context(device, st)["writable"].items(),
+                                                 key=lambda kv: (kv[0][:3], kv[0][3] or 0)):
         if type_name not in TOGGLE_TYPES or (cid, aid) in NEVER_WRITE:
             continue
-        v = values.get((ep, f"attr:0x{cid:04X}/0x{aid:04X}@0x{mfr:04X}"))
+        v = values.get((ep, attr_subject("attr", cid, aid, mfr)))
         if v not in (None, 0, 1, True, False):
             continue
         label = f"EP{ep} 0x{cid:04X}/0x{aid:04X}"
-        out.append({"ep": ep, "cluster": f"0x{cid:04X}", "attr": f"0x{aid:04X}", "mfr": f"0x{mfr:04X}",
+        out.append({"ep": ep, "cluster": f"0x{cid:04X}", "attr": f"0x{aid:04X}", "mfr": mfr_hex(mfr),
                     "type": type_name, "value": v, "ruled_out": label in s.tried.get(key, [])})
     return {"success": True, "candidates": out}
 
@@ -461,7 +464,8 @@ async def try_write(device, key: str, candidate: Dict[str, Any],
                  == (candidate.get("ep"), candidate.get("cluster"), candidate.get("attr"))), None)
     if pick is None:
         return {"success": False, "error": "not an attribute ZMM may flip"}
-    tkey = (pick["ep"], int(pick["cluster"], 16), int(pick["attr"], 16), int(pick["mfr"], 16))
+    tkey = (pick["ep"], int(pick["cluster"], 16), int(pick["attr"], 16),
+            int(pick["mfr"], 16) if pick.get("mfr") else None)
     now = await _read(device, [tkey])
     if not now or now[-1]["value"] not in (0, 1, True, False):
         return {"success": False, "error": "could not read its current value"}

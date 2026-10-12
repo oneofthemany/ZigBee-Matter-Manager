@@ -1,7 +1,8 @@
 """
-Light-vs-switch classification for an On/Off endpoint — the single source for
-HA discovery, device capabilities and the Control tab. Rules and the evidence
-behind their order: docs/endpoint-classification.md.
+What an endpoint is for — the single source for HA discovery, device
+capabilities and the Control tab. An endpoint's primary function comes first
+(thermostat, cover, lock); only an endpoint with none is asked light-or-switch.
+Rules and the evidence behind their order: docs/endpoint-classification.md.
 """
 from __future__ import annotations
 
@@ -9,6 +10,9 @@ from typing import Iterable, NamedTuple, Optional
 
 LIGHT = "light"
 SWITCH = "switch"
+THERMOSTAT = "thermostat"
+COVER = "cover"
+LOCK = "lock"
 
 ON_OFF        = 0x0006
 LEVEL         = 0x0008
@@ -19,6 +23,16 @@ MULTISTATE_IN = 0x0012
 METERING      = 0x0702
 ELECTRICAL    = 0x0B04
 SONOFF        = 0xFC11
+DOOR_LOCK     = 0x0101
+THERMOSTAT_CL = 0x0201
+
+# A server cluster that says what the endpoint is for. On/Off beside one is
+# that function's own power control, not a second device.
+PRIMARY_FUNCTION_CLUSTERS = {
+    THERMOSTAT_CL: THERMOSTAT,
+    WINDOW_COVER: COVER,
+    DOOR_LOCK: LOCK,
+}
 
 # Clusters a lamp never carries: an EP with one drives a load or a button.
 LOAD_CLUSTERS = frozenset({ELECTRICAL, METERING, MULTISTATE_IN, SONOFF})
@@ -42,9 +56,18 @@ DIMMABLE_LIGHT_TYPES = {
 
 
 class EndpointKind(NamedTuple):
-    kind: str               # LIGHT | SWITCH
+    kind: str               # LIGHT | SWITCH, or a primary function
     reason: str
     source: str = "rule"    # user | zmm | profile | rule
+
+
+def primary_function(in_clusters: Iterable[int]) -> Optional[EndpointKind]:
+    """The function an endpoint's own server clusters declare, if any."""
+    ids = set(in_clusters)
+    for cluster, function in PRIMARY_FUNCTION_CLUSTERS.items():
+        if cluster in ids:
+            return EndpointKind(function, f"{function} cluster 0x{cluster:04X}")
+    return None
 
 
 def _as_int(v) -> Optional[int]:
@@ -56,7 +79,10 @@ def _as_int(v) -> Optional[int]:
 
 def classify(in_clusters: Iterable[int], profile_id=None, device_type=None,
              override: Optional[str] = None) -> Optional[EndpointKind]:
-    """Kind of an EP with On/Off as an input cluster; None for any other EP.
+    """LIGHT or SWITCH for an EP whose On/Off drives a load of its own; None
+    for any other EP — one without On/Off, or one whose primary function is
+    something else (`primary_function`), unless an override says its On/Off is
+    worth exposing.
 
     Vendor clusters (0xFCC0, 0xEF00) are never evidence: they mark who made
     the device, not what it drives.
@@ -66,6 +92,8 @@ def classify(in_clusters: Iterable[int], profile_id=None, device_type=None,
         return None
     if override in (LIGHT, SWITCH):
         return EndpointKind(override, "profile override")
+    if primary_function(ids):
+        return None
     if COLOR in ids:
         return EndpointKind(LIGHT, "colour control")
     dt, profile = _as_int(device_type), _as_int(profile_id)
@@ -86,6 +114,14 @@ def classify(in_clusters: Iterable[int], profile_id=None, device_type=None,
     if LIGHTLINK in ids:
         return EndpointKind(LIGHT, "touchlink")
     return EndpointKind(SWITCH, "on/off only")
+
+
+def endpoint_function(in_clusters: Iterable[int], profile_id=None, device_type=None,
+                      override: Optional[str] = None) -> Optional[EndpointKind]:
+    """What any endpoint is for: an overridden or ruled light/switch, else its
+    primary function, else None (sensor, controller, passive)."""
+    return (classify(in_clusters, profile_id, device_type, override)
+            or primary_function(in_clusters))
 
 
 def classify_endpoint(endpoint, override: Optional[str] = None,
@@ -130,3 +166,9 @@ def classify_device_endpoint(device, endpoint) -> Optional[EndpointKind]:
     # An entry can mark a model's declared device type as wrong (aeu002: 0x0000 on every EP).
     trust = ((profile or {}).get("zmm") or {}).get("corrections", {}).get("device_type") != "ignore"
     return classify_endpoint(endpoint, trust_device_type=trust)
+
+
+def device_endpoint_function(device, endpoint) -> Optional[EndpointKind]:
+    """endpoint_function() for a device's endpoint, with its overrides."""
+    return (classify_device_endpoint(device, endpoint)
+            or primary_function(getattr(endpoint, "in_clusters", None) or {}))

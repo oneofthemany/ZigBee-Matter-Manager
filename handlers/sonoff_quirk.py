@@ -1,4 +1,5 @@
-"""Sonoff ZBMINIR2 specific handling"""
+"""Sonoff 0xFC11: the ZBMINIR2 relay's settings. Other Sonoff products share
+the cluster id and are described by their ZMM entry."""
 import logging
 from .base import ClusterHandler, register_handler
 
@@ -15,6 +16,11 @@ class SonoffManufacturerHandler(ClusterHandler):
 
     async def configure(self):
         """Read device mode on startup"""
+        # 0xFC11 is Sonoff's cluster on every product; these are the relay's
+        # attributes. A thermostat's or cover's are named by its entry.
+        from modules.endpoint_kind import primary_function
+        if primary_function(self.endpoint.in_clusters):
+            return
         try:
             result = await self.cluster.read_attributes([
                 self.ATTR_WORK_MODE,

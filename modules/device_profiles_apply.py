@@ -127,16 +127,18 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
                     profile_attrs[(cid, aid)] = attr
 
     for key, raw_value in list(out.items()):
-        if not key.startswith("cluster_"):
-            continue
-        # cluster_XXXX_attr_YYYY
+        # Two spellings of an unnamed attribute: cluster_XXXX_attr_YYYY from the
+        # generic handler, attr_XXXX_YYYY from a registered handler's fallback
+        # (ClusterHandler.get_attr_name). A profile names either.
+        parts = key.split("_")
         try:
-            parts = key.split("_")
-            if len(parts) < 4 or parts[2] != "attr":
+            if key.startswith("cluster_") and len(parts) >= 4 and parts[2] == "attr":
+                cid, aid = int(parts[1], 16), int(parts[3], 16)
+            elif key.startswith("attr_") and len(parts) == 3:
+                cid, aid = int(parts[1], 16), int(parts[2], 16)
+            else:
                 continue
-            cid = int(parts[1], 16)
-            aid = int(parts[3], 16)
-        except (ValueError, IndexError):
+        except ValueError:
             continue
 
         mapping = mappings.get(key) or profile_attrs.get((cid, aid))

@@ -9,7 +9,9 @@ import time
 
 from .base import ClusterHandler, register_handler
 from modules import device_decisions
-from modules.endpoint_kind import LIGHT, LOAD_CLUSTERS, classify_device_endpoint
+from modules.endpoint_kind import (
+    LIGHT, LOAD_CLUSTERS, classify_device_endpoint, primary_function,
+)
 
 logger = logging.getLogger("handlers.general")
 
@@ -83,13 +85,25 @@ class OnOffHandler(ClusterHandler):
         kind = self.endpoint_kind()
         return kind.kind if kind else None
 
+    def subordinate_to(self):
+        """The primary function this EP's On/Off belongs to, when it is not a
+        light or switch of its own (modules/endpoint_kind.py) — a thermostat's
+        or cover's power control. None for a real load and for a controller."""
+        if self.endpoint_kind():
+            return None
+        return primary_function(self.endpoint.in_clusters)
+
     def get_retired_discovery_configs(self) -> List[Dict]:
         """The entity this EP would have under the other kind, so a
         reclassification retracts it from HA instead of leaving a ghost."""
         kind = self.endpoint_kind()
-        if not kind:
-            return []
         ep = self.endpoint.endpoint_id
+        if not kind:
+            # Neither kind any more: retract whichever one it was published as.
+            if self.subordinate_to():
+                return [{"component": "switch", "object_id": f"switch_{ep}"},
+                        {"component": "light", "object_id": f"light_{ep}" if ep > 1 else "light"}]
+            return []
         if kind.kind == LIGHT:
             return [{"component": "switch", "object_id": f"switch_{ep}"}]
         return [{"component": "light", "object_id": f"light_{ep}" if ep > 1 else "light"}]
@@ -314,6 +328,10 @@ class OnOffHandler(ClusterHandler):
 
     def _update_state(self, is_on: bool):
         """Helper to update state with endpoint awareness."""
+        # A thermostat's or cover's On/Off is not a switch: publishing it as
+        # on/state is what made one appear beside the real controls.
+        if self.subordinate_to():
+            return
         ep_id = self.endpoint.endpoint_id
 
         updates = {
@@ -418,11 +436,17 @@ class OnOffHandler(ClusterHandler):
             return []
 
         # STEP 3: Light vs Switch — modules/endpoint_kind.py decides for every consumer
+        if not self.endpoint_kind(refresh=True):
+            owner = self.subordinate_to()
+            if owner:
+                logger.info(f"[{self.device.ieee}] EP{ep} On/Off belongs to its "
+                            f"{owner.kind} ({owner.reason}) — no light or switch entity")
+            return []
         has_color = 0x0300 in self.endpoint.in_clusters
         has_level = 0x0008 in self.endpoint.in_clusters
         has_electrical = 0x0B04 in self.endpoint.in_clusters
         has_sonoff = 0xFC11 in self.endpoint.in_clusters
-        is_light = self._is_light_endpoint() if self.endpoint_kind(refresh=True) else False
+        is_light = self._is_light_endpoint()
 
         component = "light" if is_light else "switch"
         configs = []

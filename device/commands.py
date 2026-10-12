@@ -10,6 +10,24 @@ from modules.packet_stats import packet_stats
 
 logger = logging.getLogger("device.commands")
 
+# Settings the Aqara 0xFCC0 handler takes on a radiator valve.
+AQARA_VALVE_SETTINGS = frozenset({
+    "window_detection", "valve_detection", "child_lock", "external_temp",
+    "sensor_type", "motor_calibration",
+})
+
+
+class _EntrySetting:
+    """An entry's setting, shaped like a handler for `_spawn_handler_command`."""
+
+    def __init__(self, device):
+        self._device = device
+
+    def process_command(self, command: str, value):
+        from modules import zmm_settings
+        return zmm_settings.apply_command(self._device, command, value)
+
+
 class DeviceCommandExecutorMixin:
 
     def _spawn_handler_command(self, handler, command: str, value):
@@ -46,6 +64,20 @@ class DeviceCommandExecutorMixin:
                     if command == 'motor_calibration':
                         _calibration_not_sent()
             asyncio.create_task(_run())
+
+    def supports_setting(self, name: str) -> bool:
+        """Whether this device takes the named setting, by any route: the Aqara
+        radiator-valve handler, or an entry's setting of that id. Callers ask
+        this instead of testing who made the device."""
+        if name in AQARA_VALVE_SETTINGS and self._has_cluster_handler(0xFCC0) \
+                and self._has_cluster_handler(0x0201):
+            return True
+        from modules import zmm_settings
+        return name in zmm_settings.names(self)
+
+    def _has_cluster_handler(self, cluster_id: int) -> bool:
+        return any(k == cluster_id or (isinstance(k, tuple) and k[-1] == cluster_id)
+                   for k in (self.handlers or {}))
 
     def get_control_commands(self) -> List[Dict[str, Any]]:
         """Get available control commands."""
@@ -206,6 +238,15 @@ class DeviceCommandExecutorMixin:
                         except (TypeError, ValueError): pass
                     elif command == 'schedule': optimistic_state['schedule_enabled'] = bool(value)
                     else: optimistic_state[command] = bool(value)
+
+            # A setting an entry declares for this model answers to its id,
+            # whoever made the device (modules/zmm_settings.py). Spawned like a
+            # handler write: a sleepy valve holds it until its next poll.
+            if not success:
+                from modules import zmm_settings
+                if command in zmm_settings.names(self):
+                    self._spawn_handler_command(_EntrySetting(self), command, value)
+                    success = True
 
             if not success and command in ['temperature', 'system_mode']:
                 h = get_handler(0x0201)

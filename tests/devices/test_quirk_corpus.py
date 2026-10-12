@@ -31,6 +31,11 @@ KNOWN = {
 }
 
 
+def _kind(ids, prof, dt):
+    k = classify(ids, prof, dt)
+    return k.kind if k else None
+
+
 def _quirk_endpoints():
     logging.disable(logging.WARNING)
     with redirect_stderr(io.StringIO()):
@@ -54,19 +59,26 @@ def run() -> Checker:
 
     c.section("the devices that decided the rule order")
     for model, want in KNOWN.items():
-        got = {classify(ids, prof, dt).kind for m, ids, prof, dt in eps
-               if m == model and classify(ids, prof, dt)}
+        got = {_kind(ids, prof, dt) for m, ids, prof, dt in eps
+               if m == model and _kind(ids, prof, dt)}
         c.check(f"{model} is a {want}", got == {want}, got)
 
     c.section("invariants across every quirk")
     bad = sorted({m for m, ids, prof, dt in eps
                   if 0x0006 in ids and ids.isdisjoint({0x0008, 0x0300, 0x1000})
-                  and classify(ids, prof, dt).kind == LIGHT})
+                  and _kind(ids, prof, dt) == LIGHT})
     c.check("nothing without level, colour or touchlink is a light", not bad, bad[:10])
     bad = sorted({m for m, ids, prof, dt in eps
                   if 0x0006 in ids and 0x0300 in ids
-                  and classify(ids, prof, dt).kind != LIGHT})
+                  and not ids & {0x0201, 0x0102, 0x0101}
+                  and _kind(ids, prof, dt) != LIGHT})
     c.check("everything with colour control is a light", not bad, bad[:10])
+    bad = sorted({m for m, ids, prof, dt in eps
+                  if ids & {0x0201, 0x0102, 0x0101} and classify(ids, prof, dt)})
+    c.check("no thermostat, cover or lock endpoint is a light or a switch", not bad, bad[:10])
+    claimed = [(m, ids) for m, ids, prof, dt in eps
+               if 0x0006 in ids and ids & {0x0201, 0x0102, 0x0101}]
+    c.check("that rule is doing real work in the corpus", len(claimed) >= 30, len(claimed))
     return c
 
 

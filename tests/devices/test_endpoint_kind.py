@@ -15,7 +15,7 @@ import modules.device_profiles as device_profiles
 from handlers.aqara import MultistateInputHandler
 from handlers.general import OnOffHandler
 from modules.device_capabilities import DeviceCapabilities
-from modules.endpoint_kind import LIGHT, SWITCH, classify
+from modules.endpoint_kind import LIGHT, SWITCH, classify, endpoint_function
 from modules.groups import GroupManager
 
 
@@ -119,8 +119,8 @@ def run() -> Checker:
     for cid in (0x0B04, 0x0702, 0x0012, 0xFC11):
         c.check(f"load cluster 0x{cid:04X} makes a switch", _kind([0x0006, 0x0008, cid]) == SWITCH)
     c.check("an EP without On/Off input is not classified", _kind([0x0008, 0x0300]) is None)
-    c.check("dimming on a cover is not a light",
-            _kind([0x0006, 0x0008, 0x0102]) == SWITCH)
+    c.check("dimming on a cover is neither a light nor a switch",
+            _kind([0x0006, 0x0008, 0x0102]) is None)
     c.check("an override wins", _kind([0x0006, 0x0300], override=SWITCH) == SWITCH)
 
     c.section("the Aqara outlet, end to end")
@@ -156,6 +156,35 @@ def run() -> Checker:
     c.check("the switch entity is retracted",
             h3.get_retired_discovery_configs() == [{"component": "switch", "object_id": "switch_3"}])
     device_profiles._store = _Store()
+
+    c.section("an endpoint's primary function comes before light-or-switch")
+    TRVZB = [0x0000, 0x0001, 0x0003, 0x0006, 0x0020, 0x0201, 0xFC57, 0xFC11]
+    fn = lambda cl, **kw: (endpoint_function(cl, **kw) or (None,))[0]          # noqa: E731
+    c.check("a thermostat's On/Off is neither light nor switch", _kind(TRVZB) is None, _kind(TRVZB))
+    c.check("the endpoint is a thermostat", fn(TRVZB) == "thermostat", fn(TRVZB))
+    c.check("a cover's On/Off is not a switch", _kind([0x0006, 0x0102]) is None
+            and fn([0x0006, 0x0102]) == "cover")
+    c.check("nor a lock's", _kind([0x0006, 0x0101]) is None and fn([0x0006, 0x0101]) == "lock")
+    c.check("the same vendor cluster on a relay is still a switch",
+            _kind([0x0006, 0xFC11]) == SWITCH)
+    c.check("an override can still expose a thermostat's On/Off",
+            _kind(TRVZB, override=SWITCH) == SWITCH)
+    dev, eps = _build({1: TRVZB}, mains=False)
+    h = _onoff(dev, eps[0])
+    c.check("HA gets no light or switch for it", h.get_discovery_configs() == [],
+            h.get_discovery_configs())
+    c.check("the Control tab gets no light or switch card", h.get_component_type() is None)
+    caps = DeviceCapabilities(dev).get_capabilities()
+    c.check("the device is a thermostat and not a switch",
+            "thermostat" in caps and not ({"switch", "light", "on_off"} & caps), caps)
+    h._update_state(True)
+    c.check("its On/Off reports never surface as switch state",
+            not ({"on", "state", "on_1", "state_1"} & set(dev.state)), dev.state)
+    c.check("a switch entity published before is retracted",
+            {"component": "switch", "object_id": "switch_1"} in h.get_retired_discovery_configs())
+    dev, eps = _build({1: [0x0006]})
+    _onoff(dev, eps[0])._update_state(True)
+    c.check("a plain relay still reports its state", dev.state.get("on") is True, dev.state)
 
     c.section("real lights are still lights")
     dev, eps = _build({1: [0x0000, 0x0003, 0x0004, 0x0005, 0x0006, 0x0008, 0x0300, 0x1000]})

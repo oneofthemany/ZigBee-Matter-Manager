@@ -2,9 +2,14 @@
 Device settings declared by a ZMM entry (docs/plans/zmm-quirks.md §5, step 7).
 
 An entry names a setting (cluster, attribute, manufacturer code, type,
-values). It is offered only on endpoints whose discovery listed that
-attribute, and written raw with the entry's manufacturer code, so it works
+values). It is offered only on endpoints the device has shown the attribute
+on — listed by discovery, or seen in a report, which is all a sleepy device
+ever gives — and written raw with the entry's manufacturer code, so it works
 whether or not zigpy's schema knows the attribute.
+
+A setting's id is also a command: `apply_command` lets any caller (the device
+command executor, the heating controller) set "child_lock" on whichever device
+has an entry setting of that name, with no knowledge of who made it.
 """
 from __future__ import annotations
 
@@ -20,17 +25,33 @@ def _entry_settings(device) -> List[Dict[str, Any]]:
 
 
 def _listed(device) -> Dict[Tuple[int, str], Any]:
-    """{(ep, subject): fact value} for attributes the device has answered."""
+    """{(ep, subject): fact value} for attributes the device has shown: one it
+    answered a discovery or read for, or one it reported. A report carries no
+    manufacturer code, so it is filed under the plain subject and under every
+    manufacturer-scoped form an entry might name it by (`_subject`)."""
     import json
     from modules.zigbee_cache import get_facts
-    out = {}
+    out: Dict[Tuple[int, str], Any] = {}
     for f in get_facts(str(device.ieee)):
-        if f["source"] == "answered" and f["subject"].startswith("attr:"):
-            try:
-                out[(f["endpoint_id"], f["subject"])] = json.loads(f["value"])
-            except ValueError:
-                continue
+        try:
+            value = json.loads(f["value"])
+        except ValueError:
+            continue
+        subject = f["subject"]
+        if f["source"] == "answered" and subject.startswith("attr:"):
+            out[(f["endpoint_id"], subject)] = value
+        elif f["source"] == "observed" and subject.startswith("reports:"):
+            seen = {"value": value.get("last")} if isinstance(value, dict) else {}
+            out.setdefault((f["endpoint_id"], "seen:" + subject[len("reports:"):]), seen)
     return out
+
+
+def _shown(listed: Dict[Tuple[int, str], Any], ep: int, st: Dict[str, Any]) -> Optional[Any]:
+    """The fact for setting `st` on `ep`: answered first, else a report."""
+    hit = listed.get((ep, _subject(st)))
+    if hit is None:
+        hit = listed.get((ep, f"seen:{st['cluster']}/{st['attr']}"))
+    return hit
 
 
 def _subject(st: Dict[str, Any]) -> str:
@@ -52,7 +73,7 @@ def _instances(device) -> List[Tuple[str, int, Dict[str, Any]]]:
     for st in settings:
         targets = eps if st["ep"] == "each" else [st["ep"]]
         for ep in targets:
-            if (ep, _subject(st)) in listed:
+            if _shown(listed, ep, st) is not None:
                 name = f"{st['id']}_{ep}" if st["ep"] == "each" else st["id"]
                 out.append((name, ep, st))
     return out
@@ -70,9 +91,12 @@ def options(device) -> List[Dict[str, Any]]:
         current = device.state.get(name)
         if current is None:
             listed = listed if listed is not None else _listed(device)
-            current = (listed.get((ep, _subject(st))) or {}).get("value")
+            current = _from_raw(st, (_shown(listed, ep, st) or {}).get("value"))
         opt: Dict[str, Any] = {"name": name, "label": label, "description": st["description"],
                                "attribute_id": int(st["attr"], 16), "current_value": current}
+        for k in ("min", "max", "step", "unit"):
+            if st.get(k) is not None:
+                opt[k] = st[k]
         if st["type"] == "bool":
             opt.update(type="select", options=[{"value": 0, "label": "Off"}, {"value": 1, "label": "On"}])
         elif st["values"]:
@@ -100,7 +124,8 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             results[name] = False
             continue
         try:
-            value = int(updates[name])
+            shown = updates[name]
+            value = _to_raw(st, shown)
             tv = foundation.TypeValue()
             tv.type = SETTING_TYPES[st["type"]]
             tv.value = bool(value) if st["type"] == "bool" else value
@@ -115,11 +140,53 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             ok = False
         results[name] = ok
         if ok:
-            device.state[name] = value
-            logger.info(f"[{device.ieee}] ZMM setting {name} = {value}")
+            device.state[name] = _from_raw(st, value)
+            logger.info(f"[{device.ieee}] ZMM setting {name} = {device.state[name]}")
         else:
             logger.warning(f"[{device.ieee}] ZMM setting {name} refused by the device")
     return results
+
+
+def _to_raw(st: Dict[str, Any], shown: Any) -> int:
+    """The integer the device stores for a value as a person gives it."""
+    if isinstance(shown, str):
+        s = shown.strip().lower()
+        for raw, label in (st.get("values") or {}).items():
+            if s == str(label).lower():
+                return int(raw, 0)
+        if s in ("true", "on", "yes", "lock", "external"):
+            return 1
+        if s in ("false", "off", "no", "unlock", "internal"):
+            return 0
+        shown = float(s)
+    if isinstance(shown, bool):
+        return int(shown)
+    return int(round(float(shown) * st["scale"])) if st.get("scale") else int(shown)
+
+
+def _from_raw(st: Dict[str, Any], raw: Any) -> Any:
+    if raw is None or isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return raw
+    if st["type"] == "bool":
+        return int(bool(raw))
+    return round(raw / st["scale"], 3) if st.get("scale") else raw
+
+
+def names(device) -> set:
+    """Setting names this device takes: what `apply_command` can be asked for."""
+    try:
+        return {name for name, _, _ in _instances(device)}
+    except Exception as e:
+        logger.debug(f"[{getattr(device, 'ieee', '?')}] entry settings unavailable: {e}")
+        return set()
+
+
+async def apply_command(device, command: str, value: Any) -> Optional[bool]:
+    """Write `value` to the entry setting named `command`. None when the device
+    has no such setting, so a caller can fall through to another route."""
+    if command not in names(device):
+        return None
+    return (await apply(device, {command: value})).get(command, False)
 
 
 def _write_ok(rsp: Any) -> bool:

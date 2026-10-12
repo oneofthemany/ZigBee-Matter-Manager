@@ -1,0 +1,12 @@
+{
+  "id": "TRVZB",
+  "protocol": "zigbee",
+  "match": { "model": "TRVZB", "manufacturer": "SONOFF" },
+  "device_type": "trv",
+  "capabilities": ["thermostat", "hvac", "battery"],
+  "endpoints": {
+    "1": { "label": "Radiator valve" }
+  },
+  "zmm": {},
+  "meta": { "author": "zmm", "source": "zmm" }
+}

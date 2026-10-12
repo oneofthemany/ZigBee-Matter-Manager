@@ -19,7 +19,7 @@ from zigpy.zcl.clusters.security import IasZone
 from zigpy.zcl.clusters.smartenergy import Metering
 from zigpy.zcl.clusters.homeautomation import ElectricalMeasurement
 
-from modules.endpoint_kind import LIGHT, classify_device_endpoint
+from modules.endpoint_kind import LIGHT, classify_device_endpoint, primary_function
 
 LOGGER = logging.getLogger(__name__)
 
@@ -283,8 +283,30 @@ class DeviceCapabilities:
         self._configurable_endpoints: Dict[int, Dict[str, Any]] = {}  # {ep_id: {...}}
         self._detect_capabilities()
 
+    # IAS Zone zone_type -> the capability it is evidence of.
+    IAS_ZONE_CAPABILITY = {
+        0x000D: 'motion_sensor', 0x0015: 'contact_sensor', 0x0028: 'smoke',
+        0x002A: 'water_leak', 0x002B: 'co_detected', 0x002D: 'vibration',
+    }
+
+    def _ias_zone_types(self) -> Set[int]:
+        out: Set[int] = set()
+        for ep_id, ep in self.zigpy_dev.endpoints.items():
+            zone = (getattr(ep, 'in_clusters', None) or {}).get(self.IAS_ZONE) if ep_id else None
+            try:
+                zt = zone.get('zone_type') if zone is not None else None
+                if zt is not None:
+                    out.add(int(zt))
+            except Exception:
+                pass    # never read, or a stub cluster
+        return out
+
     def _detect_capabilities(self):
         """Smart Capability Detection with comprehensive cluster analysis."""
+        try:
+            self.device._device_class = None    # re-derived from what follows
+        except Exception:
+            pass
         self._capabilities.clear()
         self._cluster_ids.clear()
         self._configurable_endpoints.clear()
@@ -369,7 +391,13 @@ class DeviceCapabilities:
             self._capabilities.add('color_control')
         if self.LEVEL_CONTROL in self._cluster_ids:
             self._capabilities.add('level_control')
-        if self.ON_OFF in self._cluster_ids:
+        # On/Off that is a thermostat's or cover's own power control is not an
+        # on/off capability of the device (modules/endpoint_kind.py).
+        if any(self.ON_OFF in info['output_clusters']
+               or (self.ON_OFF in info['input_clusters']
+                   and (not primary_function(info['input_clusters'])
+                        or classify_device_endpoint(self.device, self.zigpy_dev.endpoints[ep_id])))
+               for ep_id, info in self._configurable_endpoints.items()):
             self._capabilities.add('on_off')
 
         kinds = set()
@@ -395,9 +423,15 @@ class DeviceCapabilities:
 
         if self.IAS_ZONE in self._cluster_ids:
             self._capabilities.add('ias_zone')
-            if 'lumi.sensor_magnet' in model:
+            # The zone's own type says what it senses. Only a zone that never
+            # gave one falls back to the old assumption of motion.
+            zone_caps = {self.IAS_ZONE_CAPABILITY[z] for z in self._ias_zone_types()
+                         if z in self.IAS_ZONE_CAPABILITY}
+            if zone_caps:
+                self._capabilities |= zone_caps
+            elif 'lumi.sensor_magnet' in model:
                 self._capabilities.add('contact_sensor')
-            else:
+            elif not self._ias_zone_types():
                 self._capabilities.add('motion_sensor')
 
         if self.TEMPERATURE_MEASUREMENT in self._cluster_ids:

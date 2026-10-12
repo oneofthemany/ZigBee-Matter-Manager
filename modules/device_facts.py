@@ -42,6 +42,33 @@ def attr_subject(kind: str, cluster: int, attr: int, mfr: Optional[int] = None) 
     return f"{s}@0x{mfr:04X}" if mfr else s
 
 
+# A cluster id in the manufacturer-specific range is vendor-scoped whether or
+# not its attributes are read with a manufacturer code: some makers' clusters
+# answer only with one, others only without.
+VENDOR_CLUSTER_MIN = 0xFC00
+
+
+def vendor_scoped(cluster: int, mfr: Optional[int]) -> bool:
+    """Whether (cluster, mfr) names a maker's own attribute, not a ZCL one."""
+    return mfr is not None or int(cluster) >= VENDOR_CLUSTER_MIN
+
+
+def parse_attr_subject(subject: str) -> Optional[tuple]:
+    """(cluster, attr, mfr or None) of an `attr:0xCCCC/0xAAAA[@0xMMMM]` subject."""
+    if not subject.startswith("attr:"):
+        return None
+    body, _, mfr = subject[5:].partition("@")
+    try:
+        cid, aid = (int(x, 16) for x in body.split("/"))
+        return cid, aid, int(mfr, 16) if mfr else None
+    except ValueError:
+        return None
+
+
+def mfr_hex(mfr: Optional[int]) -> Optional[str]:
+    return f"0x{mfr:04X}" if mfr else None
+
+
 def facts_from_device(zigpy_dev) -> List[Fact]:
     """What the device (or the zhaquirks quirk replacing it) declares."""
     from device.core import quirk_name_of

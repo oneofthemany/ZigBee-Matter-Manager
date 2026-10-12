@@ -375,13 +375,21 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
             continue
         values = {str(k): str(v) for k, v in (st.get("values") or {}).items()
                   if _to_int(k) is not None}
-        settings.append({
+        setting = {
             "id": sid, "label": str(st.get("label") or sid), "type": typ,
             "ep": "each" if ep == "each" else _to_int(ep),
             "cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}",
             "mfr": f"0x{mfr:04X}" if mfr else None,
             "values": values, "description": str(st.get("description") or ""),
-        })
+        }
+        # A number the device stores scaled: 7.0 °C written as 700 is scale 100.
+        for k in ("scale", "min", "max", "step"):
+            v = st.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and (k != "scale" or v > 0):
+                setting[k] = v
+        if st.get("unit"):
+            setting["unit"] = str(st["unit"])[:8]
+        settings.append(setting)
     if settings:
         out["settings"] = settings
 

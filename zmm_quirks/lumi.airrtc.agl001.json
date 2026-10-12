@@ -1,0 +1,12 @@
+{
+  "id": "lumi.airrtc.agl001",
+  "protocol": "zigbee",
+  "match": { "model": "lumi.airrtc.agl001", "manufacturer": "LUMI" },
+  "device_type": "trv",
+  "capabilities": ["thermostat", "hvac", "battery"],
+  "endpoints": {
+    "1": { "label": "Radiator valve" }
+  },
+  "zmm": {},
+  "meta": { "author": "zmm", "source": "zmm" }
+}

@@ -230,8 +230,12 @@ class DeviceStateManagerMixin:
                     break
         except Exception: pass
 
-        model = str(self.model).lower() if self.model else ""
-        if any(x in model for x in ['plug', 'socket', 'outlet', 'switch', 'light', 'bulb']): is_battery = False
+        # The node descriptor is the device's own answer and outranks every
+        # inference above; a model name is not evidence of a power source.
+        from modules.device_class import is_mains_powered
+        mains = is_mains_powered(self)
+        if mains is not None:
+            is_battery = not mains
 
         current = self.state.get('power_source', 'Unknown')
         if not is_battery: self.state['power_source'] = 'Mains'

@@ -37,6 +37,22 @@ ENTRY = normalise_profile({
 })
 
 
+# A made-up battery valve: it is never probed, so reports are all it gives.
+SLEEPY = normalise_profile({
+    "id": "VALVE-1", "match": {"model": "VALVE-1", "manufacturer": "Acme"},
+    "zmm": {"settings": [
+        {"id": "child_lock", "type": "bool", "ep": 1, "cluster": "0xFC99", "attr": "0x0001"},
+        {"id": "floor_temperature", "type": "int16", "ep": 1, "cluster": "0xFC99", "attr": "0x0002",
+         "scale": 100, "min": 4, "max": 35, "unit": "°C"},
+        {"id": "external_temp", "type": "int16", "ep": 1, "cluster": "0xFC99", "attr": "0x0003",
+         "scale": 100},
+        {"id": "sensor_type", "type": "uint8", "ep": 1, "cluster": "0xFC99", "attr": "0x0004",
+         "values": {"0": "Internal", "1": "External"}},
+        {"id": "never_reported", "type": "uint8", "ep": 1, "cluster": "0xFC99", "attr": "0x0009"},
+    ]},
+})
+
+
 class _Store:
     def get_profile_for_device(self, **_):
         return ENTRY
@@ -99,6 +115,46 @@ def run() -> Checker:
         res = asyncio.run(zmm_settings.apply(dev, {"multi_click_2": 2}))
         c.check("a refused write is reported, and the state left alone",
                 res == {"multi_click_2": False} and "multi_click_2" not in dev.state, (res, dev.state))
+
+        c.section("a sleepy device: reports are the only evidence it gives")
+        global ENTRY
+        ENTRY = SLEEPY
+        valve_ieee = "aa:bb:cc:00:00:00:00:01"
+        vc = _Fcc0()
+        vc.cluster_id = 0xFC99
+        valve = NS(ieee=valve_ieee, state={},
+                   zigpy_dev=NS(endpoints={0: None, 1: NS(in_clusters={0xFC99: vc})},
+                                model="VALVE-1", manufacturer="Acme"))
+        device_facts.forget(valve_ieee)
+        record(valve_ieee, [
+            Fact(1, "reports:0xFC99/0x0001", "observed", _j({"last": 0, "nonzero": False})),
+            Fact(1, "reports:0xFC99/0x0002", "observed", _j({"last": 700, "nonzero": True})),
+            Fact(1, "reports:0xFC99/0x0003", "observed", _j({"last": 2620, "nonzero": True})),
+            Fact(1, "reports:0xFC99/0x0004", "observed", _j({"last": 0, "nonzero": False})),
+        ])
+        opts = {o["name"]: o for o in zmm_settings.options(valve)}
+        c.check("settings whose attribute it has reported are offered, with no probe",
+                sorted(opts) == ["child_lock", "external_temp", "floor_temperature", "sensor_type"],
+                sorted(opts))
+        c.check("one it has never shown is still not offered", "never_reported" not in opts)
+        floor = opts["floor_temperature"]
+        c.check("a scaled value is shown as a person reads it",
+                floor["current_value"] == 7.0 and floor["unit"] == "°C" and floor["max"] == 35, floor)
+
+        c.section("a setting answers to its id, as a command")
+        c.check("the device says which settings it takes",
+                zmm_settings.names(valve) == set(opts), zmm_settings.names(valve))
+        ok = asyncio.run(zmm_settings.apply_command(valve, "external_temp", 21.37))
+        c.check("a temperature is written scaled, with no manufacturer code",
+                ok is True and vc.writes[-1] == (0x0003, 0x29, 2137, None), vc.writes)
+        c.check("and read back unscaled", valve.state.get("external_temp") == 21.37, valve.state)
+        asyncio.run(zmm_settings.apply_command(valve, "sensor_type", "external"))
+        asyncio.run(zmm_settings.apply_command(valve, "child_lock", True))
+        c.check("named values and booleans are understood",
+                vc.writes[-2:] == [(0x0004, 0x20, 1, None), (0x0001, 0x10, True, None)], vc.writes[-2:])
+        c.check("a command the device has no setting for is passed over, not failed",
+                asyncio.run(zmm_settings.apply_command(valve, "valve_detection", 1)) is None)
+        device_facts.forget(valve_ieee)
     finally:
         device_profiles._store = None
         if zigbee_cache._db is not None:
