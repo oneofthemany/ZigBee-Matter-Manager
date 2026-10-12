@@ -1,12 +1,131 @@
 {
   "id": "TRVZB",
   "protocol": "zigbee",
-  "match": { "model": "TRVZB", "manufacturer": "SONOFF" },
-  "device_type": "trv",
-  "capabilities": ["thermostat", "hvac", "battery"],
-  "endpoints": {
-    "1": { "label": "Radiator valve" }
+  "match": {
+    "model": "TRVZB",
+    "manufacturer": "SONOFF"
   },
-  "zmm": {},
-  "meta": { "author": "zmm", "source": "zmm" }
+  "device_type": "trv",
+  "capabilities": [
+    "thermostat",
+    "hvac",
+    "battery"
+  ],
+  "endpoints": {
+    "1": {
+      "label": "Radiator valve"
+    }
+  },
+  "zmm": {
+    "settings": [
+      {
+        "id": "child_lock",
+        "label": "Child lock",
+        "type": "bool",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x0000",
+        "description": "Locks the valve's button and knob (shows LC)."
+      },
+      {
+        "id": "window_detection",
+        "label": "Open-window detection",
+        "type": "bool",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x6000",
+        "description": "Drops the target to 12 °C when the room cools by more than 1.5 °C in 4.5 minutes (shows OP)."
+      },
+      {
+        "id": "frost_protection_temperature",
+        "label": "Frost protection temperature",
+        "type": "int16",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x6002",
+        "description": "The temperature the valve holds while it is off.",
+        "scale": 100,
+        "unit": "°C",
+        "min": 4,
+        "max": 35,
+        "step": 0.5
+      },
+      {
+        "id": "valve_opening_degree",
+        "label": "Valve opening limit",
+        "type": "uint8",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x600B",
+        "description": "How far the valve opens when it calls for heat.",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "id": "valve_closing_degree",
+        "label": "Valve closing limit",
+        "type": "uint8",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x600C",
+        "description": "How far the valve closes when it stops.",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "id": "external_temp",
+        "label": "External temperature",
+        "type": "int16",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x600D",
+        "description": "A room sensor's reading for the valve to regulate on, when the sensor source is external.",
+        "scale": 100,
+        "unit": "°C"
+      },
+      {
+        "id": "sensor_type",
+        "label": "Temperature sensor",
+        "type": "uint8",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x600E",
+        "description": "Which temperature the valve regulates on.",
+        "values": {
+          "0": "Internal",
+          "1": "External"
+        }
+      },
+      {
+        "id": "temperature_accuracy",
+        "label": "Temperature accuracy",
+        "type": "int16",
+        "ep": 1,
+        "cluster": "0xFC11",
+        "attr": "0x6011",
+        "description": "How far below the target the room may fall before the valve opens.",
+        "scale": 100,
+        "unit": "°C",
+        "min": -1,
+        "max": -0.2,
+        "step": 0.2
+      }
+    ],
+    "evidence": {
+      "probes": [
+        "18690afffe44a791_20261012_104820"
+      ],
+      "verified_fw": [
+        "1.4.1"
+      ]
+    }
+  },
+  "meta": {
+    "author": "zmm",
+    "source": "zmm"
+  }
 }
