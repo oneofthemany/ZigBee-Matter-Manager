@@ -1,0 +1,38 @@
+{
+  "id": "lumi.sensor_occupy.agl8",
+  "protocol": "zigbee",
+  "match": { "model": "lumi.sensor_occupy.agl8", "manufacturer": "Aqara" },
+  "device_type": "motion_sensor",
+  "capabilities": ["motion_sensor", "battery", "illuminance_sensor", "temperature_sensor", "humidity_sensor"],
+  "endpoints": {
+    "1": {
+      "label": "Sensor",
+      "clusters": {
+        "0xFCC0": {
+          "attributes": {
+            "0x0142": {
+              "name": "occupancy",
+              "device_class": "occupancy",
+              "capability": "motion",
+              "value_map": { "1": true, "0": false }
+            },
+            "0x014D": {
+              "name": "pir_detection",
+              "device_class": "motion",
+              "capability": "motion",
+              "value_map": { "1": true, "0": false }
+            }
+          }
+        }
+      }
+    }
+  },
+  "zmm": {
+    "struct_tags": {
+      "0x17": { "name": "battery_voltage", "scale": 0.001 },
+      "0x18": { "name": "battery" },
+      "0x03": null, "0x04": null, "0x05": null, "0x64": null, "0x65": null
+    }
+  },
+  "meta": { "author": "zmm", "source": "zmm" }
+}
