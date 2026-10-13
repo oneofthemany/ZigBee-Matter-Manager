@@ -466,6 +466,66 @@ def confirmed_write(records, baseline, step, ctx) -> List[Dict[str, Any]]:
         f"put back to {int(old)}")]
 
 
+# Basic and Power Configuration describe the device, not what it senses.
+NOT_A_READING = frozenset({0x0000, 0x0001})
+# More two-state readings than this flipping at once is not one walk past.
+MAX_OCCUPANCY_CANDIDATES = 3
+
+
+def _two_state(v: Any) -> Optional[int]:
+    return int(v) if isinstance(v, (bool, int)) and v in (0, 1) else None
+
+
+def occupancy_attribute(records, baseline, step, ctx) -> List[Dict[str, Any]]:
+    """The two-state reading that flipped when the user walked into view (the
+    step's `expect` is `occupied`) or out of it (`clear`). The value it took
+    names that state, so nothing assumes 1 means occupied. A sleepy sensor
+    cannot be read first: a reading seen for the first time is offered at
+    lower confidence, and the walk the other way then confirms it."""
+    occupied = (step.get("expect") or "occupied") == "occupied"
+    writable = ctx.get("writable") or {}
+    last: Dict[Key, Tuple[float, int]] = {}
+    other = {k for k, v in baseline.items() if _two_state(v) is None}
+    for r in sorted(records, key=lambda r: r["t"]):
+        key = _key(r)
+        if r["cluster"] in NOT_A_READING or _in(r, PRESS) or key in writable:
+            continue
+        v = _two_state(r["value"])
+        if v is None:
+            other.add(key)          # took a third value: a measurement, not a state
+        else:
+            last[key] = (r["t"], v)
+    flipped = {k: tv for k, tv in last.items() if k not in other and baseline.get(k) != tv[1]}
+    if not flipped:
+        return [proposal("", None, "none",
+                         "no two-state reading changed: was the view empty before the step began, "
+                         "and did the sensor see you?" if occupied else
+                         "no two-state reading changed: the sensor may hold 'occupied' for longer "
+                         "than the step; stay out of view and redo it")]
+    if len(flipped) > MAX_OCCUPANCY_CANDIDATES:
+        return [proposal("", None, "low", f"{len(flipped)} readings changed at once: redo it "
+                                          "with nothing else happening to the device")]
+    t0 = _num(step.get("t0"))
+    out = []
+    for key, (t, v) in sorted(flipped.items(), key=lambda kv: kv[1][0]):
+        ep, cluster, attr, _ = key
+        on = v if occupied else 1 - v
+        known = key in baseline
+        out.append(proposal(
+            f"endpoints.{ep}.clusters.0x{cluster:04X}.attributes.0x{attr:04X}",
+            {"name": "occupancy", "device_class": "occupancy", "capability": "motion",
+             "value_map": {str(on): True, str(1 - on): False}},
+            ("high" if known else "medium") if len(flipped) == 1 else "low",
+            f"EP{ep} 0x{cluster:04X}/0x{attr:04X} "
+            + (f"went {baseline[key]} -> {v}" if known else f"reported {v}, not seen before,")
+            + (f" {t - t0:.0f} s into the step" if t0 is not None else "")
+            + f" as you walked {'in' if occupied else 'out'}: {on} is occupied"
+            + ("" if len(flipped) == 1 else f"; one of {len(flipped)} that changed, accept only one")))
+    out.append(proposal("device_type", "motion_sensor", out[0]["confidence"],
+                        "it reports whether someone is in view"))
+    return out
+
+
 OPS: Dict[str, Callable] = {
     "which_endpoint_changed": which_endpoint_changed,
     "press_signature": press_signature,
@@ -477,4 +537,5 @@ OPS: Dict[str, Callable] = {
     "correlate_blob_tags": correlate_blob_tags,
     "confirmed_write": confirmed_write,
     "power_follows_switch": power_follows_switch,
+    "occupancy_attribute": occupancy_attribute,
 }

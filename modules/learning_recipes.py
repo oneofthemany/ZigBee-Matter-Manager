@@ -48,6 +48,9 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(aw.get("vendor_cluster", False), bool):
         return None
+    device_types = [_hex(d) for d in aw.get("device_types_any") or []]
+    if None in device_types:
+        return None
     steps = []
     for st in raw.get("steps") or []:
         if not isinstance(st, dict) or not _ID.fullmatch(str(st.get("id") or "")):
@@ -76,6 +79,8 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return None
         if st.get("expect_kind") not in (None, "light", "switch"):
             return None
+        if st.get("expect") not in (None, "occupied", "clear"):
+            return None
         mode = st.get("mode") or "observe"
         if mode not in ("observe", "try_write", "history") or \
                 (mode == "try_write") != all(i["op"] == "confirmed_write" for i in infer):
@@ -83,13 +88,14 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         watch = st.get("watch") or {}
         steps.append({"id": st["id"], "for_each": fe, "instruction": str(st.get("instruction") or ""),
                       "inputs": inputs, "infer": infer, "window_s": window,
-                      "expect_kind": st.get("expect_kind") or "switch", "mode": mode,
+                      "expect_kind": st.get("expect_kind") or "switch",
+                      "expect": st.get("expect"), "mode": mode,
                       "watch": {k: _hex(v) for k, v in watch.items() if _hex(v) is not None}})
     if not steps:
         return None
     return {"id": raw["id"], "title": str(raw.get("title") or raw["id"]),
             "applies_when": {"in_clusters_any": clusters_any, "not_in_clusters_any": clusters_none,
-                             "kind": aw.get("kind"),
+                             "kind": aw.get("kind"), "device_types_any": device_types,
                              "vendor_cluster": bool(aw.get("vendor_cluster", False))},
             "steps": steps}
 
@@ -150,6 +156,10 @@ def applies(recipe: Dict[str, Any], device) -> bool:
                                          for ep in eps.values()):
         return False
     if aw["kind"] and not any(_kind(device, e) == aw["kind"] for e in eps):
+        return False
+    # What the device says it is only offers the steps: the user's walk settles it.
+    if aw["device_types_any"] and not any(getattr(ep, "device_type", None) in aw["device_types_any"]
+                                          for ep in eps.values()):
         return False
     # Any maker's own cluster, by id range: no list of vendors to keep up.
     if aw.get("vendor_cluster") and not any(c >= VENDOR_CLUSTER_MIN for ep in eps.values()

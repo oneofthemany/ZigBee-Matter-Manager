@@ -60,6 +60,22 @@ def _outlet():
     return dev, values
 
 
+PRESENCE_IEEE = "54:ef:44:10:01:65:58:b3"
+
+
+def _presence_sensor(ieee=PRESENCE_IEEE):
+    """A battery presence sensor that says so only on the maker's cluster."""
+    ep = NS(endpoint_id=1, profile_id=0x0104, device_type=0x0107, out_clusters={})
+    ep.in_clusters = {c: _Cluster(c, ep, {}) for c in (0x0000, 0x0001, 0x0400, 0x0402, 0xFCC0)}
+    zdev = NS(endpoints={0: None, 1: ep}, node_desc=NS(is_mains_powered=False),
+              model="lumi.sensor_occupy.agl8", manufacturer="Aqara")
+    return NS(ieee=ieee, zigpy_dev=zdev, state={}, handlers={})
+
+
+def _vendor_report(attr, dtype, value: bytes) -> bytes:
+    return bytes([0x1C, 0x5F, 0x11, 0x01, 0x0A]) + attr.to_bytes(2, "little") + bytes([dtype]) + value
+
+
 def _report(attr, dtype, value: bytes) -> bytes:
     return bytes([0x18, 0x01, 0x0A]) + attr.to_bytes(2, "little") + bytes([dtype]) + value
 
@@ -108,6 +124,17 @@ def run() -> Checker:
                 and not any(k.startswith("light.") for k in keys), relay_keys)
         c.check("steps name the EP the way the user knows it",
                 "Socket 1" in _step(st, "metered_outlet.switch_test.1")["instruction"])
+
+        c.check("a device that is not an occupancy sensor is not asked to walk past it",
+                not any(k.startswith("presence.") for k in keys + relay_keys), keys)
+        c.check("a recipe may be offered by declared device type; a malformed one is rejected",
+                validate({"id": "x", "applies_when": {"device_types_any": ["0x0107"]}, "steps": [
+                    {"id": "s", "expect": "clear",
+                     "infer": [{"op": "occupancy_attribute", "yields": "endpoints.*.clusters"}]}]})
+                and validate({"id": "x", "applies_when": {"device_types_any": ["sensor"]}, "steps": [
+                    {"id": "s", "infer": [{"op": "occupancy_attribute", "yields": "device_type"}]}]}) is None
+                and validate({"id": "x", "steps": [{"id": "s", "expect": "sideways", "infer": [
+                    {"op": "occupancy_attribute", "yields": "device_type"}]}]}) is None)
 
         c.section("a switch test")
         key = "metered_outlet.switch_test.1"
@@ -250,6 +277,63 @@ def run() -> Checker:
         imp = device_learning.import_entry(dev, ex, apply=True)
         c.check("an import previews and saves", imp["success"] and imp.get("saved_profile"), imp)
 
+        c.section("a presence sensor, taught by walking in and out")
+        from modules import device_class
+        from modules.device_profiles_apply import build_discovery_configs, transform_state_with_profile
+        pres = _presence_sensor()
+        for m in (device_facts, device_decisions):
+            m.forget(PRESENCE_IEEE)
+        c.check("before learning it is whatever else it measures",
+                device_class.device_class(pres, refresh=True).kind == "temperature_sensor")
+        pkeys = [s["key"] for s in device_learning.start(pres)["steps"]]
+        c.check("it is asked to walk in, then out", [k for k in pkeys if k.startswith("presence.")]
+                == ["presence.walk_in", "presence.walk_out"], pkeys)
+        says = lambda v: device_learning.capture(PRESENCE_IEEE, 0x0104, 0xFCC0, 1,
+                                                 _vendor_report(0x0142, 0x20, bytes([v])))
+        asyncio.run(device_learning.begin(pres, "presence.walk_in", {}))
+        device_learning.capture(PRESENCE_IEEE, 0x0104, 0x0400, 1,
+                                _report(0x0000, 0x21, (16721).to_bytes(2, "little")))
+        says(1)
+        st = asyncio.run(device_learning.finish(pres, "presence.walk_in"))
+        found = _step(st, "presence.walk_in")["proposals"]
+        PATH = "endpoints.1.clusters.0xFCC0.attributes.0x0142"
+        c.check("asleep and unread, its first report on walking in is still offered",
+                [p["path"] for p in found] == [PATH, "device_type"]
+                and found[0]["confidence"] == "medium", found)
+        asyncio.run(device_learning.begin(pres, "presence.walk_out", {}))
+        says(0)
+        st = asyncio.run(device_learning.finish(pres, "presence.walk_out"))
+        found = _step(st, "presence.walk_out")["proposals"]
+        c.check("walking out is compared with what walking in showed: now certain",
+                found[0]["path"] == PATH and found[0]["confidence"] == "high"
+                and "went 1 -> 0" in found[0]["evidence"], found)
+        device_learning.decide(pres, "presence.walk_out", [0, 1])
+        rv = device_learning.review(pres)
+        c.check("the review names the reading and the device, and says so before saving",
+                rv["entry"]["device_type"] == "motion_sensor"
+                and any(ch["what"] == "EP1 0xFCC0/0x0142 reads as" and ch["to"] == "occupancy"
+                        for ch in rv["preview"])
+                and any(ch["what"] == "device type" and ch["to"] == "motion_sensor"
+                        for ch in rv["preview"]), rv["preview"])
+        c.check("a sensor's draft never calls it a switch",
+                device_learning.review(_presence_sensor("aa:02"))["entry"]["device_type"] == "generic")
+        saved = device_learning.save(pres, rv["entry"])
+        device_class.invalidate(pres)
+        c.check("saved, it is a motion sensor", saved["success"]
+                and device_class.device_class(pres).kind == "motion_sensor", saved)
+        out = transform_state_with_profile(pres, {"opple_0x0142": 1})
+        c.check("the maker's raw value now reads as occupancy", out.get("occupancy") is True, out)
+        c.check("and clears", transform_state_with_profile(pres, {"opple_0x0142": 0}).get("occupancy") is False)
+        c.check("a Bool reads the same as a number",
+                transform_state_with_profile(pres, {"opple_0x0142": True}).get("occupancy") is True)
+        cfg = [x for x in build_discovery_configs(pres) if x["object_id"] == "occupancy"]
+        c.check("Home Assistant gets an occupancy sensor whose state it can match",
+                len(cfg) == 1 and cfg[0]["component"] == "binary_sensor"
+                and cfg[0]["config"]["device_class"] == "occupancy"
+                and cfg[0]["config"]["value_template"] == "{{ 'ON' if value_json.occupancy else 'OFF' }}",
+                cfg)
+        asyncio.run(device_learning.end(pres))
+
         asyncio.run(device_learning.end(dev))
         c.check("ending the session stops capture",
                 device_learning.state(dev) == {"success": True, "active": False})
@@ -260,6 +344,7 @@ def run() -> Checker:
         zigbee_cache._db, zigbee_cache._INITIALISED = None, False
         for m in (device_facts, device_decisions):
             m.forget(IEEE)
+            m.forget(PRESENCE_IEEE)
         shutil.rmtree(tmp, ignore_errors=True)
     return c
 

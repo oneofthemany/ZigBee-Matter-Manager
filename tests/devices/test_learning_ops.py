@@ -8,7 +8,7 @@ from __future__ import annotations
 from harness import Checker
 
 from modules.learning_ops import (attribute_that_toggled, attribute_that_tracked, correlate_blob_tags, metering_map,
-                                  moved_endpoints, power_follows_switch, press_signature,
+                                  moved_endpoints, occupancy_attribute, power_follows_switch, press_signature,
                                   scale_from_known, which_endpoint_changed, which_endpoints_moved)
 
 AEU002_F7 = ("032800052101000921000b0a2100000d23060000006410006510016610006820006920006a20006b20"
@@ -180,6 +180,52 @@ def run() -> Checker:
             not any("0x6003" in x["evidence"] for x in p), p)
     p = attribute_that_tracked(hist(0x6009, [(5, 1900), (105, 1601), (204, 1900), (303, 1500)]), {}, {}, ctx)
     c.check("one change that disagrees rules it out", not paths(p), p)
+
+    c.section("the reading that follows someone walking in and out")
+    def seen(t, attr, value, cluster=0xFCC0):
+        return {"t": t, "ep": 1, "cluster": cluster, "attr": attr, "mfr": 0x115F, "value": value}
+    PATH = "endpoints.1.clusters.0xFCC0.attributes.0x0142"
+    walk = lambda expect: {"ep": None, "label": "the device", "inputs": {}, "expect": expect, "t0": 100.0}
+    noise = [seen(101, 0x0000, 16721, 0x0400), seen(102, 0x0055, 1, 0x0012), seen(103, 0x0021, 1, 0x0001)]
+    p = occupancy_attribute(noise + [seen(104, 0x0142, 1)], {(1, 0xFCC0, 0x0142, 0x115F): 0},
+                            walk("occupied"), {})
+    c.check("the reading that went 0 -> 1 on walking in is occupancy, and 1 is occupied",
+            paths(p).get(PATH, {}).get("value_map") == {"1": True, "0": False}
+            and paths(p)[PATH]["name"] == "occupancy", p)
+    c.check("a lux reading, a button press and the battery in the same window are not offered",
+            set(paths(p)) == {PATH, "device_type"}, p)
+    c.check("and the device is proposed as a motion sensor", paths(p)["device_type"] == "motion_sensor", p)
+    c.check("seen to change from a known value: high confidence, saying when",
+            p[0]["confidence"] == "high" and "went 0 -> 1 4 s into the step" in p[0]["evidence"], p)
+    p = occupancy_attribute([seen(104, 0x0142, 1)], {}, walk("occupied"), {})
+    c.check("a sleepy sensor's first report cannot be compared: offered, but not as certain",
+            PATH in paths(p) and p[0]["confidence"] == "medium" and "not seen before" in p[0]["evidence"], p)
+    p = occupancy_attribute([seen(130, 0x0142, 0)], {(1, 0xFCC0, 0x0142, 0x115F): 1}, walk("clear"), {})
+    c.check("walking out names the same states from the other side",
+            paths(p)[PATH]["value_map"] == {"1": True, "0": False}, p)
+    p = occupancy_attribute([seen(104, 0x0142, 0)], {(1, 0xFCC0, 0x0142, 0x115F): 1}, walk("occupied"), {})
+    c.check("a sensor that reports 0 when someone is there is learned that way round",
+            paths(p)[PATH]["value_map"] == {"0": True, "1": False}, p)
+    p = occupancy_attribute([seen(104, 0x0142, 1)], {(1, 0xFCC0, 0x0142, 0x115F): 1}, walk("occupied"), {})
+    c.check("a reading repeated at its old value is no change: nothing proposed, and says why",
+            not paths(p) and "view empty" in p[0]["evidence"], p)
+    p = occupancy_attribute([seen(104, 0x0142, 1), seen(110, 0x0142, 0)],
+                            {(1, 0xFCC0, 0x0142, 0x115F): 0}, walk("occupied"), {})
+    c.check("one that flipped and flipped back did not hold while the user stayed", not paths(p), p)
+    p = occupancy_attribute([seen(104, 0x0150, 1), seen(105, 0x0150, 7), seen(106, 0x0150, 1)], {},
+                            walk("occupied"), {})
+    c.check("a reading that also took a third value is a measurement, not a state", not paths(p), p)
+    p = occupancy_attribute([seen(104, 0x0152, 1)], {(1, 0xFCC0, 0x0152, 0x115F): 0}, walk("occupied"),
+                            {"writable": {(1, 0xFCC0, 0x0152, 0x115F): "uint8"}})
+    c.check("a writable attribute is a setting, not a reading", not paths(p), p)
+    p = occupancy_attribute([seen(104, 0x0142, 1), seen(105, 0x0160, 1)], {}, walk("occupied"), {})
+    c.check("two readings flipping together are both offered, for the user to pick one",
+            len([x for x in p if x["path"].startswith("endpoints.")]) == 2
+            and all(x["confidence"] == "low" and "accept only one" in x["evidence"]
+                    for x in p if x["path"].startswith("endpoints.")), p)
+    p = occupancy_attribute([seen(104 + i, 0x0140 + i, 1) for i in range(5)], {}, walk("occupied"), {})
+    c.check("many flipping at once is not one walk past: asks for a repeat",
+            not paths(p) and p[0]["confidence"] == "low", p)
 
     c.section("blob tags against known readings")
     p = correlate_blob_tags([rec(1, 0xFCC0, 0x00F7, AEU002_F7, 0x115F)], {}, step(1, rating_w=2000),

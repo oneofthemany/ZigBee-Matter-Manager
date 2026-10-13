@@ -135,15 +135,18 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
             settings[(cid, aid)] = st
 
     for key, raw_value in list(out.items()):
-        # Two spellings of an unnamed attribute: cluster_XXXX_attr_YYYY from the
+        # Three spellings of an unnamed attribute: cluster_XXXX_attr_YYYY from the
         # generic handler, attr_XXXX_YYYY from a registered handler's fallback
-        # (ClusterHandler.get_attr_name). A profile names either.
+        # (ClusterHandler.get_attr_name), opple_0xYYYY from the Aqara handler's
+        # for 0xFCC0. A profile names any of them.
         parts = key.split("_")
         try:
             if key.startswith("cluster_") and len(parts) >= 4 and parts[2] == "attr":
                 cid, aid = int(parts[1], 16), int(parts[3], 16)
             elif key.startswith("attr_") and len(parts) == 3:
                 cid, aid = int(parts[1], 16), int(parts[2], 16)
+            elif key.startswith("opple_0x") and len(parts) == 2:
+                cid, aid = 0xFCC0, int(parts[1], 16)
             else:
                 continue
         except ValueError:
@@ -217,6 +220,8 @@ def _apply_attr_transform(value: Any, mapping: Dict[str, Any]) -> Any:
     vmap = mapping.get("value_map")
     if isinstance(vmap, dict) and vmap:
         key = str(value)
+        if key not in vmap and isinstance(value, bool):
+            key = str(int(value))       # a map keyed "0"/"1" names a Bool too
         if key in vmap:
             return vmap[key]
 
@@ -503,6 +508,11 @@ def build_discovery_configs(device) -> List[Dict[str, Any]]:
                     if on_v and off_v:
                         cfg["config"]["payload_on"]  = on_v
                         cfg["config"]["payload_off"] = off_v
+                    else:
+                        # No named pair: the state is a truth value, and HA
+                        # matches its default ON / OFF payloads, not "True".
+                        cfg["config"]["value_template"] = \
+                            f"{{{{ 'ON' if value_json.{name} else 'OFF' }}}}"
                 if component == "sensor":
                     cfg["config"]["state_class"] = "measurement"
                 configs.append(cfg)

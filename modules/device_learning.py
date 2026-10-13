@@ -353,7 +353,7 @@ async def finish(device, key: str) -> Dict[str, Any]:
     baseline: Dict[Any, Any] = {}
     for f in [f for f in s.frames if f["t"] < a["t0"]] + a["baseline"]:
         baseline[(f["ep"], f["cluster"], f["attr"], f.get("mfr"))] = f["value"]
-    step = {**st, "inputs": a["inputs"],
+    step = {**st, "inputs": a["inputs"], "t0": a["t0"],
             "watch_ca": (st["watch"].get("cluster"), st["watch"].get("attr"))
             if st["watch"].get("cluster") is not None else None}
     proposals = []
@@ -698,6 +698,13 @@ def preview(device, entry: Dict[str, Any]) -> List[Dict[str, Any]]:
         diff(f"EP{ep_id} type", live.kind if live else None, e.get("kind"))
         diff(f"EP{ep_id} name", endpoint_label(device, ep_id), e.get("label"))
         diff(f"EP{ep_id} metering", (decided.get((ep_id, "metering")) or (None,))[0], e.get("metering"))
+        named = ((current.get("endpoints") or {}).get(str(ep_id)) or {}).get("clusters") or {}
+        for cl, spec in sorted((e.get("clusters") or {}).items()):
+            for at, m in sorted(((spec or {}).get("attributes") or {}).items()):
+                old = ((named.get(cl) or {}).get("attributes") or {}).get(at) or {}
+                diff(f"EP{ep_id} {cl}/{at} reads as", old.get("name"), (m or {}).get("name"))
+    if entry.get("device_type") not in (None, "generic"):
+        diff("device type", (decided.get((0, "device_type")) or (None,))[0], entry["device_type"])
     zmm, cur = entry.get("zmm") or {}, current.get("zmm") or {}
     ap = (zmm.get("measurements") or {}).get("active_power") or {}
     if ap:

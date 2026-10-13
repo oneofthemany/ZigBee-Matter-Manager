@@ -102,7 +102,10 @@ def draft_entry(device) -> Dict[str, Any]:
     metered = any(0x0B04 in (getattr(ep, "in_clusters", None) or {}) or
                   0x0702 in (getattr(ep, "in_clusters", None) or {})
                   for i, ep in (zdev.endpoints or {}).items() if i and ep is not None)
-    device_type = "light" if "light" in kinds else ("plug" if metered else "switch")
+    # No On/Off EP is no light, plug or switch: generic pins nothing, so the
+    # rules (and what is learned) still decide.
+    device_type = ("light" if "light" in kinds else "plug" if metered else "switch") \
+        if kinds else "generic"
     caps = sorted(c for c in getattr(getattr(device, "capabilities", None), "get_capabilities",
                                      lambda: set())() if c in ("on_off", "power_monitoring", "light", "switch"))
     return {
