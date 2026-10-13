@@ -23,7 +23,13 @@ async function api(ieee, path, body) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     };
     const res = await fetch(`/api/device/${encodeURIComponent(ieee)}${path}`, opts);
-    return res.json();
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        // A proxy's timeout page or a sign-in page, not the app's answer.
+        throw new Error(`the server answered HTTP ${res.status} with a page, not data`);
+    }
 }
 
 function inputHtml(step, spec) {
@@ -80,6 +86,12 @@ function stepHtml(step, running, trial) {
     } else if (step.mode === 'try_write' && step.status !== 'done') {
         body += tryHtml(step, trial);
         if (step.proposals.length) body += proposalsHtml(step);
+    } else if (step.status === 'running' && step.mode === 'discover') {
+        // Ends when the device has answered: nothing for the user to finish.
+        body += `<div class="d-flex align-items-center gap-2 small" role="status">
+            <span class="spinner-border spinner-border-sm text-primary" aria-hidden="true"></span>
+            <span>Asking the device what it has…</span>
+            <span class="text-muted" data-learn-countdown="${esc(step.key)}">${esc(step.window_s)}s</span></div>`;
     } else if (step.status === 'running') {
         body += `<div class="d-flex align-items-center gap-2">
             <span class="small" data-learn-countdown="${esc(step.key)}">${esc(step.window_s)}s</span>
@@ -173,8 +185,10 @@ function startCountdown(root, ieee, st) {
     timers.set(ieee, setInterval(() => {
         left = secondsLeft(deadline);
         if (++ticks % 2 === 0 && !document.hidden) {   // live readings, without re-rendering the step
-            api(ieee, '/learn').then(fresh => { if (fresh.running === step.key) updateLive(root, fresh); })
-                .catch(() => {});
+            api(ieee, '/learn').then(fresh => {
+                if (fresh.running === step.key) updateLive(root, fresh);
+                else if (fresh.success) renderState(root, ieee, fresh);   // it ended by itself
+            }).catch(() => {});
         }
         const el = root.querySelector(`[data-learn-countdown="${CSS.escape(step.key)}"]`);
         if (el) el.textContent = `${Math.max(left, 0)}s`;
@@ -267,7 +281,16 @@ async function onClick(root, ieee, t) {
         const key = d.learnBegin || d.learnRedo;
         const inputs = {};
         card?.querySelectorAll('[data-learn-input]').forEach(el => { inputs[el.dataset.learnInput] = el.value; });
-        return run(root, ieee, `/learn/step/${encodeURIComponent(key)}/begin`, { inputs });
+        // Some steps conclude within the request: show it is under way, once.
+        t.disabled = true;
+        t.insertAdjacentHTML('afterbegin',
+            '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>');
+        await run(root, ieee, `/learn/step/${encodeURIComponent(key)}/begin`, { inputs });
+        if (t.isConnected) {            // the request failed: the step was not re-rendered
+            t.disabled = false;
+            t.querySelector('.spinner-border')?.remove();
+        }
+        return;
     }
     if (d.learnCandidates) {
         const out = await api(ieee, `/learn/step/${encodeURIComponent(d.learnCandidates)}/candidates`);

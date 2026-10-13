@@ -96,14 +96,14 @@ DISCOVER_READ_MAX = 64
 
 
 def _vendor_values(device) -> Tuple[Dict[Any, Any], bool]:
-    """({(ep, cluster, attr, mfr): last value known}, whether the device's
-    maker attributes have been discovered) from the fact store: what it
-    answered, and under that what it has reported since."""
+    """({(ep, cluster, attr, mfr): last value known}, the keys a discovery
+    listed, whose access is therefore known) from the fact store: what the
+    device answered, and under that what it has reported since."""
     import json
     from modules.device_facts import parse_attr_subject, vendor_scoped
     from modules.zigbee_cache import get_facts
     values: Dict[Any, Tuple[Any, Any]] = {}
-    discovered = False
+    listed = set()
     for f in get_facts(str(device.ieee)):
         kind, _, rest = f["subject"].partition(":")
         if (kind, f["source"]) not in (("attr", "answered"), ("reports", "observed")):
@@ -115,12 +115,13 @@ def _vendor_values(device) -> Tuple[Dict[Any, Any], bool]:
             meta = json.loads(f["value"])
         except ValueError:
             continue
-        discovered = discovered or kind == "attr"
         value = meta.get("value" if kind == "attr" else "last") if isinstance(meta, dict) else None
         key = (f["endpoint_id"], *parsed)
+        if kind == "attr" and isinstance(meta, dict) and meta.get("acl") is not None:
+            listed.add(key)
         if value is not None and (key not in values or str(f["last_seen"]) >= str(values[key][0])):
             values[key] = (f["last_seen"], value)
-    return {k: v for k, (_, v) in values.items()}, discovered
+    return {k: v for k, (_, v) in values.items()}, listed
 
 
 async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,8 +134,8 @@ async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, An
     clean, err = _clean_inputs(st, inputs)
     if err:
         return {"success": False, "error": err}
-    values, discovered = _vendor_values(device)
-    ctx = {**_context(device, st), "vendor_values": values, "discovered": discovered,
+    values, listed = _vendor_values(device)
+    ctx = {**_context(device, st), "vendor_values": values, "listed": listed,
            "state_keys": set(device.state)}
     proposals = []
     for op in st["infer"]:
@@ -152,40 +153,85 @@ async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, An
 
 
 async def _discover(device, s: "Session", st: Dict[str, Any]) -> Dict[str, Any]:
-    """Ask the device, now, what its maker's clusters hold; record what it
-    answers as evidence. Nothing is written to it."""
-    from modules.device_facts import Fact, _j, attr_subject, record
-    from modules.probe_lite import discover_vendor
+    """Start asking the device what its maker's clusters hold. It answers over
+    many seconds, longer than a request should stay open, so the step runs
+    like one the user acts for: `state` shows it running, then its results."""
     key = st["key"]
-    found = await discover_vendor(device)
-    if not found:
+    if s.active:
+        return state(device) if s.active["key"] == key else \
+            {"success": False, "error": "finish the running step first"}
+    s.results[key] = {"status": "running", "proposals": []}
+    s.active = {"key": key, "t0": time.time(), "inputs": {}, "baseline": [], "ctx": {}}
+    s.active["task"] = asyncio.create_task(_run_discover(device, s, st, s.active))
+    return state(device)
+
+
+async def _run_discover(device, s: "Session", st: Dict[str, Any], active: Dict[str, Any]) -> None:
+    key = st["key"]
+    try:
+        proposals = await _discovered(device)
+    except Exception as e:
+        logger.warning(f"[{device.ieee}] discovery failed: {e}")
+        proposals = []
+    if s.active is active:
+        s.active = None
+    if _sessions.get(str(device.ieee)) is not s:
+        return
+    if proposals:
+        s.results[key] = {"status": "done", "proposals": proposals, "inputs": {}}
+    else:
         s.results[key] = {"status": "pending", "proposals": [
             {"path": "", "value": None, "confidence": "none",
              "evidence": "the device did not answer: wake it (press its button) and start "
                          "this step again straight away"}]}
-        logger.info(f"[{device.ieee}] Learning step {key}: no answer to discovery")
-        return state(device)
-    readable = [k for k, meta in sorted(found.items(), key=lambda kv: (kv[0][:3], kv[0][3] or 0))
-                if "R" in meta["acl"] or not meta["acl"]][:DISCOVER_READ_MAX]
-    read = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r["value"]
-            for r in await _read(device, readable)}
-    record(str(device.ieee), [
-        Fact(ep, attr_subject("attr", cid, aid, mfr), "answered",
-             _j({**meta, "value": read.get((ep, cid, aid, mfr))}))
-        for (ep, cid, aid, mfr), meta in found.items()])
+    logger.info(f"[{device.ieee}] Learning step {key}: "
+                + ("; ".join(p["evidence"] for p in proposals) or "no answer to discovery"))
+
+
+async def _discovered(device) -> List[Dict[str, Any]]:
+    """Discover and read the maker's attributes, record them as evidence, and
+    say what was found. A device may report attributes it does not list (its
+    functions, on some): those are read too, since a report proves they exist,
+    and recorded without access flags, which only a listing gives. Nothing is
+    written to the device."""
+    from modules.device_facts import Fact, _j, attr_subject, record
+    from modules.probe_lite import discover_vendor
+    from modules.zcl_decode import type_name
+    found = await discover_vendor(device)
+    if not found:
+        return []
+    order = lambda k: (k[:3], k[3] or 0)
+    reported, _ = _vendor_values(device)
+    unlisted = sorted((k for k in reported if k not in found and k[:2] in {f[:2] for f in found}),
+                      key=order)
+    readable = [k for k, meta in sorted(found.items(), key=lambda kv: order(kv[0]))
+                if "R" in meta["acl"] or not meta["acl"]]
+    read = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r
+            for r in await _read(device, (readable + unlisted)[:DISCOVER_READ_MAX])}
+    facts = [Fact(ep, attr_subject("attr", cid, aid, mfr), "answered",
+                  _j({**meta, "value": (read.get((ep, cid, aid, mfr)) or {}).get("value")}))
+             for (ep, cid, aid, mfr), meta in found.items()]
+    facts += [Fact(k[0], attr_subject("attr", k[1], k[2], k[3]), "answered",
+                   _j({"type": type_name(read[k]["type"]) if read[k].get("type") is not None else None,
+                       "acl": None, "value": read[k]["value"]}))
+              for k in unlisted if k in read]
+    record(str(device.ieee), facts)
     from modules.zigbee_cache import drain
     await drain()               # the settings steps read these facts next
-    proposals = []
+    notes = []
     for ep, cid in sorted({k[:2] for k in found}):
         mine = {k: m for k, m in found.items() if k[:2] == (ep, cid)}
         writable = sum("W" in m["acl"] for m in mine.values())
-        proposals.append({"path": "", "value": None, "confidence": "high", "op": "discover",
-                          "evidence": f"EP{ep} 0x{cid:04X} lists {len(mine)} attributes, {writable} "
-                                      f"writable; {sum(k in read for k in mine)} read"})
-    s.results[key] = {"status": "done", "proposals": proposals, "inputs": {}}
-    logger.info(f"[{device.ieee}] Learning step {key}: "
-                + "; ".join(p["evidence"] for p in proposals))
-    return state(device)
+        notes.append({"path": "", "value": None, "confidence": "high", "op": "discover",
+                      "evidence": f"EP{ep} 0x{cid:04X} lists {len(mine)} attributes, {writable} "
+                                  f"writable; {sum(k in read for k in mine)} read"})
+        extra = [k for k in unlisted if k[:2] == (ep, cid)]
+        if extra:
+            notes.append({"path": "", "value": None, "confidence": "medium", "op": "discover",
+                          "evidence": f"EP{ep} 0x{cid:04X} also reports {len(extra)} attributes it "
+                                      f"does not list ({sum(k in read for k in extra)} read): "
+                                      "whether those can be written is not known"})
+    return notes
 
 
 def _power_scale(device) -> Dict[int, Tuple[int, int]]:
@@ -233,7 +279,8 @@ async def _read(device, targets) -> List[Dict[str, Any]]:
                     elif isinstance(v, int):
                         v = int(v)      # zigpy's Bool and enums, as a frame carries them
                     out.append({"t": time.time(), "ep": ep, "cluster": cid,
-                                "attr": int(rec.attrid), "mfr": mfr, "value": v})
+                                "attr": int(rec.attrid), "mfr": mfr, "value": v,
+                                "type": getattr(rec.value, "type", None)})
     return out
 
 
@@ -310,7 +357,7 @@ def state(device) -> Dict[str, Any]:
 def _live(device, s: "Session") -> List[Dict[str, Any]]:
     """While a step runs: each EP's latest on/off and power, and whether its
     power has moved since the step began, so the user sees where a load shows."""
-    if not s.active:
+    if not s.active or s.active.get("task"):
         return []
     from modules.device_identity import endpoint_label
     from modules.learning_ops import MOVED_SHARE
@@ -448,6 +495,8 @@ async def finish(device, key: str) -> Dict[str, Any]:
     s, st, err = _session_step(device, key)
     if err:
         return {"success": False, "error": err}
+    if st.get("mode") == "discover":
+        return state(device)        # it ends when the device has answered, not when asked to
     if not s.active or s.active["key"] != key:
         return {"success": False, "error": "that step is not running"}
     a, s.active = s.active, None
@@ -513,6 +562,8 @@ def decide(device, key: str, accept: List[int]) -> Dict[str, Any]:
 
 async def end(device) -> Dict[str, Any]:
     s = _sessions.pop(str(device.ieee), None)
+    if s is not None and s.active and s.active.get("task"):
+        s.active["task"].cancel()
     if s is not None and s.trial:
         await _revert(device, s.trial)
     return {"success": True, "active": False}

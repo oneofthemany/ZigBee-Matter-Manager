@@ -92,11 +92,16 @@ async def discover_vendor(device) -> dict:
             for cid, cluster in (getattr(ep, "in_clusters", None) or {}).items():
                 if int(cid) < VENDOR_CLUSTER_MIN:
                     continue
-                for code in [None] + ([int(mfr)] if mfr else []):
+                # A maker's cluster answers with its code or without, rarely
+                # both: the first to answer is taken, since the other costs
+                # two timeouts while the device is briefly awake.
+                for code in ([int(mfr)] if mfr else []) + [None]:
                     info = await discover_attribute_info(cluster, manufacturer=code) or {}
                     for aid, meta in info.items():
                         found[(ep_id, int(cid), int(aid), code)] = {
                             "type": type_name(meta["type"]), "acl": acl_letters(meta["acl"])}
+                    if info:
+                        break
     return found
 
 

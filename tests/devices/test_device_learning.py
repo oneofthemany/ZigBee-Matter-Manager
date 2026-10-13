@@ -349,20 +349,52 @@ def run() -> Checker:
                                                {"known": "schedule_time_raw: 589845"}))
         c.check("with nothing known of its attributes, matching says to discover first",
                 "Wake and discover" in _step(st, "manufacturer_setting.known_values")["proposals"][0]["evidence"])
-        st = asyncio.run(device_learning.begin(pres, "discover.vendor_attributes", {}))
+        async def discover():
+            """Start the step, as the page does, and wait for the device's answer."""
+            started = await device_learning.begin(pres, "discover.vendor_attributes", {})
+            again = await device_learning.begin(pres, "discover.vendor_attributes", {})
+            early = await device_learning.finish(pres, "discover.vendor_attributes")
+            await device_learning._sessions[PRESENCE_IEEE].active["task"]
+            return started, again, early, device_learning.state(pres)
+
+        started, again, early, st = asyncio.run(discover())
+        c.check("starting it answers at once, showing the step running while the device is asked",
+                started["running"] == "discover.vendor_attributes" and started["live"] == []
+                and _step(started, "discover.vendor_attributes")["status"] == "running", started)
+        c.check("a second press, or Done, while it runs neither restarts it nor fails",
+                again["running"] == early["running"] == "discover.vendor_attributes"
+                and again["success"] and early["success"])
         found = _step(st, "discover.vendor_attributes")
         c.check("asleep, it does not answer: the step says to wake it and stays open",
-                found["status"] == "pending" and "press its button" in found["proposals"][0]["evidence"],
-                found)
+                st["running"] is None and found["status"] == "pending"
+                and "press its button" in found["proposals"][0]["evidence"], found)
         fcc0 = pres.zigpy_dev.endpoints[1].in_clusters[0xFCC0]
         fcc0.listed = {0x0142: (0x20, 0x05), 0x0162: (0x23, 0x07), 0x023E: (0x23, 0x07),
                        0x0163: (0x23, 0x07), 0x016A: (0x23, 0x07)}
         fcc0.values.update({0x0142: 0, 0x0162: 600000, 0x023E: 589845, 0x0163: 3600000, 0x016A: 3600000})
-        st = asyncio.run(device_learning.begin(pres, "discover.vendor_attributes", {}))
+        # What this kind of sensor does: its functions are reported, never listed.
+        device_learning.capture(PRESENCE_IEEE, 0x0104, 0xFCC0, 1, _vendor_report(0x014F, 0x20, bytes([30])))
+        device_facts.record(PRESENCE_IEEE, [device_facts.Fact(
+            1, "reports:0xFCC0/0x014F@0x115F", "observed", json.dumps({"nonzero": True, "last": 30}))])
+        asyncio.run(zigbee_cache.drain())
+        fcc0.values[0x014F] = 35
+        st = asyncio.run(discover())[3]
         found = _step(st, "discover.vendor_attributes")
         c.check("awake, it lists what it has, what can be written, and its values are read",
-                found["status"] == "done" and "EP1 0xFCC0 lists 5 attributes, 4 writable; 5 read"
+                st["running"] is None and found["status"] == "done"
+                and "EP1 0xFCC0 lists 5 attributes, 4 writable; 5 read"
                 in found["proposals"][0]["evidence"], found)
+        c.check("an attribute it reports but does not list is read too, and said to be of unknown access",
+                "also reports 1 attributes it does not list (1 read)" in found["proposals"][1]["evidence"],
+                found)
+        st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values",
+                                               {"known": "absence_delay: 3500"}))
+        c.check("its fresh value is what later steps match against, as a reading not a setting",
+                any(p["path"] == "endpoints.1.clusters.0xFCC0.attributes.0x014F"
+                    and p["value"] == {"name": "absence_delay", "scale": 0.01} or
+                    "absence_delay" in p["evidence"]
+                    for p in _step(st, "manufacturer_setting.known_values")["proposals"]),
+                _step(st, "manufacturer_setting.known_values")["proposals"])
         st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values", {"known": json.dumps(
             {"schedule_time_raw": 589845, "temp_and_humidity_sampling_period": 600,
              "temp_reporting_interval": 3600, "led_disabled_night": False})}))

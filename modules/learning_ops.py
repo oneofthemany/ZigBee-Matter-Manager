@@ -617,8 +617,10 @@ def attributes_holding_known(records, baseline, step, ctx) -> List[Dict[str, Any
                 if scale != 1:
                     mapping["scale"] = scale
                 out.append(proposal(f"endpoints.{ep}.clusters.0x{cluster:04X}.attributes.0x{attr:04X}",
-                                    mapping, conf, seen + ("; read-only" if ctx.get("discovered")
-                                                           else "; not known to be writable")))
+                                    mapping, conf, seen + (
+                                        "; read-only" if key in (ctx.get("listed") or ())
+                                        else "; reported but not listed by the device, so whether "
+                                             "it can be written is not known")))
     if unsure:
         out.append(proposal("", None, "low", "more than one fit, so not proposed: " + "; ".join(unsure)))
     if small:
