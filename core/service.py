@@ -1093,7 +1093,7 @@ class ZigbeeService(
                         handler = zdev.handlers.get(cluster)
 
                     if handler:
-                        idx = 3
+                        idx = hdr_len
                         while idx + 3 <= len(message):
                             attr_id = message[idx] | (message[idx + 1] << 8)
                             data_type = message[idx + 2]
