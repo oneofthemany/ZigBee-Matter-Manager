@@ -35,11 +35,22 @@ class _Cluster:
     def add_listener(self, _l):
         pass
 
+    types = {}          # {attr: datatype} where not a uint8
+
     async def read_attributes_raw(self, attrs, manufacturer=None):
-        return NS(status_records=[NS(attrid=a, status=0, value=NS(value=self.values[a]))
-                                  for a in attrs if a in self.values])
+        return NS(status_records=[
+            NS(attrid=a, status=0, value=NS(value=self.values[a], type=self.types.get(a, 0x20)))
+            for a in attrs if a in self.values])
 
     listed = None       # {attr: (datatype, acl)} once the device is awake to say
+    read_only = ()      # attributes that refuse a write
+    written = None      # [(attr, value)] the device was sent
+
+    async def write_attributes_raw(self, attrs, manufacturer=None):
+        if self.written is None:
+            raise asyncio.TimeoutError
+        self.written += [(a.attrid, int(a.value.value)) for a in attrs]
+        return [[NS(status=0x88 if a.attrid in self.read_only else 0) for a in attrs]]
 
     async def discover_attributes_extended(self, start, count, manufacturer=None):
         if not self.listed or manufacturer is None:
@@ -377,7 +388,7 @@ def run() -> Checker:
         device_facts.record(PRESENCE_IEEE, [device_facts.Fact(
             1, "reports:0xFCC0/0x014F@0x115F", "observed", json.dumps({"nonzero": True, "last": 30}))])
         asyncio.run(zigbee_cache.drain())
-        fcc0.values[0x014F] = 35
+        fcc0.values[0x014F], fcc0.types = 3500, {0x014F: 0x21}
         st = asyncio.run(discover())[3]
         found = _step(st, "discover.vendor_attributes")
         c.check("awake, it lists what it has, what can be written, and its values are read",
@@ -388,13 +399,56 @@ def run() -> Checker:
                 "also reports 1 attributes it does not list (1 read)" in found["proposals"][1]["evidence"],
                 found)
         st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values",
-                                               {"known": "absence_delay: 3500"}))
-        c.check("its fresh value is what later steps match against, as a reading not a setting",
-                any(p["path"] == "endpoints.1.clusters.0xFCC0.attributes.0x014F"
-                    and p["value"] == {"name": "absence_delay", "scale": 0.01} or
-                    "absence_delay" in p["evidence"]
-                    for p in _step(st, "manufacturer_setting.known_values")["proposals"]),
+                                               {"known": "absence_delay: 35"}))
+        found = _step(st, "manufacturer_setting.known_values")["proposals"]
+        c.check("its fresh value is what later steps match against: a reading, its access unknown",
+                [(p["path"], p["value"]) for p in found if p["path"]]
+                == [("endpoints.1.clusters.0xFCC0.attributes.0x014F", {"name": "absence_delay", "scale": 100})]
+                and "not listed by the device" in found[0]["evidence"], found)
+
+        c.section("whether an unlisted attribute can be written: its own value, written back")
+        async def probe():
+            await device_learning.begin(pres, "discover.write_access", {})
+            await device_learning._sessions[PRESENCE_IEEE].active["task"]
+            return device_learning.state(pres)
+
+        c.check("the step follows discovery", pkeys.index("discover.write_access")
+                == pkeys.index("discover.vendor_attributes") + 1, pkeys)
+        st = asyncio.run(probe())
+        found = _step(st, "discover.write_access")
+        c.check("a device that does not answer the write is recorded as nothing known",
+                found["status"] == "done" and "gave no answer" in found["proposals"][0]["evidence"], found)
+        fcc0.written = []
+        st = asyncio.run(probe())
+        found = _step(st, "discover.write_access")
+        c.check("only the unlisted attribute is written, with exactly the value just read",
+                fcc0.written == [(0x014F, 3500)], fcc0.written)
+        c.check("accepted: it can be written",
+                "1 can be written" in found["proposals"][0]["evidence"]
+                and "0x014F" in found["proposals"][0]["evidence"], found)
+        st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values",
+                                               {"known": "absence_delay: 35"}))
+        got = [p["value"] for p in _step(st, "manufacturer_setting.known_values")["proposals"]
+               if p["path"] == "zmm.settings"]
+        c.check("so a known value now names it as a setting, with its type and scale",
+                [(x["id"], x["attr"], x["type"], x.get("scale")) for x in got]
+                == [("absence_delay", "0x014F", "uint16", 100)],
                 _step(st, "manufacturer_setting.known_values")["proposals"])
+        fcc0.read_only, fcc0.written = (0x014F,), []
+        device_facts.record(PRESENCE_IEEE, [device_facts.Fact(
+            1, "attr:0xFCC0/0x014F@0x115F", "answered",
+            json.dumps({"type": "0x21/uint16", "acl": None, "value": 3500}))])
+        asyncio.run(zigbee_cache.drain())
+        st = asyncio.run(probe())
+        c.check("refused: it is read-only, and says so",
+                "1 are read-only" in _step(st, "discover.write_access")["proposals"][0]["evidence"],
+                _step(st, "discover.write_access"))
+        st = asyncio.run(probe())
+        c.check("with every attribute's access known, there is nothing left to try",
+                fcc0.written == [(0x014F, 3500)]
+                and "nothing to try" in _step(st, "discover.write_access")["proposals"][0]["evidence"],
+                _step(st, "discover.write_access"))
+
         st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values", {"known": json.dumps(
             {"schedule_time_raw": 589845, "temp_and_humidity_sampling_period": 600,
              "temp_reporting_interval": 3600, "led_disabled_night": False})}))

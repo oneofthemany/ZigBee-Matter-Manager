@@ -28,7 +28,11 @@ INPUT_TYPES = ("number", "text", "select")
 # observe: the user acts while frames are captured. try_write: ZMM flips a
 # setting. history, lookup: concluded from what is already recorded (lookup
 # with the user's inputs). discover: the device is asked what it has.
-MODES = ("observe", "try_write", "history", "lookup", "discover")
+# write_probe: each unlisted attribute's own value is written back to learn
+# whether it can be written.
+MODES = ("observe", "try_write", "history", "lookup", "discover", "write_probe")
+# Steps that question the device over many seconds and infer nothing.
+BACKGROUND = ("discover", "write_probe")
 WINDOW_S = (5, 900)
 _ID = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
@@ -80,14 +84,13 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             infer.append({"op": op["op"], "yields": yields})
         window = int(st.get("window_s") or 30)
         mode = st.get("mode") or "observe"
-        # Discovery asks the device what it has: there is nothing to infer.
-        if not (WINDOW_S[0] <= window <= WINDOW_S[1]) or (not infer and mode != "discover"):
+        if not (WINDOW_S[0] <= window <= WINDOW_S[1]) or (not infer and mode not in BACKGROUND):
             return None
         if st.get("expect_kind") not in (None, "light", "switch"):
             return None
         if st.get("expect") not in (None, "occupied", "clear"):
             return None
-        if mode not in MODES or (mode == "discover" and infer) or \
+        if mode not in MODES or (mode in BACKGROUND and infer) or \
                 (mode == "try_write") != (bool(infer) and all(i["op"] == "confirmed_write" for i in infer)):
             return None                 # only a write step may confirm a write, and only that
         watch = st.get("watch") or {}

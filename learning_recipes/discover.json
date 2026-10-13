@@ -1,7 +1,10 @@
 {
   "id": "discover",
   "title": "Wake and discover",
-  "applies_when": { "vendor_cluster": true, "battery_powered": true },
+  "applies_when": {
+    "vendor_cluster": true,
+    "battery_powered": true
+  },
   "steps": [
     {
       "id": "vendor_attributes",
@@ -10,6 +13,14 @@
       "inputs": [],
       "window_s": 60,
       "infer": []
+    },
+    {
+      "id": "write_access",
+      "mode": "write_probe",
+      "window_s": 90,
+      "inputs": [],
+      "infer": [],
+      "instruction": "A device may report attributes it leaves out of the list it gives (often its real functions), so ZMM cannot tell which of them are settings. This step finds out the only way there is: it reads each one, writes that same value back, and notes whether the device accepts. Nothing is changed, but these are writes to the device: only whole-number and on/off attributes are tried. Run 'Wake and discover' first, then press the device's button and start."
     }
   ]
 }

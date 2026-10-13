@@ -16,6 +16,10 @@ const CONF = { high: 'bg-success', medium: 'bg-info text-dark', low: 'bg-warning
 const STATUS = { pending: 'bg-light text-dark', running: 'bg-primary', done: 'bg-info text-dark',
                  accepted: 'bg-success', skipped: 'bg-secondary' };
 
+// Steps that question the device by themselves: mode -> what to show meanwhile.
+const BACKGROUND = { discover: 'Asking the device what it has…',
+                     write_probe: 'Writing each value back unchanged…' };
+
 const timers = new Map();      // ieee -> countdown interval
 
 async function api(ieee, path, body) {
@@ -86,11 +90,11 @@ function stepHtml(step, running, trial) {
     } else if (step.mode === 'try_write' && step.status !== 'done') {
         body += tryHtml(step, trial);
         if (step.proposals.length) body += proposalsHtml(step);
-    } else if (step.status === 'running' && step.mode === 'discover') {
+    } else if (step.status === 'running' && BACKGROUND[step.mode]) {
         // Ends when the device has answered: nothing for the user to finish.
         body += `<div class="d-flex align-items-center gap-2 small" role="status">
             <span class="spinner-border spinner-border-sm text-primary" aria-hidden="true"></span>
-            <span>Asking the device what it has…</span>
+            <span>${BACKGROUND[step.mode]}</span>
             <span class="text-muted" data-learn-countdown="${esc(step.key)}">${esc(step.window_s)}s</span></div>`;
     } else if (step.status === 'running') {
         body += `<div class="d-flex align-items-center gap-2">

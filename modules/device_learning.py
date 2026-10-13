@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.device_learning")
 
+from modules.learning_recipes import BACKGROUND
+
 MAX_FRAMES = 5000
 READ_TIMEOUT = 6.0
 
@@ -152,26 +154,26 @@ async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, An
     return state(device)
 
 
-async def _discover(device, s: "Session", st: Dict[str, Any]) -> Dict[str, Any]:
-    """Start asking the device what its maker's clusters hold. It answers over
-    many seconds, longer than a request should stay open, so the step runs
-    like one the user acts for: `state` shows it running, then its results."""
+async def _background(device, s: "Session", st: Dict[str, Any]) -> Dict[str, Any]:
+    """Start a step that questions the device (BACKGROUND modes). It answers
+    over many seconds, longer than a request should stay open, so the step
+    runs like one the user acts for: `state` shows it running, then its results."""
     key = st["key"]
     if s.active:
         return state(device) if s.active["key"] == key else \
             {"success": False, "error": "finish the running step first"}
     s.results[key] = {"status": "running", "proposals": []}
     s.active = {"key": key, "t0": time.time(), "inputs": {}, "baseline": [], "ctx": {}}
-    s.active["task"] = asyncio.create_task(_run_discover(device, s, st, s.active))
+    s.active["task"] = asyncio.create_task(_run_background(device, s, st, s.active))
     return state(device)
 
 
-async def _run_discover(device, s: "Session", st: Dict[str, Any], active: Dict[str, Any]) -> None:
+async def _run_background(device, s: "Session", st: Dict[str, Any], active: Dict[str, Any]) -> None:
     key = st["key"]
     try:
-        proposals = await _discovered(device)
+        proposals = await (_write_probed if st["mode"] == "write_probe" else _discovered)(device)
     except Exception as e:
-        logger.warning(f"[{device.ieee}] discovery failed: {e}")
+        logger.warning(f"[{device.ieee}] {st['mode']} failed: {e}")
         proposals = []
     if s.active is active:
         s.active = None
@@ -185,7 +187,102 @@ async def _run_discover(device, s: "Session", st: Dict[str, Any], active: Dict[s
              "evidence": "the device did not answer: wake it (press its button) and start "
                          "this step again straight away"}]}
     logger.info(f"[{device.ieee}] Learning step {key}: "
-                + ("; ".join(p["evidence"] for p in proposals) or "no answer to discovery"))
+                + ("; ".join(p["evidence"] for p in proposals) or "no answer from the device"))
+
+
+def _note(confidence: str, evidence: str, op: str) -> Dict[str, Any]:
+    return {"path": "", "value": None, "confidence": confidence, "evidence": evidence, "op": op}
+
+
+async def _echo(device, key, type_id: int, value: int) -> Optional[bool]:
+    """Write `value` to the attribute: True accepted, False refused, None no answer."""
+    from zigpy.zcl import foundation
+    from modules.zmm_settings import _write_ok, typed_value
+    ep, cid, aid, mfr = key
+    cluster = (device.zigpy_dev.endpoints[ep].in_clusters or {}).get(cid)
+    if cluster is None:
+        return None
+    attr = foundation.Attribute()
+    attr.attrid = aid
+    attr.value = typed_value(type_id, value)
+    try:
+        async with asyncio.timeout(READ_TIMEOUT):
+            return _write_ok(await cluster.write_attributes_raw([attr], mfr))
+    except Exception as e:
+        logger.debug(f"[{device.ieee}] write probe of 0x{cid:04X}/0x{aid:04X} unanswered: {e}")
+        return None
+
+
+async def _write_probed(device) -> List[Dict[str, Any]]:
+    """Learn which reported-but-unlisted maker attributes can be written, the
+    only way a device that does not list them allows: each one's value is
+    read, written back as read, and read again. Only whole-number and on/off
+    types, never NEVER_WRITE; a refusal or an acceptance is recorded as its
+    access, silence as nothing."""
+    import json
+    from modules.device_facts import Fact, _j, attr_subject, parse_attr_subject, record, vendor_scoped
+    from modules.device_profiles import SETTING_TYPES
+    from modules.zigbee_cache import drain, get_facts
+    types: Dict[Any, Tuple[str, int]] = {}
+    skipped = 0
+    for f in get_facts(str(device.ieee)):
+        parsed = parse_attr_subject(f["subject"]) if f["source"] == "answered" else None
+        if parsed is None or not vendor_scoped(parsed[0], parsed[2]):
+            continue
+        try:
+            meta = json.loads(f["value"])
+        except ValueError:
+            continue
+        if not isinstance(meta, dict) or meta.get("acl") is not None:
+            continue                    # listed: its access is already known
+        name = str(meta.get("type") or "").split("/")[-1]
+        if name in SETTING_TYPES and parsed[:2] not in NEVER_WRITE:
+            types[(f["endpoint_id"], *parsed)] = (str(meta["type"]), SETTING_TYPES[name])
+        else:
+            skipped += 1
+    if not types:
+        return [_note("none", "nothing to try: every attribute known here is one the device listed. "
+                              "Run 'Wake and discover' first if it has not been", "write_probe")]
+    keys = sorted(types, key=lambda k: (k[:3], k[3] or 0))
+    before = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r["value"] for r in await _read(device, keys)}
+    if not before:
+        return []
+    accepted, refused, silent = [], [], []
+    for key in keys:
+        value = before.get(key)
+        if not isinstance(value, int):
+            silent.append(key)
+            continue
+        ok = await _echo(device, key, types[key][1], int(value))
+        (silent if ok is None else accepted if ok else refused).append(key)
+    after = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r["value"]
+             for r in await _read(device, accepted)}
+    moved = [k for k in accepted if k in after and after[k] != before[k]]
+    record(str(device.ieee), [
+        Fact(k[0], attr_subject("attr", k[1], k[2], k[3]), "answered",
+             _j({"type": types[k][0], "acl": "RW" if k in accepted else "R",
+                 "value": after.get(k, before[k])}))
+        for k in accepted + refused])
+    await drain()               # the settings steps read these facts next
+    named = lambda ks: ", ".join(f"0x{k[2]:04X}" for k in ks)
+    notes = []
+    if accepted:
+        notes.append(_note("high", f"{len(accepted)} can be written (their own value was accepted "
+                                   f"back): {named(accepted)}", "write_probe"))
+    if refused:
+        notes.append(_note("high", f"{len(refused)} are read-only (the device refused): "
+                                   f"{named(refused)}", "write_probe"))
+    if silent:
+        notes.append(_note("low", f"{len(silent)} gave no answer, so nothing is known of them: "
+                                  f"{named(silent)}. Wake the device and run this again", "write_probe"))
+    if moved:
+        notes.append(_note("low", "these read differently after their own value was written back; "
+                                  f"check the device: {named(moved)}", "write_probe"))
+    if skipped:
+        notes.append(_note("none", f"{skipped} hold text or bytes and were not tried", "write_probe"))
+    logger.info(f"[{device.ieee}] Write probe: accepted {named(accepted) or 'none'}; refused "
+                f"{named(refused) or 'none'}; unanswered {named(silent) or 'none'}")
+    return notes
 
 
 async def _discovered(device) -> List[Dict[str, Any]]:
@@ -428,8 +525,8 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "this step is built from the others: run those"}
     if st.get("mode") == "history":
         return await _from_history(device, s, st)
-    if st.get("mode") == "discover":
-        return await _discover(device, s, st)
+    if st.get("mode") in BACKGROUND:
+        return await _background(device, s, st)
     if st.get("mode") == "lookup":
         return await _lookup(device, s, st, inputs)
     if not inputs and (s.results.get(key) or {}).get("inputs"):
@@ -495,7 +592,7 @@ async def finish(device, key: str) -> Dict[str, Any]:
     s, st, err = _session_step(device, key)
     if err:
         return {"success": False, "error": err}
-    if st.get("mode") == "discover":
+    if st.get("mode") in BACKGROUND:
         return state(device)        # it ends when the device has answered, not when asked to
     if not s.active or s.active["key"] != key:
         return {"success": False, "error": "that step is not running"}
