@@ -126,6 +126,16 @@ def run() -> Checker:
     c.check("the generic handler's key still is", out.get("mode") == "comfort", out)
     c.check("an attribute the entry does not name is left alone",
             out.get("attr_fc99_0009") == 4 and len(out) == 5, out)
+    c.check("a named value is kept while its source is not part of the update",
+            transform_state_with_profile(dev, {"cluster_fc99_attr_0005": 0, "mode": "comfort"},
+                                         changed={"temperature"})["mode"] == "comfort")
+    out = transform_state_with_profile(dev, {"cluster_fc99_attr_0005": 0, "mode": "comfort"},
+                                       changed={"cluster_fc99_attr_0005"})
+    c.check("and follows its source when the device reports it again", out["mode"] == "eco", out)
+    out = transform_state_with_profile(dev, {"cluster_fc99_attr_0005": 0, "mode": "boost"},
+                                       changed={"cluster_fc99_attr_0005", "mode"})
+    c.check("unless a handler wrote that name in the same update: the handler's stands",
+            out["mode"] == "boost", out)
     device_profiles._store = _Store(normalise_profile(
         {"id": "X1", "match": {"model": "X1", "manufacturer": "Acme"}, "zmm": {"settings": [
             {"id": "child_lock", "type": "bool", "ep": 1, "cluster": "0xFC99", "attr": "0x0000"},

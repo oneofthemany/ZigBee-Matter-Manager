@@ -94,7 +94,8 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 (mode == "try_write") != (bool(infer) and all(i["op"] == "confirmed_write" for i in infer)):
             return None                 # only a write step may confirm a write, and only that
         watch = st.get("watch") or {}
-        steps.append({"id": st["id"], "for_each": fe, "instruction": str(st.get("instruction") or ""),
+        steps.append({"id": st["id"], "name": str(st.get("name") or "")[:60], "for_each": fe,
+                      "instruction": str(st.get("instruction") or ""),
                       "inputs": inputs, "infer": infer, "window_s": window,
                       "expect_kind": st.get("expect_kind") or "switch",
                       "expect": st.get("expect"), "mode": mode,

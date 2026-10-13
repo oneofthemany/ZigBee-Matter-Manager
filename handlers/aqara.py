@@ -743,6 +743,15 @@ class AqaraManufacturerCluster(ClusterHandler):
         logger.info(f"[{self.device.ieee}] Aqara manufacturer cluster configured")
         return True
 
+    def _senses_motion(self) -> bool:
+        """Whether the device is a motion or presence sensor, by its class:
+        many say so only on this cluster, with no Occupancy Sensing."""
+        from modules.device_class import device_class
+        try:
+            return hasattr(self.device, 'occupancy') or device_class(self.device).kind == "motion_sensor"
+        except Exception:
+            return False
+
     def _is_sleepy_end_device(self) -> bool:
         """
         True if the device is a battery-powered sleepy end device.
@@ -837,7 +846,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             ])
 
         # Add motion sensor attributes if we have occupancy cluster
-        if hasattr(self.device, 'occupancy'):
+        if self._senses_motion():
             attrs_to_read.extend([
                 self.ATTR_DETECTION_INTERVAL,
                 self.ATTR_MOTION_SENSITIVITY,
@@ -1052,7 +1061,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 self.ATTR_SENSOR_TYPE: "sensor_type",
             })
 
-        if hasattr(self.device, 'occupancy'):  # Motion sensor
+        if self._senses_motion():  # Motion sensor
             base_attrs.update({
                 self.ATTR_DETECTION_INTERVAL: "detection_interval",
                 self.ATTR_MOTION_SENSITIVITY: "motion_sensitivity",
@@ -1363,8 +1372,8 @@ class AqaraManufacturerCluster(ClusterHandler):
             ])
 
         # Motion Sensor Configuration
-        if hasattr(self.device, 'occupancy'):
-            options.extend([
+        if self._senses_motion():
+            motion = [
                 {
                     "name": "detection_interval",
                     "label": "Detection Interval",
@@ -1401,7 +1410,12 @@ class AqaraManufacturerCluster(ClusterHandler):
                     "attribute_id": self.ATTR_TRIGGER_INDICATOR,
                     "manufacturer_code": self.MANUFACTURER_CODE
                 }
-            ])
+            ]
+            # Motion sensors differ in which of these they have, and a sleepy
+            # one's list is never learned: there, offer what it has reported.
+            if self._is_sleepy_end_device():
+                motion = [o for o in motion if o["name"] in self.device.state]
+            options.extend(motion)
 
         # Switch/Relay Configuration
         if hasattr(self.device, 'on_off'):

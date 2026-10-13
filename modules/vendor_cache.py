@@ -75,6 +75,21 @@ def _dry_run(device, handler, attr: int, value: Any) -> Dict[str, Any]:
     return captured
 
 
+def _named(device, state: Dict[str, Any]) -> Dict[str, Any]:
+    """The names the device's entry gives raw keys already in `state`, where
+    absent. Otherwise a restored device shows them only once each attribute
+    is next reported: for a presence sensor, when someone next walks in."""
+    from modules.device_profiles_apply import transform_state_with_profile
+    try:
+        named = {k: v for k, v in transform_state_with_profile(device, state).items()
+                 if k not in state}
+    except Exception as e:
+        logger.debug(f"[{device.ieee}] cached attributes not named: {e}")
+        return {}
+    allow = getattr(getattr(device, "capabilities", None), "filter_state_update", None)
+    return allow(named) if allow and named else named
+
+
 def seed(device) -> int:
     """Record the cached vendor attributes as observed reports and add the
     state keys they decode to where the device has none. Returns keys added."""
@@ -101,6 +116,7 @@ def seed(device) -> int:
         handler = (device.handlers or {}).get((ep, cid))
         if hasattr(handler, "forget_unreported"):
             handler.forget_unreported(ids)
+    added.update(_named(device, {**device.state, **added}))
     if added:
         device.state.update(added)
         service = getattr(device, "service", None)

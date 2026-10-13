@@ -16,6 +16,10 @@ from handlers.aqara import AqaraManufacturerCluster
 from modules import vendor_cache
 from modules.device_profiles import ProfileStore
 
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+
 AGL8_F7 = bytes.fromhex("052101000a21529c0c200a0d232a4100001320001721960c1820641c1000642000652002672000")
 
 
@@ -79,6 +83,19 @@ def run() -> Checker:
         c.check("each is recorded as an observed report, for learning to match against",
                 "reports:0xFCC0/0x023E@0x115F" in subjects and "reports:0xFCC0/0x0142@0x115F" in subjects
                 and all(f.source == "observed" for f in recorded), subjects)
+
+        device_profiles._store = ProfileStore(user_dir=d + "/u3", bundled_dir=d + "/b3",
+                                              ieee_overrides_file=d + "/i3.json",
+                                              zmm_dir=str(REPO / "zmm_quirks"))
+        dev = _device({"opple_0x0142": 1})
+        dev.zigpy_dev.model, dev.zigpy_dev.manufacturer = "lumi.sensor_occupy.agl8", "Aqara"
+        vendor_cache.seed(dev)
+        c.check("a device its entry describes shows its readings by name at once, not only when "
+                "next reported", dev.state.get("occupancy") is True
+                and dev.state.get("pir_detection") is False, dev.state)
+        c.check("still without publishing", dev.published == [])
+        device_profiles._store = ProfileStore(user_dir=d + "/u", bundled_dir=d + "/b",
+                                              ieee_overrides_file=d + "/i.json", zmm_dir=d + "/z")
 
         dev = _device({})
         dev.zigpy_dev.endpoints[1].in_clusters[0xFCC0]._attr_cache = NS(_cache={}, _legacy_cache={})

@@ -1,26 +1,47 @@
 {
   "id": "presence",
   "title": "Presence",
-  "applies_when": { "device_types_any": ["0x0107"], "not_in_clusters_any": ["0x0406"] },
+  "applies_when": {
+    "device_types_any": [
+      "0x0107"
+    ],
+    "not_in_clusters_any": [
+      "0x0406"
+    ]
+  },
   "steps": [
     {
       "id": "walk_in",
+      "name": "Walk in",
       "expect": "occupied",
       "instruction": "Leave the sensor's view empty until it has had time to clear (a minute or two). Start, then walk into view and stay there, moving a little, until the step ends.",
       "inputs": [],
       "window_s": 60,
       "infer": [
-        { "op": "occupancy_attribute", "yields": ["endpoints.*.clusters", "device_type"] }
+        {
+          "op": "occupancy_attribute",
+          "yields": [
+            "endpoints.*.clusters",
+            "device_type"
+          ]
+        }
       ]
     },
     {
       "id": "walk_out",
+      "name": "Walk out",
       "expect": "clear",
       "instruction": "Start while still in view, then leave and stay out of sight. Finish once the sensor has had time to clear: some hold 'occupied' for a minute or more.",
       "inputs": [],
       "window_s": 300,
       "infer": [
-        { "op": "occupancy_attribute", "yields": ["endpoints.*.clusters", "device_type"] }
+        {
+          "op": "occupancy_attribute",
+          "yields": [
+            "endpoints.*.clusters",
+            "device_type"
+          ]
+        }
       ]
     }
   ]

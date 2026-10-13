@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Iterable, Any, Dict, List, Optional, Tuple
 
 from modules.device_profiles import (
     get_profile_store, CAPABILITY_TO_HA, _to_int,
@@ -100,13 +100,22 @@ def _apply_capabilities(device, profile: Dict[str, Any]) -> List[str]:
 
 # State transforms
 
-def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any]:
+def transform_state_with_profile(device, state: Dict[str, Any],
+                                 changed: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """
     Add friendly keys to *state* based on the profile + IEEE overrides.
 
-    Pure: returns a new dict (does not mutate ``state``).
+    Pure: returns a new dict (does not mutate ``state``). `changed` names the
+    keys this update carries: a friendly key already present is recomputed
+    only when its source is among them and it is not itself (a handler that
+    writes the name directly wins). Without `changed`, present keys are kept.
     """
     out = dict(state or {})
+    changed = set(changed or ())
+
+    def free(name: str, source: str) -> bool:
+        return name not in out or (source in changed and name not in changed)
+
     profile = resolve_profile_for_device(device)
     store   = get_profile_store()
     ieee    = str(getattr(device, "ieee", ""))
@@ -170,9 +179,7 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
             logger.debug(f"[{ieee}] transform failed for {key}: {e}")
             continue
 
-        # Don't clobber an existing friendly key that might have come from a
-        # dedicated handler — handlers always win.
-        if mapping["name"] not in out:
+        if free(mapping["name"], key):
             out[mapping["name"]] = value
 
     # state-key mappings (learn-by-demonstration)
@@ -186,7 +193,7 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
         if not src_key or src_key not in out:
             continue
         name = mapping.get("name") if isinstance(mapping, dict) else None
-        if not name or name in out:
+        if not name or not free(name, src_key):
             continue
         try:
             out[name] = _apply_attr_transform(out[src_key], mapping)
@@ -201,7 +208,7 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
             if src_key not in out:
                 continue
             name = mapping.get("name") if isinstance(mapping, dict) else None
-            if not name or name in out:
+            if not name or not free(name, src_key):
                 continue
             try:
                 out[name] = _apply_attr_transform(out[src_key], mapping)

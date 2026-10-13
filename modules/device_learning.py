@@ -242,7 +242,7 @@ async def _write_probed(device) -> List[Dict[str, Any]]:
             skipped += 1
     if not types:
         return [_note("none", "nothing to try: every attribute known here is one the device listed. "
-                              "Run 'Wake and discover' first if it has not been", "write_probe")]
+                              "Run 'Find its attributes' first if it has not been", "write_probe")]
     keys = sorted(types, key=lambda k: (k[:3], k[3] or 0))
     before = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r["value"] for r in await _read(device, keys)}
     if not before:
@@ -396,8 +396,9 @@ def start(device) -> Dict[str, Any]:
     steps = [s for r in recipes for s in expand(r, device)]
     for s in steps:
         s["title"] = next(r["title"] for r in recipes if r["id"] == s["recipe"])
-    if any(_is_power_test(st) for st in steps):
-        steps.append(dict(MAP_STEP))
+    tests = [st for st in steps if _is_power_test(st)]
+    if tests:
+        steps.append({**MAP_STEP, "title": tests[0]["title"]})     # shown with the tests it sums up
     _sessions[str(device.ieee)] = Session(str(device.ieee), steps)
     logger.info(f"[{device.ieee}] Learning started: {len(steps)} steps from "
                 f"{', '.join(r['id'] for r in recipes) or 'no recipes'}")
@@ -406,7 +407,7 @@ def start(device) -> Dict[str, Any]:
 
 POWER_TEST_OPS = {"power_follows_switch", "which_endpoints_moved"}
 # Built from every power test's movements; accepted like any step's proposals.
-MAP_STEP = {"key": "metering_map", "recipe": "metering_map", "title": "Metering map",
+MAP_STEP = {"key": "metering_map", "recipe": "metering_map", "name": "Metering map",
             "label": "every socket", "ep": None, "inputs": [], "infer": [], "window_s": 5,
             "mode": "summary", "watch": {},
             "instruction": "Built from every switch test: whose power moved for which socket. "
@@ -435,7 +436,8 @@ def state(device) -> Dict[str, Any]:
     steps = []
     for st in s.steps:
         res = s.results.get(st["key"]) or {}
-        steps.append({"key": st["key"], "title": st["title"], "label": st["label"],
+        steps.append({"key": st["key"], "title": st["title"], "name": st.get("name") or "",
+                      "label": st["label"],
                       "instruction": st["instruction"], "inputs": st["inputs"],
                       "window_s": st["window_s"], "mode": st.get("mode", "observe"),
                       "status": res.get("status", "pending"), "proposals": res.get("proposals", []),

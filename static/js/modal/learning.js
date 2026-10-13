@@ -21,6 +21,8 @@ const BACKGROUND = { discover: 'Asking the device what it has…',
                      write_probe: 'Writing each value back unchanged…' };
 
 const timers = new Map();      // ieee -> countdown interval
+const tabs = new Map();        // ieee -> the recipe (by title) whose steps are shown
+const DEALT = new Set(['done', 'accepted', 'skipped']);
 
 async function api(ieee, path, body) {
     const opts = body === undefined ? {} : {
@@ -77,7 +79,7 @@ function tryHtml(step, trial) {
         <div data-learn-cands></div>`;
 }
 
-function stepHtml(step, running, trial) {
+function stepHtml(step, running, trial, n) {
     const status = `<span class="badge ${STATUS[step.status] || 'bg-light text-dark'}">${esc(step.status)}</span>`;
     let body = `<div class="small mb-2">${esc(step.instruction)}</div>`;
     const disabled = running && running !== step.key ? 'disabled' : '';
@@ -102,9 +104,11 @@ function stepHtml(step, running, trial) {
             <button class="btn btn-primary btn-sm" data-learn-finish="${esc(step.key)}">Done</button></div>
             <div data-learn-live class="mt-2"></div>`;
     } else if (step.status === 'done') {
-        body += proposalsHtml(step) + `<div class="mt-2 d-flex gap-2">
-            <button class="btn btn-success btn-sm" data-learn-decide="${esc(step.key)}">Accept selected</button>
-            <button class="btn btn-outline-secondary btn-sm" data-learn-skip="${esc(step.key)}">Skip</button>
+        // A step that only reports (a discovery) has nothing to accept or skip.
+        const choose = step.proposals.some(p => p.path)
+            ? `<button class="btn btn-success btn-sm" data-learn-decide="${esc(step.key)}">Accept selected</button>
+               <button class="btn btn-outline-secondary btn-sm" data-learn-skip="${esc(step.key)}">Skip</button>` : '';
+        body += proposalsHtml(step) + `<div class="mt-2 d-flex gap-2">${choose}
             <button class="btn btn-outline-primary btn-sm" data-learn-redo="${esc(step.key)}">Redo</button></div>`;
     } else {
         body += `<div class="row g-2 align-items-end">${step.inputs.map(s => inputHtml(step, s)).join('')}
@@ -113,7 +117,8 @@ function stepHtml(step, running, trial) {
     }
     return `<div class="card mb-2" data-learn-step="${esc(step.key)}">
         <div class="card-header py-1 d-flex gap-2 align-items-center">
-            <span class="fw-bold small">${esc(step.title)}</span><span class="small text-muted">${esc(step.label)}</span>
+            <span class="fw-bold small">${n}. ${esc(step.name || step.title)}</span>
+            ${step.label === 'the device' ? '' : `<span class="small text-muted">${esc(step.label)}</span>`}
             <span class="ms-auto">${status}</span></div>
         <div class="card-body py-2">${body}</div></div>`;
 }
@@ -152,15 +157,41 @@ function renderState(root, ieee, st) {
             <div data-learn-review-box></div>`;
         return;
     }
-    box.innerHTML = (st.steps.length
-        ? st.steps.map(s => stepHtml(s, st.running, st.trial)).join('')
-        : '<div class="small text-muted">No recipe applies to this device yet.</div>')
-        + `<div class="d-flex gap-2 mt-2">
+    root._learnState = st;
+    box.innerHTML = `<div data-learn-steps></div>
+        <div class="d-flex gap-2 mt-2">
             <button class="btn btn-primary btn-sm" data-learn-review>Review &amp; save</button>
             <button class="btn btn-outline-secondary btn-sm" data-learn-end>End</button></div>
-           <div data-learn-review-box></div>`;
-    updateLive(root, st);
+        <div data-learn-review-box></div>`;
+    renderSteps(root, ieee, st);
     startCountdown(root, ieee, st);
+}
+
+/** One recipe's steps at a time, under a tab per recipe: a device can have a dozen steps. */
+function renderSteps(root, ieee, st, follow = true) {
+    const box = root.querySelector('[data-learn-steps]');
+    if (!st.steps.length) {
+        box.innerHTML = '<div class="small text-muted">No recipe applies to this device yet.</div>';
+        return;
+    }
+    const titles = [...new Set(st.steps.map(s => s.title))];
+    const of = title => st.steps.filter(s => s.title === title);
+    const busy = st.steps.find(s => s.key === st.running || s.key === st.trial?.step);
+    // The running step's recipe (unless the user just chose another), else the
+    // one being looked at, else the first with work left.
+    const shown = (follow && busy?.title)
+        || (titles.includes(tabs.get(ieee)) && tabs.get(ieee))
+        || titles.find(t => of(t).some(s => !DEALT.has(s.status))) || titles[0];
+    tabs.set(ieee, shown);
+    const pills = titles.map(t => {
+        const mine = of(t);
+        return `<li class="nav-item"><button type="button" data-learn-tab="${esc(t)}"
+            class="nav-link py-1 px-2 text-nowrap ${t === shown ? 'active' : ''}">${esc(t)}
+            <span class="opacity-75">${mine.filter(s => DEALT.has(s.status)).length}/${mine.length}</span></button></li>`;
+    }).join('');
+    box.innerHTML = `<ul class="nav nav-pills small flex-nowrap overflow-auto gap-1 mb-2">${pills}</ul>`
+        + of(shown).map((s, i) => stepHtml(s, st.running, st.trial, i + 1)).join('');
+    updateLive(root, st);
 }
 
 function startCountdown(root, ieee, st) {
@@ -279,6 +310,10 @@ async function onClick(root, ieee, t) {
         return syncEntry(root, ieee, applyButton(root._entry, root, t));
     }
     const card = t.closest('[data-learn-step]');
+    if (d.learnTab) {               // not a full render: that would restart a running step's countdown
+        tabs.set(ieee, d.learnTab);
+        return renderSteps(root, ieee, root._learnState, false);
+    }
     if (d.learnStart !== undefined) return run(root, ieee, '/learn/start', {});
     if (d.learnEnd !== undefined) { clearInterval(timers.get(ieee)); return run(root, ieee, '/learn/end', {}); }
     if (d.learnBegin || d.learnRedo) {

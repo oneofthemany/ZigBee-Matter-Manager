@@ -576,7 +576,7 @@ def attributes_holding_known(records, baseline, step, ctx) -> List[Dict[str, Any
         return [proposal("", None, "none", "give the values as name: number, separated by commas")]
     if not values:
         return [proposal("", None, "none", "nothing is known of this device's own attributes yet: "
-                                           "run 'Wake and discover' first")]
+                                           "run 'Find its attributes' (under Wake and discover) first")]
     fits: Dict[str, List[Tuple[Key, int]]] = {}
     for name, number in sorted(known.items()):
         if name in have or number == 0:

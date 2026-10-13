@@ -349,7 +349,7 @@ class DeviceLifecycleMixin:
                     or get_profile_store().has_ieee_mappings(zha_device.ieee)
                     or getattr(zha_device, "_profile_live_transform", False)):
                 merged = {**zha_device.state, **changed_data}
-                transformed = transform_state_with_profile(zha_device, merged)
+                transformed = transform_state_with_profile(zha_device, merged, changed=changed_data)
                 # Include any derived key whose value actually changed — not
                 # just brand-new keys — so a mapped value keeps updating live
                 # instead of freezing after its first appearance.

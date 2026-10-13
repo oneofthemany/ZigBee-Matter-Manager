@@ -203,6 +203,26 @@ def run() -> Checker:
         c.check("a key a standard cluster supplies stays (energy from 0x0702)",
                 dev.state.get("energy") == 0.034, dev.state)
 
+        c.section("a presence sensor known only by its entry (lumi.sensor_occupy.agl8)")
+        import modules.device_class as device_class
+        h, cl, dev = _handler(sleepy=True)
+        dev.zigpy_dev.model, dev.zigpy_dev.manufacturer = "lumi.sensor_occupy.agl8", "Aqara"
+        dev.zigpy_dev.node_desc.is_mains_powered = False
+        dev.zigpy_dev.endpoints = {0: None, 1: NS(in_clusters={0xFCC0: cl}, out_clusters={},
+                                                  profile_id=0x0104, device_type=0x0107)}
+        dev.handlers, dev.on_off = {(1, 0xFCC0): h}, None
+        del dev.on_off
+        c.check("its entry makes it a motion sensor", device_class.device_class(dev).kind == "motion_sensor")
+        names = [o["name"] for o in h.get_configuration_options()]
+        c.check("before it has reported its sensitivity, that setting is not offered",
+                "motion_sensitivity" not in names, names)
+        h.attribute_updated(0x010C, 2)
+        names = [o["name"] for o in h.get_configuration_options()]
+        c.check("once reported, sensitivity can be set, though the device has no Occupancy Sensing cluster",
+                "motion_sensitivity" in names, names)
+        c.check("settings of other motion sensors it never reported are not offered",
+                "detection_interval" not in names and "trigger_indicator" not in names, names)
+
         c.section("the blobs, as lumi.sensor_occupy.agl8 sends them")
         h, cl, dev = _handler(sleepy=True)
         dev.zigpy_dev.model, dev.zigpy_dev.manufacturer = "lumi.sensor_occupy.agl8", "Aqara"

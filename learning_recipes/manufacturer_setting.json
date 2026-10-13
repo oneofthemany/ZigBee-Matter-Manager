@@ -7,6 +7,7 @@
   "steps": [
     {
       "id": "from_history",
+      "name": "Look back over its history",
       "mode": "history",
       "window_s": 5,
       "inputs": [],
@@ -20,6 +21,7 @@
     },
     {
       "id": "known_values",
+      "name": "Values I know",
       "mode": "lookup",
       "window_s": 5,
       "instruction": "Nothing to do on the device. Enter values you know it has now, from its own app, its display or its manual, as name: number pairs separated by commas (a pasted JSON object works too). ZMM finds the maker's attribute holding each, with its scale, and says where more than one fits.",
@@ -42,6 +44,7 @@
     },
     {
       "id": "change_setting",
+      "name": "Change an on/off setting on the device",
       "instruction": "Name one setting, then change it on the device itself (its manual says how, e.g. holding a button to turn the LED off). Change only that one.",
       "inputs": [
         {
@@ -75,6 +78,7 @@
     },
     {
       "id": "set_number",
+      "name": "Set a number on the device",
       "instruction": "For a setting that holds a number (a temperature, a percentage, a time): name it, then set it on the device itself to a value you choose and enter that value here. Change only that one.",
       "inputs": [
         {
@@ -108,6 +112,7 @@
     },
     {
       "id": "try_setting",
+      "name": "Let ZMM flip one (visible)",
       "mode": "try_write",
       "instruction": "For a setting the device will not show you how to change: name it, then let ZMM flip one candidate at a time while you watch the device. Each is put back as soon as you answer, or after 60 s.",
       "inputs": [
@@ -142,6 +147,7 @@
     },
     {
       "id": "try_behaviour",
+      "name": "Let ZMM flip one (behaviour)",
       "mode": "try_write",
       "instruction": "For a setting that changes how the device behaves rather than what it shows (e.g. open-window detection): name it, then let ZMM flip one candidate and hold it for up to 15 minutes while you provoke the behaviour (open the window by the valve). Answer when the device reacts, or that it did not. It is put back when you answer.",
       "inputs": [

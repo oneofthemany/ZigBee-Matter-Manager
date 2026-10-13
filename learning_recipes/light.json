@@ -13,6 +13,7 @@
   "steps": [
     {
       "id": "which_is_the_lamp",
+      "name": "Which is the lamp",
       "instruction": "Switch the lamp this device controls on or off with its own wall switch or remote (not from ZMM).",
       "expect_kind": "light",
       "window_s": 30,

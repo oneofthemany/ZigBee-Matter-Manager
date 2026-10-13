@@ -8,6 +8,7 @@
   "steps": [
     {
       "id": "vendor_attributes",
+      "name": "Find its attributes",
       "mode": "discover",
       "instruction": "A battery device is only asked while awake. Press its button, then start this step straight away. ZMM asks the maker's cluster which attributes it has, which can be written, and reads them. Nothing is written to the device. Do this before the settings steps: they can only offer what this finds.",
       "inputs": [],
@@ -16,11 +17,12 @@
     },
     {
       "id": "write_access",
+      "name": "Check which can be set",
       "mode": "write_probe",
       "window_s": 90,
       "inputs": [],
       "infer": [],
-      "instruction": "A device may report attributes it leaves out of the list it gives (often its real functions), so ZMM cannot tell which of them are settings. This step finds out the only way there is: it reads each one, writes that same value back, and notes whether the device accepts. Nothing is changed, but these are writes to the device: only whole-number and on/off attributes are tried. Run 'Wake and discover' first, then press the device's button and start."
+      "instruction": "A device may report attributes it leaves out of the list it gives (often its real functions), so ZMM cannot tell which of them are settings. This step finds out the only way there is: it reads each one, writes that same value back, and notes whether the device accepts. Nothing is changed, but these are writes to the device: only whole-number and on/off attributes are tried. Run 'Find its attributes' first, then press the device's button and start."
     }
   ]
 }
