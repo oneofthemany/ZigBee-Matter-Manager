@@ -911,13 +911,6 @@ class PowerConfigurationHandler(ClusterHandler):
     ATTR_BATTERY_VOLTAGE = 0x0020
     ATTR_BATTERY_PERCENTAGE = 0x0021
 
-    # CR2450 discharge curve (volts -> %), linearly interpolated. Coin cells hold
-    # ~3.0 V then fall away steeply below 2.9 V, so a flat 2.5-3.0 map over-reads.
-    _COIN_CELL_CURVE = [
-        (3.00, 100), (2.95, 90), (2.90, 70), (2.85, 55), (2.80, 45),
-        (2.75, 35), (2.70, 25), (2.65, 18), (2.60, 12), (2.50, 5), (2.40, 0),
-    ]
-
     def _is_coarse_battery(self) -> bool:
         """
         True where the device's entry says its reported percentage is useless
@@ -927,36 +920,50 @@ class PowerConfigurationHandler(ClusterHandler):
         zmm = (profile_for_device(self.device) or {}).get("zmm") or {}
         return zmm.get("battery") == "voltage"
 
-    @classmethod
-    def _voltage_to_pct(cls, voltage: Optional[float]) -> Optional[int]:
-        """Map a coin-cell voltage to a percentage via the discharge curve."""
-        if voltage is None:
-            return None
-        pts = cls._COIN_CELL_CURVE
-        if voltage >= pts[0][0]:
-            return 100
-        if voltage <= pts[-1][0]:
-            return 0
-        for (v_hi, p_hi), (v_lo, p_lo) in zip(pts, pts[1:]):
-            if v_lo <= voltage <= v_hi:
-                frac = (voltage - v_lo) / (v_hi - v_lo)
-                return int(round(p_lo + frac * (p_hi - p_lo)))
-        return None
+    @staticmethod
+    def _voltage_to_pct(voltage: Optional[float]) -> Optional[int]:
+        from modules.battery import voltage_to_pct
+        return voltage_to_pct(voltage)
+
+    def _reads_no_voltage(self) -> bool:
+        """True where this cluster's voltage reads 0 V: it is not what the
+        device uses, so the 0 % beside it is no level either. zigpy's cache
+        answers before this run has seen a report."""
+        raw = getattr(self, "_voltage_raw", None)
+        if raw is None:
+            try:
+                raw = self.cluster.get(self.ATTR_BATTERY_VOLTAGE)
+            except Exception:
+                raw = None
+        return raw == 0
 
     def attribute_updated(self, attrid: int, value: Any, timestamp: Optional[float] = None):
+        from modules import battery
         if hasattr(value, 'value'):
             value = value.value
+        if value is None:
+            return
 
         if attrid == self.ATTR_BATTERY_VOLTAGE:
+            self._voltage_raw = value
             # Voltage in 100mV units. Value of 54 means 5.4V.
-            voltage = float(value) / 10 if value is not None else None
-            updates = {"battery_voltage": voltage}
-            # For coarse-reporting devices, voltage IS the battery signal.
-            if voltage is not None and self._is_coarse_battery():
+            voltage = float(value) / 10
+            if voltage <= 0:
+                # The 0 % that came with it was no level: let another source in.
+                if self.device.state.get("battery") == 0:
+                    battery.release(self.device, "battery", "cluster_percent")
+                logger.debug(f"[{self.device.ieee}] Battery voltage 0 V: not a reading")
+                return
+            if self._is_coarse_battery():
+                # For coarse-reporting devices, voltage IS the battery signal.
+                updates = {"battery_voltage": voltage}
                 pct = self._voltage_to_pct(voltage)
                 if pct is not None:
                     updates["battery"] = pct
-            self.device.update_state(updates)
+            else:
+                updates = battery.offer(self.device, "cluster_volts", volts=voltage)
+            if updates:
+                self.device.update_state(updates)
             logger.debug(f"[{self.device.ieee}] Battery voltage: {voltage}V (raw: {value})")
 
         elif attrid == self.ATTR_BATTERY_PERCENTAGE:
@@ -966,9 +973,25 @@ class PowerConfigurationHandler(ClusterHandler):
                 # from voltage above. Nothing to store here.
                 logger.debug(f"[{self.device.ieee}] Ignoring coarse battery %% (raw: {value})")
                 return
-            percentage = min(100, round(value / 2)) if value is not None else None
-            self.device.update_state({"battery": percentage})
+            if value == 0 and self._reads_no_voltage():
+                logger.debug(f"[{self.device.ieee}] Battery 0 % beside 0 V: not a reading")
+                return
+            percentage = min(100, round(value / 2))
+            updates = battery.offer(self.device, "cluster_percent", percent=percentage)
+            if updates:
+                self.device.update_state(updates)
             logger.debug(f"[{self.device.ieee}] Battery: {percentage}% (raw: {value})")
+
+    async def poll(self) -> Dict[str, Any]:
+        """Polled values are weighed like reports, not written straight to state."""
+        results = await super().poll()
+        for attrid, name in ((self.ATTR_BATTERY_VOLTAGE, "battery_voltage"),
+                             (self.ATTR_BATTERY_PERCENTAGE, "battery")):
+            results.pop(name, None)
+            raw = results.pop(name + "_raw", None)
+            if raw is not None:
+                self.attribute_updated(attrid, raw)
+        return results
 
     def get_attr_name(self, attrid: int) -> str:
         if attrid == self.ATTR_BATTERY_VOLTAGE:

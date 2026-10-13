@@ -28,6 +28,11 @@ AEU002_F7 = bytes.fromhex(
     "032800052101000921000b0a2100000d23060000006410006510016610006820006920006a20006b20"
     "0095394c37093d9839000000009739f56a6a43")
 
+# The 0xF7 and 0xDF blobs lumi.sensor_occupy.agl8 (FP300) reported (zigpy's attribute cache)
+AGL8_F7 = bytes.fromhex("052101000a21529c0c200a0d232a4100001320001721960c1820641c1000642000652002672000")
+AGL8_DF = bytes.fromhex("0323a40800000421cb00052108002923000000002a23000000002b21529c2c29beff"
+                        "2d23000000002e23010600002f210100")
+
 # EP1 of lumi.plug.aeu002, from data/probes/54ef4410015a14eb_20260927_131518.json
 AEU002_EP1 = {0x0001, 0x0002, 0x0003, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000B,
               0x000C, 0x000E, 0x0012, 0x0013, 0x0014, 0x0016, 0x0020, 0x0021, 0x0080,
@@ -197,6 +202,19 @@ def run() -> Checker:
                 dev.state)
         c.check("a key a standard cluster supplies stays (energy from 0x0702)",
                 dev.state.get("energy") == 0.034, dev.state)
+
+        c.section("the blobs, as lumi.sensor_occupy.agl8 sends them")
+        h, cl, dev = _handler(sleepy=True)
+        dev.zigpy_dev.model, dev.zigpy_dev.manufacturer = "lumi.sensor_occupy.agl8", "Aqara"
+        dev.zigpy_dev.node_desc.is_mains_powered = False
+        dev.handlers = {(1, 0xFCC0): h}
+        h.attribute_updated(0x00F7, AGL8_F7)
+        h.attribute_updated(0x00DF, AGL8_DF)
+        c.check("the tags its entry names are the battery: 100 % at 3.222 V",
+                (dev.state.get("battery"), dev.state.get("battery_voltage")) == (100, 3.222), dev.state)
+        c.check("its other tags are not filed as a plug's voltage, power or switches",
+                not {"voltage", "power", "device_temperature", "switch_state",
+                     "switch_state_ep2"} & set(dev.state), dev.state)
 
         device_profiles._store = ProfileStore(user_dir=d + "/u2", bundled_dir=d + "/b2",
                                               ieee_overrides_file=d + "/i2.json", zmm_dir=d + "/z2")

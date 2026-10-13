@@ -535,6 +535,8 @@ class AqaraManufacturerCluster(ClusterHandler):
                         else:
                             logger.debug(f"[{self.device.ieee}] Unknown Xiaomi sub-attr 0x{sub_id:02X} = {sub_value}")
 
+                    updates.update(self._blob_battery(parsed, from_entry, updates))
+
                     # Keys the global map wrote before an entry or a standard
                     # cluster overrode their tag would otherwise linger in state.
                     stale = set()
@@ -568,6 +570,31 @@ class AqaraManufacturerCluster(ClusterHandler):
         if updates:
             self.device.update_state(updates)
 
+    def _blob_battery(self, parsed: Dict[int, Any], from_entry, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """The blob's battery reading, weighed against the device's other
+        sources (modules/battery.py). An entry's `battery` / `battery_voltage`
+        tags are taken as named. With none, a battery-powered device's tag
+        0x01 or 0x17 in a cell's millivolt range is its voltage, and 0x18
+        beside such a 0x17 its level; `updates` loses the keys weighed here."""
+        from modules import battery
+        from modules.device_class import is_mains_powered
+        volts, percent = updates.pop("battery_voltage", None), updates.pop("battery", None)
+        if is_mains_powered(self.device) is False:
+            cell = lambda v: isinstance(v, int) and battery.CELL_MV[0] <= v <= battery.CELL_MV[1]
+            for tag in (0x17, 0x01):
+                if volts is None and tag not in from_entry and cell(parsed.get(tag)):
+                    volts = parsed[tag] / 1000
+            level = parsed.get(0x18)
+            if percent is None and not {0x17, 0x18} & set(from_entry) and cell(parsed.get(0x17)) \
+                    and isinstance(level, int) and not isinstance(level, bool) and 0 <= level <= 100:
+                percent = level
+        out: Dict[str, Any] = {}
+        if percent is not None:
+            out.update(battery.offer(self.device, "blob_percent", percent=percent))
+        if volts is not None:
+            out.update(battery.offer(self.device, "blob_volts", volts=volts))
+        return out
+
     # Blob names a standard cluster also measures: (cluster, attribute or None).
     # Its answered, scaled reading outranks an undocumented tag (zmm-quirks.md §4).
     _CLUSTER_MEASURES = {"energy": (0x0702, None), "power": (0x0B04, 0x050B),
@@ -589,8 +616,10 @@ class AqaraManufacturerCluster(ClusterHandler):
             else:
                 scale = spec.get("scale", 1)
                 # Blob floats are float32: 234.4 arrives as 234.4178009033203.
+                # A fractional scale on an integer (mV -> V) is exact to 3 places.
                 tags[tag] = (spec["name"], lambda v, k=scale:
-                             round(v * k, 2) if isinstance(v, float) else v * k)
+                             round(v * k, 2) if isinstance(v, float)
+                             else round(v * k, 3) if isinstance(k, float) else v * k)
         return tags, own
 
     # Measurements an entry can name on a blob tag: (device class, unit).
