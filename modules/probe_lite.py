@@ -74,6 +74,32 @@ async def probe_lite(device, force: bool = False) -> int:
         return n
 
 
+async def discover_vendor(device) -> dict:
+    """{(ep, cluster, attr, mfr): {"type", "acl"}} the device lists on its
+    maker's clusters, asked now whatever powers it: for a battery device the
+    user has just woken. Empty when it did not answer. Records nothing."""
+    from handlers.base import discover_attribute_info
+    from modules.device_facts import VENDOR_CLUSTER_MIN
+    from modules.zcl_decode import type_name
+
+    zdev = device.zigpy_dev
+    mfr = getattr(getattr(zdev, "node_desc", None), "manufacturer_code", None)
+    found: dict = {}
+    async with _lock:
+        for ep_id, ep in (zdev.endpoints or {}).items():
+            if ep_id == 0 or ep is None:
+                continue
+            for cid, cluster in (getattr(ep, "in_clusters", None) or {}).items():
+                if int(cid) < VENDOR_CLUSTER_MIN:
+                    continue
+                for code in [None] + ([int(mfr)] if mfr else []):
+                    info = await discover_attribute_info(cluster, manufacturer=code) or {}
+                    for aid, meta in info.items():
+                        found[(ep_id, int(cid), int(aid), code)] = {
+                            "type": type_name(meta["type"]), "acl": acl_letters(meta["acl"])}
+    return found
+
+
 async def backfill(devices, delay: float = BACKFILL_DELAY,
                    spacing: float = BACKFILL_SPACING) -> int:
     """One pass over devices that have never been probed. Returns devices done."""

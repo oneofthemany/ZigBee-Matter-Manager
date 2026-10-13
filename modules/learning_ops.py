@@ -526,6 +526,112 @@ def occupancy_attribute(records, baseline, step, ctx) -> List[Dict[str, Any]]:
     return out
 
 
+def parse_known(text: Any) -> Tuple[Dict[str, float], List[str]]:
+    """({name: number}, names left out) from what the user typed or pasted: a
+    JSON object, or `name: value` pairs split by commas, semicolons or lines.
+    Only numbers can be matched; on/off and text values are named as left out."""
+    import json
+    pairs: Dict[str, Any] = {}
+    text = str(text or "").strip()
+    try:
+        loaded = json.loads(text)
+        pairs = loaded if isinstance(loaded, dict) else {}
+    except ValueError:
+        for part in re.split(r"[,;\n]+", text):
+            name, sep, value = part.partition(":") if ":" in part else part.partition("=")
+            if sep:
+                pairs[name.strip().strip('"')] = value.strip().strip('"')
+    known, skipped = {}, []
+    for name, value in pairs.items():
+        sid = re.sub(r"[^a-z0-9_]", "_", str(name).strip().lower())[:40]
+        number = _num(value)
+        if number is None and isinstance(value, str):
+            try:
+                number = float(value)
+            except ValueError:
+                number = None
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", sid) or number is None:
+            skipped.append(str(name))
+        else:
+            known[sid] = number
+    return known, skipped
+
+
+# A raw value this large matching a known one is unlikely to be chance; one
+# below the floor matches something on most devices, and is never proposed.
+DISTINCTIVE = 1000
+MATCH_FLOOR = 100
+
+
+def attributes_holding_known(records, baseline, step, ctx) -> List[Dict[str, Any]]:
+    """The maker's attributes whose last known value is a value the user says
+    the device has, times a power of ten. Proposed only where one name fits
+    one attribute and that attribute fits no other name; the rest are listed
+    with their candidates, since a guess between them would be a coin toss."""
+    known, skipped = parse_known((step.get("inputs") or {}).get("known"))
+    values = {k: v for k, v in (ctx.get("vendor_values") or {}).items() if _num(v) is not None}
+    writable = ctx.get("writable") or {}
+    have = set(ctx.get("state_keys") or ())
+    if not known:
+        return [proposal("", None, "none", "give the values as name: number, separated by commas")]
+    if not values:
+        return [proposal("", None, "none", "nothing is known of this device's own attributes yet: "
+                                           "run 'Wake and discover' first")]
+    fits: Dict[str, List[Tuple[Key, int]]] = {}
+    for name, number in sorted(known.items()):
+        if name in have or number == 0:
+            continue                    # already a reading here; every scale of 0 is 0
+        fits[name] = [(key, scale) for key, raw in sorted(values.items(), key=lambda kv: str(kv[0]))
+                      for scale in NUMBER_SCALES if raw == round(number * scale)][:8]
+    claimed: Dict[Key, set] = {}
+    for name, found in fits.items():
+        for key, _ in found:
+            claimed.setdefault(key, set()).add(name)
+    where = lambda key: f"EP{key[0]} 0x{key[1]:04X}/0x{key[2]:04X}"
+    out, unsure, absent, small = [], [], [], []
+    for name, found in fits.items():
+        keys = {key for key, _ in found}
+        if not keys:
+            absent.append(name)
+        elif len(keys) == 1 and abs(values[found[0][0]]) < MATCH_FLOOR:
+            small.append(f"{name} = {known[name]:g} ({where(found[0][0])} holds {values[found[0][0]]})")
+        elif len(keys) > 1 or len(claimed[found[0][0]]) > 1:
+            others = sorted(set().union(*(claimed[k] for k in keys)) - {name})
+            unsure.append(f"{name} = {known[name]:g} fits {', '.join(sorted(where(k) for k in keys))}"
+                          + (f" (as does {', '.join(others)})" if others else ""))
+        else:
+            key, scale = found[0]
+            ep, cluster, attr, mfr = key
+            seen = f"{where(key)} holds {values[key]}: {name} = {known[name]:g}" \
+                + (f", stored x{scale}" if scale != 1 else "")
+            conf = "high" if abs(values[key]) >= DISTINCTIVE else "medium"
+            if key in writable:
+                setting = {"id": name, "label": name.replace("_", " ").capitalize(),
+                           "type": writable[key], "ep": ep, "cluster": f"0x{cluster:04X}",
+                           "attr": f"0x{attr:04X}", "mfr": mfr_hex(mfr), "values": {}}
+                if scale != 1:
+                    setting["scale"] = scale
+                out.append(proposal("zmm.settings", setting, conf, seen + "; it can be written"))
+            else:
+                mapping = {"name": name}
+                if scale != 1:
+                    mapping["scale"] = scale
+                out.append(proposal(f"endpoints.{ep}.clusters.0x{cluster:04X}.attributes.0x{attr:04X}",
+                                    mapping, conf, seen + ("; read-only" if ctx.get("discovered")
+                                                           else "; not known to be writable")))
+    if unsure:
+        out.append(proposal("", None, "low", "more than one fit, so not proposed: " + "; ".join(unsure)))
+    if small:
+        out.append(proposal("", None, "low", "too small a number to single out an attribute: "
+                            + "; ".join(small)))
+    if absent:
+        out.append(proposal("", None, "none", "no attribute holds: " + ", ".join(absent)))
+    if skipped:
+        out.append(proposal("", None, "none", "not numbers, so not matched: " + ", ".join(skipped[:12])
+                            + (f" and {len(skipped) - 12} more" if len(skipped) > 12 else "")))
+    return out or [proposal("", None, "none", "every value given is already a reading here")]
+
+
 OPS: Dict[str, Callable] = {
     "which_endpoint_changed": which_endpoint_changed,
     "press_signature": press_signature,
@@ -538,4 +644,5 @@ OPS: Dict[str, Callable] = {
     "confirmed_write": confirmed_write,
     "power_follows_switch": power_follows_switch,
     "occupancy_attribute": occupancy_attribute,
+    "attributes_holding_known": attributes_holding_known,
 }

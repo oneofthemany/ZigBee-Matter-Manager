@@ -128,6 +128,11 @@ XIAOMI_ATTR_MAP = {
     0x6F: ("startup_on_off", lambda v: v),  # power-on behaviour
 }
 
+# Tags the map reads as mains measurements or a relay's state. A battery
+# device has neither: there the same slots hold something else.
+XIAOMI_MAINS_TAGS = frozenset({0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x64, 0x65, 0x6E, 0x6F,
+                               0x95, 0x96, 0x97, 0x98, 0x9A, 0x9B})
+
 # Tags naming a mode or on/off state. The tag layout differs per model: where a
 # model puts a float in one of these slots it means something else, and is
 # dropped rather than stored under the wrong name.
@@ -604,8 +609,11 @@ class AqaraManufacturerCluster(ClusterHandler):
         """(tag -> (name or None, converter), tags the model's entry set). The
         tag layout differs per model; an entry's `zmm.struct_tags` overrides
         the global map, and a null there drops the tag."""
+        from modules.device_class import is_mains_powered
         from modules.device_profiles import profile_for_device
         tags = dict(XIAOMI_ATTR_MAP)
+        if is_mains_powered(self.device) is False:
+            tags = {t: v for t, v in tags.items() if t not in XIAOMI_MAINS_TAGS}
         entry = ((profile_for_device(self.device) or {}).get("zmm") or {}).get("struct_tags") or {}
         own = set()
         for key, spec in entry.items():
@@ -649,6 +657,20 @@ class AqaraManufacturerCluster(ClusterHandler):
             configs.append({"component": "sensor", "object_id": name, "config": config})
         return configs
 
+    def forget_unreported(self, reported) -> None:
+        """Drop raw `opple_0x....` keys for attributes this cluster has never
+        reported (zigpy's cache holds every one it has): a key with nothing
+        behind it would otherwise read as a function the device lacks."""
+        stale = set()
+        for key in self.device.state:
+            if key.startswith("opple_0x") and len(key) == 12:
+                try:
+                    if int(key[6:], 16) not in reported:
+                        stale.add(key)
+                except ValueError:
+                    continue
+        self._forget_state(stale)
+
     def _forget_state(self, keys) -> None:
         """Drop keys from the device's state and its persisted cache."""
         service = getattr(self.device, "service", None)
@@ -659,7 +681,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 cached.pop(key, None)
                 if service is not None:
                     service._cache_dirty = True
-                logger.info(f"[{self.device.ieee}] Cleared stale {key} (tag remapped)")
+                logger.info(f"[{self.device.ieee}] Cleared stale {key}")
 
     def _cluster_measures(self, name: str) -> bool:
         spec = self._CLUSTER_MEASURES.get(name)

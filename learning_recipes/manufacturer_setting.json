@@ -19,6 +19,28 @@
       ]
     },
     {
+      "id": "known_values",
+      "mode": "lookup",
+      "window_s": 5,
+      "instruction": "Nothing to do on the device. Enter values you know it has now, from its own app, its display or its manual, as name: number pairs separated by commas (a pasted JSON object works too). ZMM finds the maker's attribute holding each, with its scale, and says where more than one fits.",
+      "inputs": [
+        {
+          "name": "known",
+          "label": "Values you know (name: number, ...)",
+          "type": "text"
+        }
+      ],
+      "infer": [
+        {
+          "op": "attributes_holding_known",
+          "yields": [
+            "zmm.settings",
+            "endpoints.*.clusters"
+          ]
+        }
+      ]
+    },
+    {
       "id": "change_setting",
       "instruction": "Name one setting, then change it on the device itself (its manual says how, e.g. holding a button to turn the LED off). Change only that one.",
       "inputs": [

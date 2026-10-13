@@ -25,6 +25,10 @@ USER_DIR = os.path.join(os.environ.get("ZMM_DATA_DIR", "./data"), "learning_reci
 
 FOR_EACH = ("switch_endpoint", "light_endpoint")          # or "endpoint_with:0xXXXX"
 INPUT_TYPES = ("number", "text", "select")
+# observe: the user acts while frames are captured. try_write: ZMM flips a
+# setting. history, lookup: concluded from what is already recorded (lookup
+# with the user's inputs). discover: the device is asked what it has.
+MODES = ("observe", "try_write", "history", "lookup", "discover")
 WINDOW_S = (5, 900)
 _ID = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
@@ -49,7 +53,7 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(aw.get("vendor_cluster", False), bool):
         return None
     device_types = [_hex(d) for d in aw.get("device_types_any") or []]
-    if None in device_types:
+    if None in device_types or not isinstance(aw.get("battery_powered", False), bool):
         return None
     steps = []
     for st in raw.get("steps") or []:
@@ -75,15 +79,16 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 return None
             infer.append({"op": op["op"], "yields": yields})
         window = int(st.get("window_s") or 30)
-        if not (WINDOW_S[0] <= window <= WINDOW_S[1]) or not infer:
+        mode = st.get("mode") or "observe"
+        # Discovery asks the device what it has: there is nothing to infer.
+        if not (WINDOW_S[0] <= window <= WINDOW_S[1]) or (not infer and mode != "discover"):
             return None
         if st.get("expect_kind") not in (None, "light", "switch"):
             return None
         if st.get("expect") not in (None, "occupied", "clear"):
             return None
-        mode = st.get("mode") or "observe"
-        if mode not in ("observe", "try_write", "history") or \
-                (mode == "try_write") != all(i["op"] == "confirmed_write" for i in infer):
+        if mode not in MODES or (mode == "discover" and infer) or \
+                (mode == "try_write") != (bool(infer) and all(i["op"] == "confirmed_write" for i in infer)):
             return None                 # only a write step may confirm a write, and only that
         watch = st.get("watch") or {}
         steps.append({"id": st["id"], "for_each": fe, "instruction": str(st.get("instruction") or ""),
@@ -96,6 +101,7 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"id": raw["id"], "title": str(raw.get("title") or raw["id"]),
             "applies_when": {"in_clusters_any": clusters_any, "not_in_clusters_any": clusters_none,
                              "kind": aw.get("kind"), "device_types_any": device_types,
+                             "battery_powered": bool(aw.get("battery_powered", False)),
                              "vendor_cluster": bool(aw.get("vendor_cluster", False))},
             "steps": steps}
 
@@ -161,6 +167,10 @@ def applies(recipe: Dict[str, Any], device) -> bool:
     if aw["device_types_any"] and not any(getattr(ep, "device_type", None) in aw["device_types_any"]
                                           for ep in eps.values()):
         return False
+    if aw.get("battery_powered"):
+        from modules.device_class import is_mains_powered
+        if is_mains_powered(device) is not False:
+            return False
     # Any maker's own cluster, by id range: no list of vendors to keep up.
     if aw.get("vendor_cluster") and not any(c >= VENDOR_CLUSTER_MIN for ep in eps.values()
                                             for c in (ep.in_clusters or {})):

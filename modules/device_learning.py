@@ -91,6 +91,103 @@ def _context(device, step: Dict[str, Any]) -> Dict[str, Any]:
             "power_scale": _power_scale(device)}
 
 
+# Values a discovery reads back, so the step ends while the device is awake.
+DISCOVER_READ_MAX = 64
+
+
+def _vendor_values(device) -> Tuple[Dict[Any, Any], bool]:
+    """({(ep, cluster, attr, mfr): last value known}, whether the device's
+    maker attributes have been discovered) from the fact store: what it
+    answered, and under that what it has reported since."""
+    import json
+    from modules.device_facts import parse_attr_subject, vendor_scoped
+    from modules.zigbee_cache import get_facts
+    values: Dict[Any, Tuple[Any, Any]] = {}
+    discovered = False
+    for f in get_facts(str(device.ieee)):
+        kind, _, rest = f["subject"].partition(":")
+        if (kind, f["source"]) not in (("attr", "answered"), ("reports", "observed")):
+            continue
+        parsed = parse_attr_subject("attr:" + rest)
+        if parsed is None or not vendor_scoped(parsed[0], parsed[2]):
+            continue
+        try:
+            meta = json.loads(f["value"])
+        except ValueError:
+            continue
+        discovered = discovered or kind == "attr"
+        value = meta.get("value" if kind == "attr" else "last") if isinstance(meta, dict) else None
+        key = (f["endpoint_id"], *parsed)
+        if value is not None and (key not in values or str(f["last_seen"]) >= str(values[key][0])):
+            values[key] = (f["last_seen"], value)
+    return {k: v for k, (_, v) in values.items()}, discovered
+
+
+async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """A step concluded from the evidence already held and what the user enters."""
+    from modules.learning_ops import OPS
+    from modules.learning_recipes import yields_allows
+    key = st["key"]
+    if not inputs and (s.results.get(key) or {}).get("inputs"):
+        inputs = s.results[key]["inputs"]
+    clean, err = _clean_inputs(st, inputs)
+    if err:
+        return {"success": False, "error": err}
+    values, discovered = _vendor_values(device)
+    ctx = {**_context(device, st), "vendor_values": values, "discovered": discovered,
+           "state_keys": set(device.state)}
+    proposals = []
+    for op in st["infer"]:
+        try:
+            got = OPS[op["op"]]([], {}, {**st, "inputs": clean}, ctx)
+        except Exception as e:
+            logger.warning(f"[{device.ieee}] {op['op']} failed: {e}")
+            got = []
+        proposals += [{**p, "op": op["op"]} for p in got
+                      if not p["path"] or yields_allows(op["yields"], p["path"])]
+    s.results[key] = {"status": "done", "proposals": proposals, "inputs": clean}
+    logger.info(f"[{device.ieee}] Learning step {key} against {len(values)} vendor values: "
+                + "; ".join(f"{p['confidence']}: {p['evidence']}" for p in proposals))
+    return state(device)
+
+
+async def _discover(device, s: "Session", st: Dict[str, Any]) -> Dict[str, Any]:
+    """Ask the device, now, what its maker's clusters hold; record what it
+    answers as evidence. Nothing is written to it."""
+    from modules.device_facts import Fact, _j, attr_subject, record
+    from modules.probe_lite import discover_vendor
+    key = st["key"]
+    found = await discover_vendor(device)
+    if not found:
+        s.results[key] = {"status": "pending", "proposals": [
+            {"path": "", "value": None, "confidence": "none",
+             "evidence": "the device did not answer: wake it (press its button) and start "
+                         "this step again straight away"}]}
+        logger.info(f"[{device.ieee}] Learning step {key}: no answer to discovery")
+        return state(device)
+    readable = [k for k, meta in sorted(found.items(), key=lambda kv: (kv[0][:3], kv[0][3] or 0))
+                if "R" in meta["acl"] or not meta["acl"]][:DISCOVER_READ_MAX]
+    read = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r["value"]
+            for r in await _read(device, readable)}
+    record(str(device.ieee), [
+        Fact(ep, attr_subject("attr", cid, aid, mfr), "answered",
+             _j({**meta, "value": read.get((ep, cid, aid, mfr))}))
+        for (ep, cid, aid, mfr), meta in found.items()])
+    from modules.zigbee_cache import drain
+    await drain()               # the settings steps read these facts next
+    proposals = []
+    for ep, cid in sorted({k[:2] for k in found}):
+        mine = {k: m for k, m in found.items() if k[:2] == (ep, cid)}
+        writable = sum("W" in m["acl"] for m in mine.values())
+        proposals.append({"path": "", "value": None, "confidence": "high", "op": "discover",
+                          "evidence": f"EP{ep} 0x{cid:04X} lists {len(mine)} attributes, {writable} "
+                                      f"writable; {sum(k in read for k in mine)} read"})
+    s.results[key] = {"status": "done", "proposals": proposals, "inputs": {}}
+    logger.info(f"[{device.ieee}] Learning step {key}: "
+                + "; ".join(p["evidence"] for p in proposals))
+    return state(device)
+
+
 def _power_scale(device) -> Dict[int, Tuple[int, int]]:
     """Each EP's active-power (multiplier, divisor), as its handler resolved it."""
     return {k[0]: (getattr(h, "_power_multiplier", 1) or 1, getattr(h, "_power_divisor", 1) or 1)
@@ -149,6 +246,8 @@ SETTING_ID_HELP = ("give the setting a short name first: lower-case letters, dig
 
 def start(device) -> Dict[str, Any]:
     from modules.learning_recipes import applies, expand, load
+    from modules.vendor_cache import seed
+    seed(device)        # what the device has already reported is evidence for the steps
     recipes = [r for r in load().values() if applies(r, device)]
     steps = [s for r in recipes for s in expand(r, device)]
     for s in steps:
@@ -282,6 +381,10 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "this step is built from the others: run those"}
     if st.get("mode") == "history":
         return await _from_history(device, s, st)
+    if st.get("mode") == "discover":
+        return await _discover(device, s, st)
+    if st.get("mode") == "lookup":
+        return await _lookup(device, s, st, inputs)
     if not inputs and (s.results.get(key) or {}).get("inputs"):
         inputs = s.results[key]["inputs"]        # Redo: the same inputs as last time
     clean, err = _clean_inputs(st, inputs)

@@ -482,9 +482,14 @@ class ZigbeeService(
                 # Refreshed every start: covers devices that joined before the
                 # evidence store existed, and quirk or firmware changes since.
                 from modules.device_facts import record_declared
+                from modules.vendor_cache import seed
                 for ieee_str, zdev in self.devices.items():
                     if not zdev.is_coordinator:
                         record_declared(ieee_str, zdev.zigpy_dev)
+                        try:
+                            seed(zdev)
+                        except Exception as e:
+                            logger.debug(f"[{ieee_str}] cached vendor attributes not surfaced: {e}")
 
                 from modules.probe_lite import backfill
                 self._probe_lite_task = asyncio.create_task(backfill(self.devices.values()))

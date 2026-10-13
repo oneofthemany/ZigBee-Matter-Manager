@@ -8,7 +8,8 @@ from __future__ import annotations
 from harness import Checker
 
 from modules.learning_ops import (attribute_that_toggled, attribute_that_tracked, correlate_blob_tags, metering_map,
-                                  moved_endpoints, occupancy_attribute, power_follows_switch, press_signature,
+                                  moved_endpoints, occupancy_attribute, parse_known, power_follows_switch, press_signature,
+                                  attributes_holding_known,
                                   scale_from_known, which_endpoint_changed, which_endpoints_moved)
 
 AEU002_F7 = ("032800052101000921000b0a2100000d23060000006410006510016610006820006920006a20006b20"
@@ -226,6 +227,54 @@ def run() -> Checker:
     p = occupancy_attribute([seen(104 + i, 0x0140 + i, 1) for i in range(5)], {}, walk("occupied"), {})
     c.check("many flipping at once is not one walk past: asks for a repeat",
             not paths(p) and p[0]["confidence"] == "low", p)
+
+    c.section("values the user knows, matched to the attributes holding them")
+    # lumi.sensor_occupy.agl8's vendor attributes as it reported them on joining
+    FP300 = {0x010C: 2, 0x014F: 30, 0x015D: 1, 0x0162: 600000, 0x0163: 3600000, 0x0164: 100,
+             0x0165: 3, 0x016A: 3600000, 0x016B: 1500, 0x016C: 3, 0x0170: 1, 0x0192: 1,
+             0x0193: 10000, 0x0194: 3600000, 0x0195: 1500, 0x0196: 3, 0x0197: 10, 0x0203: 0,
+             0x023E: 589845, 0x019A: "0003ffffff"}
+    held = {(1, 0xFCC0, a, 0x115F): v for a, v in FP300.items()}
+    said = ('{"absence_delay_timer": 35, "battery": 100, "detection_range_composite": {"detection_range_0": true},'
+            ' "humidity_reporting_threshold": 15, "led_disabled_night": false, "light_reporting_threshold": 15,'
+            ' "pir_detection_interval": 2, "schedule_start_time": "21:00", "schedule_time_raw": 589845,'
+            ' "temp_and_humidity_sampling_period": 600, "temp_reporting_interval": 3600,'
+            ' "humidity_reporting_interval": 3600, "temperature": 24}')
+    known, skipped = parse_known(said)
+    c.check("a pasted JSON object gives its numbers, and names what is not one",
+            known["schedule_time_raw"] == 589845 and "battery" in known
+            and set(skipped) == {"detection_range_composite", "led_disabled_night", "schedule_start_time"},
+            (known, skipped))
+    c.check("typed pairs read the same", parse_known("Absence delay: 35, sampling_period = 600; x: on")
+            == ({"absence_delay": 35.0, "sampling_period": 600.0}, ["x"]))
+    ctx = {"vendor_values": held, "state_keys": {"battery", "temperature"}, "discovered": False}
+    p = attributes_holding_known([], {}, {"inputs": {"known": said}}, ctx)
+    named = {x["value"]["name"]: (x["path"], x["value"].get("scale"), x["confidence"])
+             for x in p if x["path"]}
+    c.check("the one attribute holding a distinctive value is proposed under its name",
+            named.get("schedule_time_raw")
+            == ("endpoints.1.clusters.0xFCC0.attributes.0x023E", None, "high"), p)
+    c.check("and one in other units with its scale",
+            named.get("temp_and_humidity_sampling_period")
+            == ("endpoints.1.clusters.0xFCC0.attributes.0x0162", 1000, "high"), p)
+    c.check("nothing else is proposed", set(named) == {"schedule_time_raw",
+                                                       "temp_and_humidity_sampling_period"}, named)
+    notes = " | ".join(x["evidence"] for x in p if not x["path"])
+    c.check("values several attributes hold are listed with their candidates",
+            "temp_reporting_interval = 3600 fits" in notes and "0x0163" in notes
+            and "as does humidity_reporting_interval" in notes, notes)
+    c.check("a small number that fits one attribute by chance is not proposed",
+            "pir_detection_interval" not in named and any(
+                "too small" in x["evidence"] and "pir_detection_interval" in x["evidence"] for x in p), p)
+    c.check("a value the device no longer holds is said to be absent",
+            any("no attribute holds" in x["evidence"] and "absence_delay_timer" in x["evidence"] for x in p), p)
+    c.check("a reading ZMM already has under that name is not matched again",
+            not any("battery" in x["evidence"] or "temperature =" in x["evidence"] for x in p), p)
+    p = attributes_holding_known([], {}, {"inputs": {"known": "schedule_time_raw: 589845"}},
+                                 {**ctx, "writable": {(1, 0xFCC0, 0x023E, 0x115F): "uint32"}})
+    c.check("an attribute known to be writable is proposed as a setting",
+            paths(p).get("zmm.settings", {}).get("attr") == "0x023E"
+            and paths(p)["zmm.settings"]["type"] == "uint32", p)
 
     c.section("blob tags against known readings")
     p = correlate_blob_tags([rec(1, 0xFCC0, 0x00F7, AEU002_F7, 0x115F)], {}, step(1, rating_w=2000),

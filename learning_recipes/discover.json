@@ -1,0 +1,15 @@
+{
+  "id": "discover",
+  "title": "Wake and discover",
+  "applies_when": { "vendor_cluster": true, "battery_powered": true },
+  "steps": [
+    {
+      "id": "vendor_attributes",
+      "mode": "discover",
+      "instruction": "A battery device is only asked while awake. Press its button, then start this step straight away. ZMM asks the maker's cluster which attributes it has, which can be written, and reads them. Nothing is written to the device. Do this before the settings steps: they can only offer what this finds.",
+      "inputs": [],
+      "window_s": 60,
+      "infer": []
+    }
+  ]
+}

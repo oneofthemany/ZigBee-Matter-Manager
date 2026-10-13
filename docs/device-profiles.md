@@ -118,6 +118,7 @@ Additions to the schema:
                       "mfr": "0x115F", "values": {"0": "Off", "1": "On"} } ],
   "struct_tags":  { "0x97": {"name": "voltage", "scale": 1},   // Aqara 0xF7/0xDF blob tags
                     "0x9A": null },                            // null: not what the map says
+  "battery":      "voltage",       // the reported % is useless: derive it from volts
   "evidence":     { "probes": ["<probe file>"], "verified_fw": ["<sw_version>"] }
 }
 ```
@@ -164,3 +165,21 @@ and shared across every device of that model.
 4. **State transforms** — for every raw `cluster_XXXX_attr_XXXX` key in device
    state that has a mapping in the profile or the IEEE overrides, a friendly key
    is added to the state dict.
+
+## Battery
+
+No entry is needed to say where a device's battery level comes from
+(`modules/battery.py`). Each source offers what it reads, and the strongest
+to have given a real value owns `battery` and `battery_voltage`:
+
+1. the level Power Configuration reports;
+2. the level in an Aqara status blob (a tag an entry names `battery`, or tag
+   `0x18` beside a plausible `0x17` on a battery-powered device);
+3. a level derived from Power Configuration's voltage;
+4. a level derived from the blob's voltage (an entry's `battery_voltage`, or
+   tag `0x01` / `0x17` in a cell's range on a battery-powered device).
+
+0 V is never a reading, and 0 % from a cluster whose voltage reads 0 V is
+dropped with it. A level is derived from a voltage only up to 3.6 V, where the
+coin-cell curve applies. `zmm.battery: "voltage"` remains for a device whose
+own percentage is flat until it dies.

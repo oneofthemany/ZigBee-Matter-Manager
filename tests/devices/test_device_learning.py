@@ -39,6 +39,14 @@ class _Cluster:
         return NS(status_records=[NS(attrid=a, status=0, value=NS(value=self.values[a]))
                                   for a in attrs if a in self.values])
 
+    listed = None       # {attr: (datatype, acl)} once the device is awake to say
+
+    async def discover_attributes_extended(self, start, count, manufacturer=None):
+        if not self.listed or manufacturer is None:
+            raise asyncio.TimeoutError
+        return NS(discovery_complete=True, extended_attr_info=[
+            NS(attrid=a, datatype=t, acl=acl) for a, (t, acl) in sorted(self.listed.items()) if a >= start])
+
 
 def _outlet():
     values = {}
@@ -67,8 +75,8 @@ def _presence_sensor(ieee=PRESENCE_IEEE):
     """A battery presence sensor that says so only on the maker's cluster."""
     ep = NS(endpoint_id=1, profile_id=0x0104, device_type=0x0107, out_clusters={})
     ep.in_clusters = {c: _Cluster(c, ep, {}) for c in (0x0000, 0x0001, 0x0400, 0x0402, 0xFCC0)}
-    zdev = NS(endpoints={0: None, 1: ep}, node_desc=NS(is_mains_powered=False),
-              model="lumi.sensor_occupy.agl8", manufacturer="Aqara")
+    zdev = NS(endpoints={0: None, 1: ep}, node_desc=NS(is_mains_powered=False, manufacturer_code=0x115F),
+              model="presence.unknown", manufacturer="Acme")   # no shipped entry
     return NS(ieee=ieee, zigpy_dev=zdev, state={}, handlers={})
 
 
@@ -108,7 +116,8 @@ def run() -> Checker:
         keys = [s["key"] for s in st["steps"]]
         c.check("the outlet gets a switch test per socket and USB, a press per button, a setting "
                 "and the metering map",
-                keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.from_history", "manufacturer_setting.change_setting",
+                keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.from_history",
+                         "manufacturer_setting.known_values", "manufacturer_setting.change_setting",
                          "manufacturer_setting.set_number",
                          "manufacturer_setting.try_setting", "manufacturer_setting.try_behaviour", "metered_outlet.switch_test.1",
                          "metered_outlet.switch_test.2", "metered_outlet.switch_test.3",
@@ -332,6 +341,50 @@ def run() -> Checker:
                 and cfg[0]["config"]["device_class"] == "occupancy"
                 and cfg[0]["config"]["value_template"] == "{{ 'ON' if value_json.occupancy else 'OFF' }}",
                 cfg)
+        c.section("a battery device's own attributes: woken, asked, then matched to known values")
+        c.check("a battery device with a maker's cluster is offered a wake-and-discover step; "
+                "a mains one, which is probed by itself, is not",
+                "discover.vendor_attributes" in pkeys and "discover.vendor_attributes" not in keys, pkeys)
+        st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values",
+                                               {"known": "schedule_time_raw: 589845"}))
+        c.check("with nothing known of its attributes, matching says to discover first",
+                "Wake and discover" in _step(st, "manufacturer_setting.known_values")["proposals"][0]["evidence"])
+        st = asyncio.run(device_learning.begin(pres, "discover.vendor_attributes", {}))
+        found = _step(st, "discover.vendor_attributes")
+        c.check("asleep, it does not answer: the step says to wake it and stays open",
+                found["status"] == "pending" and "press its button" in found["proposals"][0]["evidence"],
+                found)
+        fcc0 = pres.zigpy_dev.endpoints[1].in_clusters[0xFCC0]
+        fcc0.listed = {0x0142: (0x20, 0x05), 0x0162: (0x23, 0x07), 0x023E: (0x23, 0x07),
+                       0x0163: (0x23, 0x07), 0x016A: (0x23, 0x07)}
+        fcc0.values.update({0x0142: 0, 0x0162: 600000, 0x023E: 589845, 0x0163: 3600000, 0x016A: 3600000})
+        st = asyncio.run(device_learning.begin(pres, "discover.vendor_attributes", {}))
+        found = _step(st, "discover.vendor_attributes")
+        c.check("awake, it lists what it has, what can be written, and its values are read",
+                found["status"] == "done" and "EP1 0xFCC0 lists 5 attributes, 4 writable; 5 read"
+                in found["proposals"][0]["evidence"], found)
+        st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values", {"known": json.dumps(
+            {"schedule_time_raw": 589845, "temp_and_humidity_sampling_period": 600,
+             "temp_reporting_interval": 3600, "led_disabled_night": False})}))
+        found = _step(st, "manufacturer_setting.known_values")["proposals"]
+        got = {p["value"]["id"]: p["value"] for p in found if p["path"] == "zmm.settings"}
+        c.check("a known value names the one attribute holding it, as a setting since it can be written",
+                got.get("schedule_time_raw", {}).get("attr") == "0x023E"
+                and got["schedule_time_raw"]["type"] == "uint32", found)
+        c.check("and one stored in other units is found with its scale: 600 s held as 600000",
+                (got.get("temp_and_humidity_sampling_period", {}).get("attr"),
+                 got["temp_and_humidity_sampling_period"].get("scale")) == ("0x0162", 1000), found)
+        notes = " | ".join(p["evidence"] for p in found if not p["path"])
+        c.check("a value two attributes hold is listed with both, not guessed",
+                "temp_reporting_interval" not in got
+                and "temp_reporting_interval = 3600 fits EP1 0xFCC0/0x0163, EP1 0xFCC0/0x016A" in notes, notes)
+        c.check("an on/off value is named as not matched", "led_disabled_night" in notes, notes)
+        device_learning.decide(pres, "manufacturer_setting.known_values",
+                               [i for i, p in enumerate(found) if p["path"]])
+        rv = device_learning.review(pres)
+        c.check("accepted, they are settings in the entry the review would save",
+                {x["id"] for x in rv["entry"]["zmm"]["settings"]}
+                == {"schedule_time_raw", "temp_and_humidity_sampling_period"}, rv["entry"]["zmm"])
         asyncio.run(device_learning.end(pres))
 
         asyncio.run(device_learning.end(dev))
