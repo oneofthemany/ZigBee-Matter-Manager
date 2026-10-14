@@ -94,13 +94,14 @@ def _context(device, step: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # Values a discovery reads back, so the step ends while the device is awake.
-DISCOVER_READ_MAX = 64
+DISCOVER_READ_MAX = 96
 
 
 def _vendor_values(device) -> Tuple[Dict[Any, Any], bool]:
     """({(ep, cluster, attr, mfr): last value known}, the keys a discovery
-    listed, whose access is therefore known) from the fact store: what the
-    device answered, and under that what it has reported since."""
+    listed) from the fact store: what the device answered, and under that
+    what it has reported since. Access the write probe settled is marked
+    `probed`, so an unlisted attribute stays unlisted once its access is known."""
     import json
     from modules.device_facts import parse_attr_subject, vendor_scoped
     from modules.zigbee_cache import get_facts
@@ -119,7 +120,8 @@ def _vendor_values(device) -> Tuple[Dict[Any, Any], bool]:
             continue
         value = meta.get("value" if kind == "attr" else "last") if isinstance(meta, dict) else None
         key = (f["endpoint_id"], *parsed)
-        if kind == "attr" and isinstance(meta, dict) and meta.get("acl") is not None:
+        if kind == "attr" and isinstance(meta, dict) and meta.get("acl") is not None \
+                and not meta.get("probed"):
             listed.add(key)
         if value is not None and (key not in values or str(f["last_seen"]) >= str(values[key][0])):
             values[key] = (f["last_seen"], value)
@@ -155,8 +157,8 @@ async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, An
     clean, err = _clean_inputs(st, inputs)
     if err:
         return {"success": False, "error": err}
-    values, listed = _vendor_values(device)
-    ctx = {**_context(device, st), "vendor_values": values, "listed": listed,
+    values, _ = _vendor_values(device)
+    ctx = {**_context(device, st), "vendor_values": values, "listed": set(_known_access(device)),
            "state_keys": set(device.state)}
     proposals = []
     for op in st["infer"]:
@@ -233,40 +235,46 @@ async def _echo(device, key, type_id: int, value: int) -> Optional[bool]:
 
 
 async def _write_probed(device) -> List[Dict[str, Any]]:
-    """Learn which reported-but-unlisted maker attributes can be written, the
-    only way a device that does not list them allows: each one's value is
-    read, written back as read, and read again. Only whole-number and on/off
-    types, never NEVER_WRITE; a refusal or an acceptance is recorded as its
-    access, silence as nothing."""
-    import json
-    from modules.device_facts import Fact, _j, attr_subject, parse_attr_subject, record, vendor_scoped
+    """Learn which of the maker's attributes the device reports but does not
+    list can be written, the only way such a device allows: each one is read
+    (for its value and type), written back as read, and read again. Only
+    whole-number and on/off types, never NEVER_WRITE; a refusal or an
+    acceptance is recorded as its access, silence as nothing."""
+    from modules.device_facts import Fact, _j, attr_subject, record
     from modules.device_profiles import SETTING_TYPES
-    from modules.zigbee_cache import drain, get_facts
-    types: Dict[Any, Tuple[str, int]] = {}
-    skipped = 0
-    for f in get_facts(str(device.ieee)):
-        parsed = parse_attr_subject(f["subject"]) if f["source"] == "answered" else None
-        if parsed is None or not vendor_scoped(parsed[0], parsed[2]):
-            continue
-        try:
-            meta = json.loads(f["value"])
-        except ValueError:
-            continue
-        if not isinstance(meta, dict) or meta.get("acl") is not None:
-            continue                    # listed: its access is already known
-        name = str(meta.get("type") or "").split("/")[-1]
-        if name in SETTING_TYPES and parsed[:2] not in NEVER_WRITE:
-            types[(f["endpoint_id"], *parsed)] = (str(meta["type"]), SETTING_TYPES[name])
-        else:
-            skipped += 1
-    if not types:
-        return [_note("none", "nothing to try: every attribute known here is one the device listed. "
-                              "Run 'Find its attributes' first if it has not been", "write_probe")]
-    keys = sorted(types, key=lambda k: (k[:3], k[3] or 0))
-    before = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r["value"] for r in await _read(device, keys)}
-    if not before:
+    from modules.zcl_decode import type_name
+    from modules.zigbee_cache import drain
+    values, listed = _vendor_values(device)
+    access = _known_access(device)
+    open_ = [k for k in values if k not in listed and k not in access and k[1:3] not in NEVER_WRITE]
+    # Text and bytes are never tried: a write of them is not one ZMM can type safely.
+    unknown = sorted((k for k in open_ if isinstance(values[k], int)), key=lambda k: (k[:3], k[3] or 0))
+    skipped = len(open_) - len(unknown)
+    if not unknown:
+        if not values:
+            return [_note("none", "nothing is known of this device's own attributes yet: run "
+                                  "'Find its attributes' first", "write_probe")]
+        unlisted = [k for k in access if k not in listed]
+        return [_note("high", "nothing left to check: of the attributes the device reports but does "
+                              f"not list, {sum('W' in access[k] for k in unlisted)} can be written and "
+                              f"{sum('W' not in access[k] for k in unlisted)} are read-only"
+                              + (f"; {skipped} hold text or bytes and are not tried" if skipped else ""),
+                      "write_probe")]
+    # Read first, for the type the device stores each in: a write must carry it.
+    first = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r for r in await _read(device, unknown)}
+    if not first:
         return []
-    accepted, refused, silent = [], [], []
+    names = {v: k for k, v in SETTING_TYPES.items()}
+    types: Dict[Any, Tuple[str, int]] = {}
+    for k in unknown:
+        tid = (first.get(k) or {}).get("type")
+        if tid is not None and int(tid) in names:
+            types[k] = (type_name(int(tid)), int(tid))
+        elif k in first:
+            skipped += 1
+    keys = sorted(types, key=lambda k: (k[:3], k[3] or 0))
+    before = {k: first[k]["value"] for k in keys}
+    accepted, refused, silent = [], [], [k for k in unknown if k not in first]
     for key in keys:
         value = before.get(key)
         if not isinstance(value, int):
@@ -279,7 +287,7 @@ async def _write_probed(device) -> List[Dict[str, Any]]:
     moved = [k for k in accepted if k in after and after[k] != before[k]]
     record(str(device.ieee), [
         Fact(k[0], attr_subject("attr", k[1], k[2], k[3]), "answered",
-             _j({"type": types[k][0], "acl": "RW" if k in accepted else "R",
+             _j({"type": types[k][0], "acl": "RW" if k in accepted else "R", "probed": True,
                  "value": after.get(k, before[k])}))
         for k in accepted + refused])
     await drain()               # the settings steps read these facts next
@@ -322,8 +330,9 @@ async def _discovered(device) -> List[Dict[str, Any]]:
                       key=order)
     readable = [k for k, meta in sorted(found.items(), key=lambda kv: order(kv[0]))
                 if "R" in meta["acl"] or not meta["acl"]]
+    # Unlisted first: nothing else will read them, and their values name functions.
     read = {(r["ep"], r["cluster"], r["attr"], r["mfr"]): r
-            for r in await _read(device, (readable + unlisted)[:DISCOVER_READ_MAX])}
+            for r in await _read(device, (unlisted + readable)[:DISCOVER_READ_MAX])}
     facts = [Fact(ep, attr_subject("attr", cid, aid, mfr), "answered",
                   _j({**meta, "value": (read.get((ep, cid, aid, mfr)) or {}).get("value")}))
              for (ep, cid, aid, mfr), meta in found.items()]
@@ -331,7 +340,8 @@ async def _discovered(device) -> List[Dict[str, Any]]:
     access = _known_access(device)
     facts += [Fact(k[0], attr_subject("attr", k[1], k[2], k[3]), "answered",
                    _j({"type": type_name(read[k]["type"]) if read[k].get("type") is not None else None,
-                       "acl": access.get(k), "value": read[k]["value"]}))
+                       "acl": access.get(k), "value": read[k]["value"],
+                       **({"probed": True} if k in access else {})}))
               for k in unlisted if k in read]
     record(str(device.ieee), facts)
     from modules.zigbee_cache import drain

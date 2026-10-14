@@ -404,7 +404,7 @@ def run() -> Checker:
         c.check("its fresh value is what later steps match against: a reading, its access unknown",
                 [(p["path"], p["value"]) for p in found if p["path"]]
                 == [("endpoints.1.clusters.0xFCC0.attributes.0x014F", {"name": "absence_delay", "scale": 100})]
-                and "not listed by the device" in found[0]["evidence"], found)
+                and "whether it can be written is not known" in found[0]["evidence"], found)
 
         c.section("whether an unlisted attribute can be written: its own value, written back")
         async def probe():
@@ -447,9 +447,20 @@ def run() -> Checker:
         c.check("discovering again does not forget what the probe settled",
                 "which can be written is already known" in again["proposals"][1]["evidence"], again)
         st = asyncio.run(probe())
-        c.check("with every attribute's access known, there is nothing left to try",
-                fcc0.written == [(0x014F, 3500)]
-                and "nothing to try" in _step(st, "discover.write_access")["proposals"][0]["evidence"],
+        c.check("with every attribute's access known, there is nothing left to check, and it says "
+                "what was found", fcc0.written == [(0x014F, 3500)]
+                and "nothing left to check" in _step(st, "discover.write_access")["proposals"][0]["evidence"]
+                and "0 can be written and 1 are read-only"
+                in _step(st, "discover.write_access")["proposals"][0]["evidence"],
+                [p["evidence"] for p in _step(st, "discover.write_access")["proposals"]])
+        device_facts.record(PRESENCE_IEEE, [device_facts.Fact(
+            1, "reports:0xFCC0/0x0150@0x115F", "observed", json.dumps({"nonzero": True, "last": 7}))])
+        asyncio.run(zigbee_cache.drain())
+        fcc0.values[0x0150], fcc0.written = 7, []
+        st = asyncio.run(probe())
+        c.check("an attribute only ever reported, never read by discovery, is checked too",
+                fcc0.written == [(0x0150, 7)]
+                and "0x0150" in _step(st, "discover.write_access")["proposals"][0]["evidence"],
                 _step(st, "discover.write_access"))
 
         st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values", {"known": json.dumps(
