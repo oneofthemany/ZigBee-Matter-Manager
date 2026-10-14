@@ -52,6 +52,33 @@ console.log('blob tags');
   check('and the form shows the scaled value beside the raw one', editorHtml(e, dev).includes('3211 <span class="text-muted">→ 3.211'));
 }
 
+console.log('attributes');
+{
+  const dev = { ...device, attributes: [
+    { ep: 1, cluster: '0xFCC0', attr: '0x0162', mfr: '0x115F', type: 'uint32', value: 600000, reported: true, writable: true },
+    { ep: 1, cluster: '0xFCC0', attr: '0x0142', mfr: '0x115F', type: 'uint8', value: 1, reported: true, writable: false },
+    { ep: 1, cluster: '0xFCC0', attr: '0x0009', mfr: '0x115F', type: 'uint8', value: 0, reported: false, writable: true }] };
+  const e = { id: 'x', match: { model: 'x' }, endpoints: {} };
+  let html = editorHtml(e, dev);
+  check('the attributes the device sends are listed with value and access',
+        html.includes('0x0162') && html.includes('600000') && html.includes('settable') && html.includes('read-only'));
+  check('the ones it only lists are behind a tick box', !html.includes('0x0009') && html.includes('Also show the 1'));
+  applyField(e, el('attr-all', {}, '', true), dev);
+  check('which shows them', editorHtml(e, dev).includes('0x0009'));
+  applyField(e, el('attr-name', { key: '1|0xFCC0|0x0162' }, 'sampling_period'), dev);
+  applyField(e, el('attr-scale', { key: '1|0xFCC0|0x0162' }, '1000'), dev);
+  const st = (e.zmm.settings || [])[0] || {};
+  check('naming a settable one makes it a setting, with its type, maker code and scale',
+        [st.id, st.type, st.attr, st.mfr, st.scale].join() === 'sampling_period,uint32,0x0162,0x115F,1000', st);
+  check('and the form shows its value divided', editorHtml(e, dev).includes('600000 <span class="text-muted">→ 600'));
+  applyField(e, el('attr-name', { key: '1|0xFCC0|0x0142' }, 'occupancy'), dev);
+  check('naming a read-only one makes it a reading',
+        e.endpoints['1'].clusters['0xFCC0'].attributes['0x0142'].name === 'occupancy');
+  applyField(e, el('attr-name', { key: '1|0xFCC0|0x0162' }, ''), dev);
+  check('clearing a name removes it, leaving nothing behind', !e.zmm.settings);
+  check('a bad name is refused', applyField(e, el('attr-name', { key: '1|0xFCC0|0x0142' }, 'Bad Name'), dev) !== null);
+}
+
 console.log('endpoints');
 applyField(entry, el('ep-kind', { ep: '3' }, 'switch'), device);
 applyField(entry, el('ep-label', { ep: '3' }, '  USB  '), device);

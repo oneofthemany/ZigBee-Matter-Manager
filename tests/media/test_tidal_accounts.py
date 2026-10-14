@@ -2,9 +2,8 @@
 Per-user Tidal accounts: the registry, the credential files, and the adoption
 of the single session that predates multi-user auth.
 
-Step 1 of docs/plans/tidal-per-user-auth.md, whose contract is that nothing
-downstream changes yet — so the last section asserts the compatibility shim
-still answers exactly as the single-account source did.
+docs/speaker_sync.md, "One account per user": a call that names no user gets
+the default account, never a forwarding shim to whichever one is logged in.
 """
 
 from __future__ import annotations

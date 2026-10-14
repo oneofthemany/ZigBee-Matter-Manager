@@ -1,5 +1,5 @@
 """
-Step 6 of docs/plans/zmm-quirks.md: scaling and metering scope.
+docs/device-profiles.md §7: scaling and metering scope.
 
 Scaling came only from configure(), which runs at join, so after a restart
 the handler fell back to 1 (0.2 W read as 2 W), and a device that did not

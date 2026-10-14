@@ -1,5 +1,5 @@
 /**
- * "Learn this device": the guided experiments of docs/plans/device-learning.md,
+ * "Learn this device": the guided experiments of docs/learning-a-device.md,
  * then review, save (with history and rollback), export and import.
  * Mounted inside the Identity tab. Event delegation only (strict CSP target).
  */

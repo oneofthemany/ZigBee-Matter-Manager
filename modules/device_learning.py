@@ -1,5 +1,5 @@
 """
-Device learning sessions (docs/plans/device-learning.md §3).
+Device learning sessions (docs/learning-a-device.md §1, §2).
 
 One session per device: the steps its recipes give it, the raw frames it sends
 while the session runs (captured in ZigbeeService.handle_message, before any
@@ -970,7 +970,46 @@ def editor_context(device) -> Dict[str, Any]:
             if cl in clusters and name not in measurements:
                 measurements[name] = {"cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}", "ep": ep_id}
     return {"endpoints": eps, "measurements": measurements, "blob_tags": blob_tags(device),
-            "model": str(device.zigpy_dev.model or "")}
+            "attributes": vendor_attributes(device), "model": str(device.zigpy_dev.model or "")}
+
+
+def vendor_attributes(device) -> List[Dict[str, Any]]:
+    """Every maker's attribute known on the device, outside its status blobs,
+    with its last value, type and access, for the editor to name. `reported`
+    marks those the device sends by itself: on most devices, its functions."""
+    import json
+    from handlers.aqara import BLOB_ATTRS_SEEN
+    from modules.device_facts import mfr_hex, parse_attr_subject, vendor_scoped
+    from modules.zigbee_cache import get_facts
+    values, _ = _vendor_values(device)
+    access = _known_access(device)
+    types: Dict[Any, str] = {}
+    reported = set()
+    for f in get_facts(str(device.ieee)):
+        kind, _, rest = f["subject"].partition(":")
+        parsed = parse_attr_subject("attr:" + rest)
+        if parsed is None or not vendor_scoped(parsed[0], parsed[2]):
+            continue
+        key = (f["endpoint_id"], *parsed)
+        if kind == "reports":
+            reported.add(key)
+        elif kind == "attr" and f["source"] == "answered":
+            try:
+                t = (json.loads(f["value"]) or {}).get("type")
+            except (ValueError, AttributeError):
+                t = None
+            if t:
+                types[key] = str(t).split("/")[-1]
+    out = []
+    for key in sorted(values, key=lambda k: (k[:3], k[3] or 0)):
+        ep, cid, aid, mfr = key
+        if cid == 0xFCC0 and aid in BLOB_ATTRS_SEEN:
+            continue                    # its tags are the blob table's
+        acl = access.get(key)
+        out.append({"ep": ep, "cluster": f"0x{cid:04X}", "attr": f"0x{aid:04X}", "mfr": mfr_hex(mfr),
+                    "type": types.get(key), "value": values[key], "reported": key in reported,
+                    "writable": None if acl is None else "W" in acl})
+    return out
 
 
 def blob_tags(device) -> List[Dict[str, Any]]:

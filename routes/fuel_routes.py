@@ -7,7 +7,7 @@ location. Prices are public open data but the centre is not, so nothing about
 who asked is stored.
 
 Which country's feed answers is settled by `location:` in config.yaml — see
-modules/fuel/registry.py and docs/plans/fuel_prices_region.md.
+modules/fuel/registry.py and docs/journeys.md, "Region".
 """
 
 from __future__ import annotations

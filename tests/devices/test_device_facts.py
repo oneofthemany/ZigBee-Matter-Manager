@@ -1,6 +1,6 @@
 """
 The evidence store records what each endpoint declares, answers and reports,
-and how each fact was learned (docs/plans/zmm-quirks.md §4).
+and how each fact was learned (docs/device-profiles.md §2).
 
 Step 1 of the plan: facts are written, nothing decides from them yet.
 """

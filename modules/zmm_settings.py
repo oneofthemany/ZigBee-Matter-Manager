@@ -1,5 +1,5 @@
 """
-Device settings declared by a ZMM entry (docs/plans/zmm-quirks.md §5, step 7).
+Device settings declared by a ZMM entry (docs/device-profiles.md §4).
 
 An entry names a setting (cluster, attribute, manufacturer code, type,
 values). It is offered only on endpoints the device has shown the attribute

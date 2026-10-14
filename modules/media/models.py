@@ -46,7 +46,7 @@ class MediaItem:
     # re-resolved long after the request that queued the item — on auto-advance,
     # on a restart resume, by the zone engine — so the owner travels with the
     # item rather than being looked up from a principal that is no longer there.
-    # Empty means "before Tidal was per-user"; see docs/plans/tidal-per-user-auth.md.
+    # Empty means "before Tidal was per-user"; see docs/speaker_sync.md, "One account per user".
     owner: str = ""
 
     def to_dict(self) -> Dict[str, Any]:

@@ -3,7 +3,8 @@ Rules, the admin view, and the end of the compatibility shim.
 
 An automation rule fires with no request behind it, so the Tidal account it
 plays on cannot be looked up when it runs — it is stamped on the step when the
-rule is saved. Step 5 of docs/plans/tidal-per-user-auth.md.
+rule is saved. See docs/speaker_sync.md,
+"One account per user".
 
 The stamping helper is imported directly; the routes that call it need FastAPI,
 so their wiring is checked by AST as in the other route tests.

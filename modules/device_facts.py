@@ -1,6 +1,6 @@
 """
 Evidence for device recognition: what we know about each endpoint, and how we
-learned it (docs/plans/zmm-quirks.md §4).
+learned it (docs/device-profiles.md §2).
 
 Rows live in the zigbee cache DB (`device_facts`), written through its write
 queue (zigbee_cache.submit): off the event loop, only when a value changed.

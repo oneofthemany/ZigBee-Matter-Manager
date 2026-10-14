@@ -17,7 +17,7 @@ subclasses whichever fits and implements one method.
 Prices leave a provider in the region's *major* currency unit per litre (or per
 US gallon), because that is what the whole app downstream already assumes about
 pounds. How they are displayed — pence, euro, dollars — is `display_scale`, and
-is the UI's problem, not the fetcher's. See docs/plans/fuel_prices_region.md.
+is the UI's problem, not the fetcher's. See docs/journeys.md, "Writing a provider".
 """
 
 from __future__ import annotations

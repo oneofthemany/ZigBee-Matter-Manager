@@ -1,7 +1,7 @@
 # Learning recipes
 
 One JSON file per kind of device, read by `modules/learning_recipes.py`
-(`docs/plans/device-learning.md` §4). A user's own recipes go in
+(`docs/learning-a-device.md` §3). A user's own recipes go in
 `<data>/learning_recipes/`; one with the same `id` replaces the shipped one.
 
 A recipe orders instructions and names inference operations from

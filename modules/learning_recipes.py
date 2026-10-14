@@ -1,5 +1,5 @@
 """
-Learning recipes (docs/plans/device-learning.md §4): the steps that teach ZMM
+Learning recipes (docs/learning-a-device.md §3): the steps that teach ZMM
 a kind of device, as data. Shipped in `learning_recipes/` beside the code, and
 the user's own in `<data>/learning_recipes/` (same id: the user's wins).
 

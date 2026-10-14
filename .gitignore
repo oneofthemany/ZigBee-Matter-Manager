@@ -30,9 +30,7 @@ zmm_eq/target/
 /data/vapid.json
 /data/homekit_pairings.json
 /docs/plans/daylight-lighting-and-home-floor-plan.md
-/docs/plans/fuel_prices_region.md
 /docs/plans/swarm-intelligence.md
-/docs/plans/tidal-per-user-auth.md
 /docs/plans/usability-and-hardening-roadmap.md
 /tests/media/logs/zigbee_debug.log
 /AGENTS.md
@@ -41,6 +39,4 @@ zmm_eq/target/
 /data/presence_state.json
 /tests/logs/zigbee_debug.log
 /tests/devices/logs/zigbee_debug.log
-/docs/plans/device-learning.md
-/docs/plans/zmm-quirks.md
 /tests/power/logs/zigbee_debug.log

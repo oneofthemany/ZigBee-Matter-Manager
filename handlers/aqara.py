@@ -604,7 +604,7 @@ class AqaraManufacturerCluster(ClusterHandler):
         return out
 
     # Blob names a standard cluster also measures: (cluster, attribute or None).
-    # Its answered, scaled reading outranks an undocumented tag (zmm-quirks.md §4).
+    # Its answered, scaled reading outranks an undocumented tag (device-profiles.md §4).
     _CLUSTER_MEASURES = {"energy": (0x0702, None), "power": (0x0B04, 0x050B),
                          "voltage": (0x0B04, 0x0505), "current": (0x0B04, 0x0508)}
 

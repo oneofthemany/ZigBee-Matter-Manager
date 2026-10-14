@@ -749,6 +749,49 @@ one — so a national feed that loses more than half its stations between polls
 keeps the previous snapshot and logs why. Half a country reads to a user as "no
 station near you", which is worse than data a few minutes old.
 
+### Writing a provider
+
+A region is one class in `modules/fuel/providers/`, registered in
+`modules/fuel/registry.py`. It declares what it is and implements one method:
+
+| Field | Meaning |
+| --- | --- |
+| `region`, `label` | the registry key (`GB`, `DE`, `AU-NSW`) and its display name |
+| `grades`, `default_grade` | the region's own grade codes → labels; nothing maps them onto UK ones |
+| `currency`, `currency_symbol` | ISO 4217 and how to show it |
+| `volume_unit` | `L`, or `gal_us` for the United States |
+| `distance_unit` | `km`, or `mi` where road signs are in miles |
+| `display_scale`, `display_decimals` | `minor` (pence, cents) or `major` (euro, dollars) at the pump, and how many places |
+| `station_level` | false where the source publishes an average, not stations |
+| `needs_credentials`, `attribution` | whether it needs a key; the licence line the Drive tab shows |
+
+`nearby(lat, lon, radius_km)` is the one abstract method. A national download
+subclasses `BulkSnapshotProvider` and implements `_fetch_all()`: the base holds
+a TTL-guarded snapshot under a lock, filters it by haversine, and keeps the
+previous snapshot when a fetch returns less than half of it. A per-location API
+subclasses `RadiusQueryProvider` and implements `_fetch_nearby()`: the base
+caches by rounded coordinates, enforces a minimum interval between calls, and
+clamps the radius to the class's `max_radius_km`.
+
+Each provider normalises its own prices inside its fetch, to the major unit
+per litre or gallon, because it knows its source's unit. Nothing infers a
+scale from the numbers: the median-above-20 test that decides whether the UK
+Fuel Finder feed is in pence (its spec does not say) is UK-shaped, would read
+Australian cents as pence and American dollars as pounds, and stays in that
+one adapter. The station dict is the same for every provider (`site_id`,
+`brand`, `address`, `postcode`, `latitude`, `longitude`, `last_updated`, and a
+key per grade), so the service and the history writer never know which
+country answered.
+
+A new adapter needs a captured upstream payload in `tests/fuel/fixtures/` and
+a test asserting the normalised station dict: the grade mapping, the price in
+major units, and a plausible magnitude for its volume unit (that bound is what
+catches comma decimals and cents read as units). `tests/fuel/live_check.py
+<REGION>` then proves it against the real service from a known coordinate, to
+be spot-checked against the provider's own site. A provider that cannot reach
+its host must leave the Drive tab on stale data or a clear "unavailable",
+never an error page.
+
 ### The car screen
 
 `android/.../car/FuelScreen.kt` renders whatever the hub tells it. `/api/fuel/nearby`

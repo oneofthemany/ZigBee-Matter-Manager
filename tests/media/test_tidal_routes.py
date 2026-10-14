@@ -5,8 +5,8 @@ Static analysis of the route modules rather than live requests: FastAPI is not
 installed on a dev box, so the handlers cannot be driven. What can be checked
 without it is the thing that actually matters — that no endpoint serving one
 user's Tidal data was left resolving "the" account, which is how a housemate's
-library would end up on someone else's screen. Step 3 of
-docs/plans/tidal-per-user-auth.md.
+library would end up on someone else's screen. See docs/speaker_sync.md,
+"One account per user".
 
 The manifest route is the deliberate exception: Cast devices fetch it
 themselves and cannot carry a session cookie. It is listed here by name so it

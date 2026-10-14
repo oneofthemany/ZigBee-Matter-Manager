@@ -1,5 +1,5 @@
 """
-Step 4 of docs/plans/zmm-quirks.md: attribute discovery at join, and passive
+docs/device-profiles.md §2: attribute discovery at join, and passive
 observation of which endpoint reports what.
 """
 

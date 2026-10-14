@@ -647,7 +647,7 @@ def register_media_routes(app: FastAPI, get_media_service):
     #
     # Every endpoint below resolves the caller's own account. Tidal is per-ZMM-user:
     # you browse your library, your favourites and your playlists, and the account a
-    # track is played on is the one it was queued from. See docs/plans/tidal-per-user-auth.md.
+    # track is played on is the one it was queued from. See docs/speaker_sync.md, "One account per user".
     def _tidal(svc):
         """The registry. Only the routes that do not belong to a user use this."""
         return svc.controller.get_source("tidal")

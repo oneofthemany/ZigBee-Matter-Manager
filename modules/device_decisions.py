@@ -1,6 +1,6 @@
 """
 Conclusions drawn from device evidence, stored with their source and reason
-(docs/plans/zmm-quirks.md §5, §8).
+(docs/device-profiles.md §3, §6).
 
 A decision is written only when it differs from the stored one, so a
 re-announce costs nothing and a change is kept as old -> new and logged.

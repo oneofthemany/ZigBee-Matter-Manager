@@ -1,5 +1,5 @@
 """
-Device learning routes (docs/plans/device-learning.md): the wizard's session,
+Device learning routes (docs/learning-a-device.md): the wizard's session,
 review and save, profile history and rollback, export and import.
 Registered from register_device_routes, under /api/device/{ieee}/...
 """

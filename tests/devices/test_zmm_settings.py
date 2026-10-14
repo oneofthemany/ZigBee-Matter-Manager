@@ -1,5 +1,5 @@
 """
-Step 7 of docs/plans/zmm-quirks.md: settings a ZMM entry declares are offered
+docs/device-profiles.md §4: settings a ZMM entry declares are offered
 only where the endpoint lists the attribute, and written raw with the
 entry's manufacturer code.
 """

@@ -1,6 +1,6 @@
 /**
  * Identity tab: what ZMM decided about each endpoint, from which source and
- * why, with confirm / correct / reset (docs/plans/zmm-quirks.md §8).
+ * why, with confirm / correct / reset (docs/device-profiles.md §6).
  * Event delegation only: the strict CSP target forbids inline handlers.
  */
 import { renderLearningPanel, initLearningPanel } from './learning.js';

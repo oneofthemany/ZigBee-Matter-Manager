@@ -1,5 +1,5 @@
 """
-Step 8 of docs/plans/zmm-quirks.md: model-name quirks give way to entries.
+docs/device-profiles.md §8: model-name quirks give way to entries.
 
 The Philips SML controller quirk and the Tuya model-string guesses now apply
 only where no entry describes the device, and an entry that names its maker

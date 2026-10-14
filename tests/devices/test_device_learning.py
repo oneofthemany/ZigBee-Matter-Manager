@@ -1,5 +1,5 @@
 """
-Device learning end to end (docs/plans/device-learning.md): recipes give a
+Device learning end to end (docs/learning-a-device.md): recipes give a
 device its steps, a step captures raw frames and reads around the user's
 action, accepted proposals become learned facts, and review / save / history /
 rollback / export / import turn them into the user's own entry.
@@ -507,6 +507,10 @@ def run() -> Checker:
         c.check("the editor is given every tag of the device's status blob with its last value",
                 tags["0x17"]["value"] == 3222 and tags["0x18"]["value"] == 100
                 and tags["0x01"]["value"] == 202.56 and tags["0x0A"]["value"] == 40018, tags)
+        attrs = {a["attr"]: a for a in device_learning.editor_context(pres)["attributes"]}
+        c.check("the editor is also given the device's own attributes, outside the blob, with access",
+                "0x00F7" not in attrs and attrs["0x0162"]["value"] == 600000
+                and attrs["0x0162"]["writable"] is True and attrs["0x014F"]["reported"] is True, attrs)
         c.check("and the name the global map would give a tag left unnamed",
                 tags["0x05"]["map"] == "voltage" and tags["0x17"]["map"] is None, tags)
 

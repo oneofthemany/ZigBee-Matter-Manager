@@ -79,8 +79,8 @@ non-16:9 camera's **Last detection** frame looks stretched for the same reason.)
 ## Faces
 
 Cameras → **People**: who face recognition knows. So far this is enrolment
-only — nothing recognises anyone on a camera yet; the plan is
-[plans/vision-enrolment.md](plans/vision-enrolment.md).
+only — nothing recognises anyone on a camera yet; how it will is in
+[Recognition (planned)](#recognition-planned).
 
 A person is a name and pictures of their face:
 
@@ -184,12 +184,77 @@ SSDLite MobileDet, COCO, 320×320 (Google, Apache-2.0), in CPU and Edge TPU
 builds. For faces: YuNet (MIT) and SFace (Apache-2.0), both from OpenCV Zoo,
 run by ONNX Runtime on the CPU, fetched only when someone is first enrolled.
 Like every face model, SFace was trained on photos of people who were not
-asked; why it was still chosen is in
-[plans/vision-enrolment.md](plans/vision-enrolment.md) §1. The models, the label list and the Edge TPU library are not in the app
+asked; why it was still chosen is below. The models, the label list and the Edge TPU library are not in the app
 image: `vision/assets.py` downloads them on first start into
 `data/vision/models/`, each from a fixed URL and checked against a pinned
 SHA-256. The Edge TPU library is a build made for the TFLite version
 `ai-edge-litert` ships; the two pins move together.
+
+**The rule:** all code is ours; third-party weights are pinned, downloaded at
+first use, hash-checked and credited, never in the image. Every licence is
+compatible with the project's GPL-3.0, and since the weights are fetched,
+they are not redistributed. The glue (decoding YuNet's output, alignment,
+pose, matching) is written from each model's input/output spec and its paper,
+not ported from CompreFace, InsightFace or OpenCV Zoo demo code.
+
+| Job | Model | Source | Licence | Runtime |
+|---|---|---|---|---|
+| Objects | SSDLite MobileDet, COCO, 320×320 | Google, `google-coral/test_data` | Apache-2.0 | TFLite, CPU or Edge TPU |
+| Find faces and 5 landmarks | YuNet | OpenCV Zoo, from `ShiqiYu/libfacedetection.train` | MIT | ONNX Runtime |
+| Face → vector | SFace (MobileFaceNet) | OpenCV Zoo, from the paper's author | Apache-2.0 | ONNX Runtime |
+| Object or zone crop → vector (planned) | EfficientNet-EdgeTPU-S embedding extractor; MobileNet v1 as the CPU fallback | `google-coral/test_data` | Apache-2.0 | TFLite, CPU or Edge TPU |
+
+Rejected, and why:
+
+| Model | Why not |
+|---|---|
+| InsightFace packs (buffalo_l / _s, ArcFace R100), as CompreFace uses | weights licensed for non-commercial research only |
+| EdgeFace (Idiap) | CC BY-NC-SA 4.0 |
+| models trained on DigiFace-1M | the dataset is non-commercial research only |
+| facenet-pytorch VGGFace2 / CASIA weights | no clear licence; VGGFace2 has been withdrawn |
+| Coral `ssd_mobilenet_v2_face` | Edge TPU-ready, but no landmarks, so no alignment and no pose |
+| dlib face ResNet | a clean licence, but a large C++ build; the fallback if SFace ever falls short |
+
+**Provenance, the part a licence does not cover.** No usable face model was
+trained on photos people consented to. The SFace paper trains on CASIA-WebFace,
+VGGFace2 and MS-Celeb-1M, all scraped photos of celebrities (the last two since
+withdrawn by their publishers). Legally SFace is clean: it comes from its
+author under Apache-2.0. Ethically it carries the history every face model in
+the field does, as MobileDet does with COCO's Flickr photos, less sensitively.
+Training a model of our own on consented data is not an option: no consented
+dataset of that size exists under a usable licence. The part that learns is
+the household's own gallery, which stays on the hub and is theirs.
+
+## Cost on the hub
+
+Measured on the reference hub (J3455, no AVX, the live app running) with
+`scripts/vision_bench.py speed`, in the app image's base. Median ms:
+
+| | 1 thread | 2 threads | Coral |
+|---|---|---|---|
+| Decode a 1440p JPEG with an ffmpeg subprocess (full / crop and scale) | 504 / 472 | | |
+| Decode a 1440p JPEG with Pillow (full / draft ½) | 51 / 20 | | |
+| YuNet at 160² / 320² / 480² / 640² | 11 / 36 / 75 / 129 | 8 / 23 / 46 / 80 | |
+| YuNet 640², int8 | 246 | 141 | |
+| Align, sharpness and pose (numpy) | 9 | 10 | |
+| SFace, float / int8 | 240 / 276 | 129 / 168 | |
+| EfficientNet-S embedder | 350 | 182 | 5.0 |
+| MobileNet v1 embedder | 102 | 54 | 2.6 |
+
+What that decided:
+
+- ONNX Runtime runs without AVX, which is what kept CompreFace off this hub.
+- Stills are decoded with Pillow, not an ffmpeg process per still: spawning
+  ffmpeg costs about 450 ms, nearly all of it start-up. A whole face read is
+  then about 180 ms at two threads. The detection stream stays on ffmpeg.
+- Float models, not int8: without VNNI int8 is slower here, and its vectors
+  agree with float's at cosine 0.986.
+- Faces stay on the CPU; converting SFace for the Edge TPU is not worth it at
+  130 ms a read. Object and zone embeddings (planned) go on the Coral where
+  there is one.
+- Not yet measured: alternating the detector and an embedder on one Edge TPU,
+  which reloads weights unless they are compiled together; nor the accuracy on
+  the household's own pictures against real door captures.
 
 ## Sidecar
 
@@ -242,8 +307,120 @@ In the ZMM Manager (`:8001`; actions need the Manager token): `GET /vision`,
 ## Not yet
 
 Recognising enrolled people on the cameras, known objects and zone states
-([plans/vision-enrolment.md](plans/vision-enrolment.md)); per-object counts,
-GPU and Hailo backends, and larger models.
+([Recognition (planned)](#recognition-planned)); per-object counts, GPU and
+Hailo backends, and larger models.
+
+## Recognition (planned)
+
+**None of this section is built.** It is the design for what follows
+enrolment: detection answers "is there a person"; this adds "which one" and
+"what state is that spot in", learned from the household's examples. Nothing
+is trained in the machine-learning sense: a fixed model turns a picture into
+a vector, and labelled examples are kept as vectors to compare against.
+Adding a person is storing vectors, which is the only learning a J3455 and a
+Coral can do. Out of scope: object kinds the detector does not know
+(packages, licence plates), which need a model trained off the hub.
+
+Order: tracks, then recognising faces, then the unrecognised-faces queue,
+then known objects, then zone states (the last two do not depend on faces).
+
+**Constraints.** Detection frames are 640×360, where a face at the door is a
+few pixels across, so recognition works on a full-resolution still fetched
+from go2rtc when a tracked person needs identifying (from the main stream
+when detection uses the low-res one). The tracker knows "a person is present",
+not "this person", so identity needs tracks first. The new models run on the
+CPU, per tracked object, never per frame.
+
+**Tracks.** `vision/tracker.py` gains tracks: detections matched frame to
+frame by box overlap, each with an id, class and short history. Presence per
+group becomes "any confirmed track in the group", so today's signals behave
+the same; identity votes hang off the track.
+
+**Recognising a face, per tracked person.**
+
+1. When a person track is confirmed, and every 2 s after while unidentified,
+   for up to 30 s; then not again until the track is lost and found.
+2. Fetch a full-resolution still and crop the top of the person box.
+3. YuNet at 320² on the crop; keep the largest face inside the box. Under
+   about 40 px between the eyes is too small, and the read does not count.
+4. Quality (sharpness, size, pose) and alignment as enrolment does; a read
+   that fails counts as neither known nor unknown.
+5. Pose from the landmarks (front, left, right, down); extreme angles are
+   rejected.
+6. SFace vector; cosine to every sample. A person's score is the best of
+   their samples, the matching pose first. A match clears that person's
+   threshold (0.363 to start) and beats the runner-up by a margin.
+7. The track takes an identity when 2 of its last 4 good reads agree, and is
+   `unknown` after 4 good reads with no match.
+
+Samples keep their own vectors, never averaged: a side-on face matches
+side-on samples far better than an average. Coverage per person is shown by
+pose and by day and night (infrared frames look different). Looking down
+past about 40° is beyond what YuNet finds, a limit accepted, not a bug. A
+person holds at most 10 samples per pose per lighting, a new one replacing
+the most similar, so the gallery spreads out.
+
+**Unrecognised faces.** A track that ends `unknown` queues its best reads.
+Reads that look like the same person are grouped (single-link, by cosine),
+so the queue shows "14 sightings, 3 days" rather than pictures one by one.
+A group can be labelled as a new or existing person (its best, pose-varied
+reads become samples), dismissed, or marked *never this face*. Reads are kept
+14 days, at most 500.
+
+**Known objects.** A named instance of a class the detector already finds
+("our car", "Mog"), enrolled from detection frames or photos: the box is
+cropped from the still, embedded, and matched like a face, with votes per
+track. It tells a red hatchback from a white van and a tabby from a fox, not
+two identical cars apart; the enrolment screen says so.
+
+**Zone states.** A watch on an existing zone with named states ("Bins": out /
+in; "Doorstep": clear / something there), learned from a few labelled
+snapshots of each, by day and night. The zone's bounding square is embedded
+once a minute and when motion in it stops; the nearest state wins (k = 3), or
+`unsure` if none is near; a change needs two results in a row, so someone
+walking past does not flip the bins. Every result offers *Wrong? This is…*,
+which becomes a new example: that is how light and seasons are learned.
+
+**Gallery.** The sidecar stays the only writer. Subjects gain a kind (face,
+object, state); pictures stay the source of truth, so a model change means
+re-embedding in the background, not re-enrolling; ids are fixed at creation;
+deleting a subject deletes everything of it. The gallery joins backups as an
+opt-in, like *Include history*, because of what it holds.
+
+**Signals**, on `camera::<id>`: `person_known` / `person_unknown` when a
+person track is identified or ends unidentified; `seen_<subject_id>` while
+that person or object is in view; `state_<watch_id>` with the state's id or
+`unsure`. Zone filtering happens in the event payload rather than as one
+signal per zone. Notification triggers: someone known / unknown at a camera,
+*{person}* seen, *{watch}* changed to *{state}*.
+
+**Privacy.** Face vectors are biometric data. Recognition is a separate
+switch per camera, off until turned on. Nothing leaves the hub: no cloud
+model, no vectors in telemetry or logs. A camera covering a street or shared
+path can be set to *known faces only*, dropping unknown reads rather than
+queuing them. Deleting a person deletes their vectors and any queued reads
+matched to them.
+
+**Interface.** Cameras → *People & things* (people, objects and watches with
+coverage, the queue, guided phone capture: "look straight", "turn left" … with
+the shot taken when the measured pose matches); *Edit camera → Detection*
+(recognise faces, known faces only, which objects); *Edit camera → Zones*
+(watch this zone's state); the name or "Unknown" on *Last detection* boxes,
+with *This is…* and *Wrong?*. Every screen works at phone width.
+
+**Compared with CompreFace**, whose ideas (not code) this borrows: people
+with many examples and a "test this photo" box; landmarks and pose as an
+add-on. Where it falls short and this does not: it needs AVX, several
+containers and Postgres; it handles stills only, leaving tracking and voting
+to another tool; it accepts any photo; it has no queue of unrecognised faces;
+a model change can mean re-enrolling; and its default weights are
+non-commercial.
+
+**Open questions.** Should a known face only change a notification's wording
+when the house is armed, never suppress or disarm (leaning: wording only; a
+face is not proof of identity)? Should guided capture offer the photo
+library? Is a per-zone `seen_<id>_<zone>` signal needed, or is filtering the
+payload enough?
 
 ## Hardware
 

@@ -1,5 +1,5 @@
 """
-Step 2 of docs/plans/zmm-quirks.md: conclusions are stored with their source
+docs/device-profiles.md §3: conclusions are stored with their source
 and reason, change is kept as old -> new, and a user's correction outranks
 every rule.
 """

@@ -4,8 +4,8 @@ The lossless manifest token.
 `/api/media/tidal/manifest/` is anonymous to LAN clients because a Cast device
 fetches it itself and carries no session cookie. With one Tidal login that was
 harmless; per user it is not, so the URL carries a minted token rather than a
-username, and the route redeems it for an account. Step 4 of
-docs/plans/tidal-per-user-auth.md.
+username, and the route redeems it for an account. See docs/speaker_sync.md,
+"One account per user".
 
 Both handlers — the main app's and the loopback listener a zone fetches over —
 are checked by AST for the same redemption, since neither can be driven without

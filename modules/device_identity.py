@@ -1,7 +1,7 @@
 """
 The device identity panel's model: what was decided per endpoint, from which
 source and why, and the user's confirmations and corrections
-(docs/plans/zmm-quirks.md §8).
+(docs/device-profiles.md §6).
 """
 from __future__ import annotations
 

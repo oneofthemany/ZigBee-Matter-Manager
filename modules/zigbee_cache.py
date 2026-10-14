@@ -149,7 +149,7 @@ def _init_schema():
         context="create idx_attr_hist_lookup"
     )
 
-    # Evidence for device recognition (docs/plans/zmm-quirks.md §4). One row
+    # Evidence for device recognition (docs/device-profiles.md §2). One row
     # per (endpoint, subject, source); endpoint 0 holds whole-device facts.
     # Timestamps are UTC, written by the caller, never DEFAULT now().
     _safe_execute(

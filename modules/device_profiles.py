@@ -202,7 +202,7 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
         }
         if ep_val.get("kind") in ("light", "switch"):   # endpoint-classification.md
             eps_out[str(ep_id)]["kind"] = ep_val["kind"]
-        if valid_metering(ep_val.get("metering")):     # plans/zmm-quirks.md §6
+        if valid_metering(ep_val.get("metering")):     # device-profiles.md §7
             eps_out[str(ep_id)]["metering"] = ep_val["metering"]
         if ep_val.get("actions") == "multistate":
             eps_out[str(ep_id)]["actions"] = "multistate"
@@ -329,7 +329,7 @@ SETTING_TYPES = {"bool": 0x10, "uint8": 0x20, "uint16": 0x21, "uint32": 0x23, "i
 
 
 def _normalise_zmm(z: Any) -> Dict[str, Any]:
-    """The ZMM entry block (docs/plans/zmm-quirks.md §6). Facts only; anything
+    """The ZMM entry block (docs/device-profiles.md §4). Facts only; anything
     malformed is dropped, never guessed."""
     if not isinstance(z, dict):
         return {}

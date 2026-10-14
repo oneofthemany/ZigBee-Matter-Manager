@@ -1,5 +1,5 @@
 """
-Inference operations for device learning (docs/plans/device-learning.md §5).
+Inference operations for device learning (docs/learning-a-device.md §5).
 
 Pure functions over the frames captured while the user carried out one step.
 Each returns proposals: a path in the entry, a value, a confidence and the

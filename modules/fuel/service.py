@@ -8,7 +8,7 @@ and modules/fuel/base.py — everything below this docstring is region agnostic.
 
 Adds postcode lookup, a Maps link per station, and a history snapshot of every
 query, because no source publishes an archive: query time is the only chance to
-record today's number. See docs/journeys.md and docs/plans/fuel_prices_region.md.
+record today's number. See docs/journeys.md, "Fuel prices".
 """
 
 from __future__ import annotations

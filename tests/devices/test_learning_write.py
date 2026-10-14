@@ -1,5 +1,5 @@
 """
-Write-and-revert (docs/plans/device-learning.md step 8): ZMM flips one
+Write-and-revert (docs/learning-a-device.md §4, try_write): ZMM flips one
 manufacturer toggle at a time while the user watches, and always puts it
 back: on the answer, on a timeout, or when the session ends.
 """

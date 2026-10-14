@@ -117,7 +117,18 @@ grouped under a tab per kind of step.
 
 **Review & save** (or **Edit its entry** outside a session) opens the entry
 editor: per endpoint, its type, name, what its power reading measures and
-whether it sends button presses; measurement scaling; and **blob tags**.
+whether it sends button presses; measurement scaling; its **attributes**;
+and **blob tags**.
+
+**Attributes** lists the device's own values (the `opple 0x…` and similar
+rows in its state): each with its last value and whether it can be set. Type
+a name to publish it under that name: as a setting if it can be set
+(it then moves from *Unnamed* to *Named* in Configuration), otherwise as a
+reading. **Divide by** turns the raw number into its unit (`1000` for a time
+held in milliseconds). Only the values the device sends by itself are listed
+at first; tick the box to see the ones it only lists, usually the maker's
+internals. To find which is which, change one in Configuration → Unnamed and
+watch what the device does, or use *Values I know*.
 
 Blob tags are values some makers (Aqara) pack into one status report. The
 table lists every tag the device has sent with its last value, so you can
@@ -141,10 +152,198 @@ addresses or file names. **Import** previews someone else's export for your
 model and saves it if you choose. A well-tested export can become a shipped
 entry in `zmm_quirks/`.
 
-### For developers
+---
 
-The design is in [`docs/plans/device-learning.md`](plans/device-learning.md)
-(steps, recipes, inference operations) and
-[`docs/device-profiles.md`](device-profiles.md) (entries, overlays, battery,
-the unnamed-attribute controls). Recipes are JSON in `learning_recipes/`; a
-user's own go in `data/learning_recipes/`.
+## How it works (for developers)
+
+Code cites these sections as `learning-a-device.md §N`. Entries, overlays,
+battery sources and the unnamed-attribute controls are in
+[`device-profiles.md`](device-profiles.md).
+
+Learning lets anyone teach ZMM a device end to end (what each endpoint is,
+what it measures and how it is scaled, what its buttons and settings do) and
+turn the result into their own entry for the model. It is guided, evidence
+based, and driven by data: covering a new kind of device means writing a
+recipe, not code.
+
+### 1. The pieces
+
+| Piece | Where | Role |
+|---|---|---|
+| Sessions | `modules/device_learning.py` | the steps a device gets, the raw frames it sends while learned, each step's proposals |
+| Inference operations | `modules/learning_ops.py` | pure functions from what a step captured to proposals (§5) |
+| Recipes and loader | `learning_recipes/*.json`, `modules/learning_recipes.py` | which steps a kind of device gets, as data (§3) |
+| Wizard | `static/js/modal/learning.js` (Identity tab) | Simple and Advanced views, review, save, export, import |
+| Entry editor | `static/js/modal/quirk_editor.js` | a form over the entry, previewed through the normaliser |
+| Evidence store | `modules/device_facts.py`, `modules/device_decisions.py` | facts by source; decisions with reasons |
+| Cached attributes | `modules/vendor_cache.py` | what zigpy already holds, surfaced as evidence and state |
+| Discovery | `modules/probe_lite.py` | probe-lite at join (mains), `discover_vendor` on demand |
+
+Frames are captured in `ZigbeeService.handle_message` (reports and read
+responses, before any handler scales them). A step also reads the attributes
+its operations need at its start and end, since a device may not report
+within the window.
+
+### 2. The flow
+
+1. **Find everything** (`discover.find_all`): discovery of the maker's
+   clusters, a read of every attribute (unlisted ones first, since nothing
+   else reads them), then the write probe (§4) for the attributes the device
+   reports but does not list. Recorded as `answered` facts.
+2. **Experiments**, one at a time, chosen by the device's recipes. Each
+   captures frames while the user acts (or a window passes), then runs its
+   operations. The user sees what was inferred and why, and accepts, redoes
+   or skips it.
+3. **Review**: the entry saving would store, built from the current entry,
+   gaps filled from the evidence draft (`modules/quirk_draft.py`), learned
+   results on top; with a preview of what changes (EP kinds and names,
+   readings, device type, settings, blob tags, power scaling).
+4. **Save** as the user's profile for the model, laid over a shipped entry of
+   the same id. Every save archives the previous version; rollback restores
+   it, or with none returns to the shipped entry.
+5. **Share** (optional): export, import (§8).
+
+Examples for a double socket:
+
+| Instruction | Inference | Settles |
+|---|---|---|
+| "Press socket 1's button once, then twice" | which EP sent the press; the value per press type | `actions`, press names |
+| "Plug a kettle into socket 1, enter its rating" | which EPs' power moved; raw ÷ rating → a power of ten | `metering` per EP, `measurements.active_power` |
+| "Repeat for socket 2 and USB" | as above, then the metering map across all tests | whole-device vs per-socket readings |
+| "Change the LED setting on the device" | which writable maker's attribute changed, old → new | a named `setting` with its values |
+| *(during the kettle step)* | blob tags whose value tracks a known reading | `struct_tags` |
+
+### 3. Recipes
+
+Shipped in `learning_recipes/`, plus the user's own in
+`<data>/learning_recipes/` (the same `id` replaces the shipped one). A device
+gets every recipe whose `applies_when` it matches.
+
+```jsonc
+{
+  "id": "metered_outlet",                  // [a-z][a-z0-9_]*
+  "title": "Power metering",               // the Advanced view's tab
+  "applies_when": {                        // every condition given must hold
+    "in_clusters_any": ["0x0B04"],         // an EP serves one of these
+    "not_in_clusters_any": [],             // no EP serves any of these
+    "kind": "switch",                      // an EP classified light or switch
+    "device_types_any": [],                // an EP declares one of these types
+    "vendor_cluster": false,               // an EP has a maker's cluster (0xFC00+)
+    "battery_powered": false               // the node descriptor says battery
+  },
+  "steps": [{
+    "id": "switch_test",
+    "name": "Load test",                   // shown on the step's card
+    "level": "simple",                     // simple (default) | advanced
+    "for_each": "switch_endpoint",         // or light_endpoint, endpoint_with:0xXXXX
+    "instruction": "Plug a known load into {label} ...",   // {label}: the EP's name
+    "inputs": [{"name": "rating_w", "label": "Its rating (W)", "type": "number", "min": 1}],
+    "mode": "observe",                     // §4
+    "window_s": 90,                        // 5–900
+    "watch": {"cluster": "0x0006", "attr": "0x0000"},      // optional, for which_endpoint_changed
+    "expect_kind": "switch",               // which_endpoint_changed: what the EP drives
+    "expect": null,                        // occupancy_attribute: occupied | clear
+    "infer": [{"op": "power_follows_switch", "yields": "endpoints.*.metering"}]
+  }]
+}
+```
+
+A recipe only orders instructions and names operations; it cannot run code.
+Loading rejects unknown operations, malformed fields and windows out of range,
+and each proposal must fall inside its step's `yields`.
+
+### 4. Step modes
+
+| Mode | What happens |
+|---|---|
+| `observe` (default) | frames are captured while the user acts; the operations run on Done or when the window ends |
+| `history` | concluded from the device's recorded history; nobody acts |
+| `lookup` | concluded from evidence already held and the user's inputs |
+| `try_write` | ZMM flips one writable toggle while the user watches, and puts it back on the answer, after a timeout, or when the session ends; each put-back is read to confirm it. Only `confirmed_write` may run here |
+| `discover` | the device is asked for its maker's attributes (types, access) and they are read |
+| `write_probe` | each reported-but-unlisted whole-number or on/off attribute is read, written back as read, and read again: accepted is recorded `RW`, refused `R`, silence nothing |
+| `find_all` | `discover` then `write_probe`, led by a plain summary |
+| `summary` | built by the session from other steps (the metering map) |
+
+`discover`, `write_probe` and `find_all` run in the background, since the
+device answers over many seconds: the step shows as running, and its result
+appears when the device has answered. They have no operations.
+
+`simple` steps make up the wizard's default view, in the order Find
+everything, the device kind's demonstrations, Values I know. `advanced` steps
+(the parts of Find everything, history, change, set or flip a setting) appear
+in the Advanced view.
+
+### 5. Inference operations
+
+Pure functions over the frames a step captured (and its inputs), each
+returning proposals `(path, value, confidence, evidence)`. A proposal with no
+path is a note.
+
+| Operation | From | Proposes |
+|---|---|---|
+| `which_endpoint_changed` | the On/Off (or `watch`) attribute that changed, per EP | the EP the action belongs to, as `expect_kind` |
+| `press_signature` | the value each EP's Multistate Input sent for a demonstrated press | `actions: multistate`, a press name per value |
+| `power_follows_switch` | power while the step's EP was switched on and off | notes: did its reading rise and fall, and did another EP show the load |
+| `which_endpoints_moved` | per-EP power change during a load | one EP moved → `self`; all alike → one `device_total`, the rest `none` |
+| `scale_from_known` | raw power ÷ the known rating | the power of ten within tolerance, refused if the result is impossible |
+| `metering_map` (summary) | every load test: which EPs moved for which socket | per EP: `self`, `device_total`, `none` or `measures:<eps>` |
+| `attribute_that_toggled` | writable maker's attributes, old → new | a setting with its two values named |
+| `attribute_that_became` | writable maker's attributes against the number the user set | a numeric setting and its power-of-ten scale |
+| `attribute_that_tracked` | recorded history: maker's attributes against known states | a numeric setting whose every change matched a known state; fewer than three changes, or a read-only one, is a note |
+| `occupancy_attribute` | the two-state reading that flipped as the user walked in (`expect: occupied`) or out (`clear`) | that attribute as `occupancy`, with the value meaning occupied, and `device_type: motion_sensor`. One first seen in the step is offered at lower confidence; several flipping together are all offered, for the user to pick one |
+| `attributes_holding_known` | values the user knows (`name: number` pairs or a JSON object) against each maker's attribute's last value | the attribute holding each, with its scale: a setting if it can be written, else a named reading. Only where one name fits one attribute, that attribute fits no other name, and the raw value is at least 100; the rest are listed with their candidates |
+| `correlate_blob_tags` | blob tag values against known readings in the same step | `struct_tags` for tags that match |
+| `confirmed_write` | a `try_write` the user said changed the device | the setting the user named, with its two values |
+
+### 6. Evidence, review and save
+
+An accepted proposal is recorded as a `learned` fact, ranked just below a
+`user` correction: the user's own device, demonstrated, outranks a curated
+entry for the model. Nothing applies to the device until the review is saved.
+
+The editor (*Edit its entry*, or *Review & save*) works on the same entry
+the JSON box shows. Its Attributes section lists the device's own attributes
+outside the blobs (`device_learning.vendor_attributes`): naming one makes it
+a setting when it can be written, else a reading. Its Blob tags section lists
+every tag of the device's latest status blobs with its last value
+(`device_learning.blob_tags`). Every edit is previewed through the normaliser
+(`/profile/preview`), so what is shown is what saving stores.
+
+### 7. Safety
+
+- **Observe first.** Steps watch what the device does while the user
+  operates it. Steps that write say so: `try_write` flips one toggle and puts
+  it back; `write_probe` writes only the value it has just read.
+- **Never an action.** `NEVER_WRITE` lists attributes that start something
+  (an Aqara valve's calibration); no step writes them.
+- **Nothing applies until Save.** Learned facts show as proposals.
+- **Bounds hold.** A learned power scaling that gives more than the outlet
+  can carry is refused, with the reason.
+- **Scope.** Saving writes a profile for the exact model and maker; profile
+  lookup never applies it to another maker's device.
+- **Undo.** Every save keeps the previous version; rollback restores it and
+  re-announces the device.
+- **Sleepy devices.** Steps that ask the device say to wake it first; one
+  that gets no answer says so and can be run again.
+
+### 8. Sharing
+
+Export (`zmm-entry/1`): the entry plus which experiments settled which
+fields, and the firmware seen, with IEEE addresses and probe file names
+stripped. Import: validated by the entry normaliser, previewed like a save,
+stored as the user's profile. Sharing is a file; promotion to `zmm_quirks/`
+is a reviewed pull request.
+
+### 9. Not covered yet
+
+- Devices that speak in commands or Tuya datapoints rather than attribute
+  reports: learning captures reports and read responses only.
+- Thermostats and covers: they need an operation that correlates a reading
+  with a change the user makes.
+- Experiments ZMM runs itself (change a report interval and time the
+  reports) to name settings no one can change on the device.
+- User-written recipes have no editor in the UI: they are files.
+- Importing an export replaces the user's profile for the model (after a
+  preview); two exports for the same model are not merged or compared.
+- Firmware differences: entries record `verified_fw`, nothing compares it.

@@ -9,7 +9,7 @@ Tidal breakage never affects Cast, WiiM or radio. See docs/speaker_sync.md.
 Two classes: ``TidalAccount`` is one ZMM user's login — their session, their
 caches, their credential file — and ``TidalSource`` is the registry of them
 that the controller actually registers, since it addresses one source per
-media type. See docs/plans/tidal-per-user-auth.md.
+media type. See docs/speaker_sync.md, "One account per user".
 """
 from __future__ import annotations
 
@@ -1097,7 +1097,7 @@ class TidalSource(SourceProvider):
     Every caller names a user, save the handful that cannot — a rule written
     before a step carried an owner, and the four bound methods below — which
     take ``default_account()`` explicitly rather than by falling through to it.
-    See docs/plans/tidal-per-user-auth.md.
+    See docs/speaker_sync.md, "One account per user".
     """
     source = "tidal"
     LIBRARY_KINDS = TidalAccount.LIBRARY_KINDS

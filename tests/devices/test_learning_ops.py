@@ -1,6 +1,6 @@
 """
 The inference operations turn what a user did into proposals, with the
-evidence in words (docs/plans/device-learning.md §5).
+evidence in words (docs/learning-a-device.md §5).
 """
 
 from __future__ import annotations

@@ -4,8 +4,8 @@ Ownership travelling with the playback.
 A Tidal stream URL is re-resolved long after the request that queued it — on
 auto-advance, on a restart resume, by the zone engine, by the Cast lyrics
 receiver — and none of those have a principal to ask. So the owning user rides
-on the item, and every resolution names it. Step 2 of
-docs/plans/tidal-per-user-auth.md.
+on the item, and every resolution names it. See docs/speaker_sync.md,
+"One account per user".
 
 The zone engine itself is not exercised here: modules.media.cast_sync imports
 FastAPI at module scope, which is not installed on a dev box. What feeds it is

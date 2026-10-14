@@ -92,8 +92,8 @@ ones with the same id.
 
 ## ZMM entries
 
-A profile carrying the `zmm` block is a ZMM quirk entry
-(`docs/plans/zmm-quirks.md` §6). Shipped entries live in `zmm_quirks/` beside
+A profile carrying the `zmm` block is a ZMM quirk entry (what it may hold
+and how one is written: §4 below). Shipped entries live in `zmm_quirks/` beside
 the code and load as the `zmm` tier: they override community profiles, and a
 user's own profile overrides them. Anything saved through the API is a user
 profile, whatever its `meta.source` says. A `zmm` entry that names its
@@ -203,4 +203,190 @@ entry setting or a handler option, is a control under its id
 settings form shows them under their own *Unnamed* tab and sends only the
 controls a person changed. Naming one in the entry turns it into an ordinary
 setting, and it leaves the Unnamed tab.
+
+---
+
+# Device recognition
+
+How ZMM decides what a device is and what it can do: from evidence it has
+gathered and weighed itself, with per-model knowledge (ZMM entries) authored
+from its own probes. zigpy stays the Zigbee stack and zhaquirks stay applied;
+both are sources of evidence, not the authority on what a device is. Code
+cites these sections as `device-profiles.md §N`.
+
+## 1. Principles
+
+1. **Evidence, not identity.** A model match adds knowledge; it never replaces
+   what the device itself showed. A device with no entry still gets sound
+   decisions from its own evidence.
+2. **Every fact carries its source**, ranked (§2). A weak source never
+   overrides a strong one.
+3. **Function from function-specific evidence**: metering, colour, dimming,
+   reports seen. Never a vendor cluster, never a self-declared device type on
+   its own.
+4. **Ask the device.** A capability that depends on an attribute exists only
+   if the attribute answered. UNSUPPORTED is a fact, not a default.
+5. **Watch the device.** Reports seen after join confirm or correct
+   structure: which EP carries power, which gang sends presses.
+6. **Decide once, store it, everyone reads it**: discovery, the Control tab,
+   capabilities, groups, automations.
+7. **Decisions are visible and correctable.** Each has a reason. A correction
+   is stored as a fact and can become an entry.
+8. **Change is a diff.** Re-deriving never silently replaces: old → new is
+   recorded and logged.
+9. **Facts per endpoint and per capability**, so knowledge composes: a
+   firmware variant with one extra EP keeps everything it shares with an entry.
+
+## 2. Evidence
+
+A fact is `(ieee, endpoint, subject, source, value)` with when it was first
+and last seen, in `device_facts` (`modules/device_facts.py`), stored in the
+zigbee cache DB and written through its write queue, never from the event
+loop, and only when the value changed. Subjects name what is known:
+`cluster_in:0x0B04`, `attr:0xFCC0/0x0142@0x115F` (an attribute that answered,
+with its type, access and value), `attr_unsupported:...`,
+`reports:0xFCC0/0x0142@0x115F` (an attribute seen in a report, with its last
+value and whether it was ever non-zero), `kind`, `label`, `metering`. The
+`@0x115F` suffix marks an attribute read with a manufacturer code, since the
+same id can mean different things with and without one.
+
+Sources, strongest first:
+
+| Source | Learned by | Example |
+|---|---|---|
+| `user` | confirmed or corrected in the Identity panel | "EP3 is the USB port" |
+| `learned` | a result demonstrated on this device (learning-a-device.md §6) | presence is `0xFCC0/0x0142` |
+| `zmm` | a ZMM entry for the model | aeu002 EP3 is a switch |
+| `observed` | a report seen from the device | EP3 reported active power 8.2 W |
+| `answered` | a discovery or read the device answered | `0xFCC0/0x0201` is readable |
+| `declared_quirk` | the zhaquirks replacement applied | `OppleClusterLight` on EP1 |
+| `declared_device` | the device's own descriptors | device type `0x0000` |
+
+Rank is per subject where it matters: a declared *cluster* is solid evidence
+the cluster exists; a declared *device type* is the weakest fact held.
+
+Where facts come from:
+
+- **Declared**: at join, and again at every start (`record_declared`), so
+  quirk or firmware changes are picked up.
+- **Answered**: probe-lite (`modules/probe_lite.py`) runs discovery only at
+  every join and once for devices never probed: mains devices, one at a time,
+  a start-up backfill that waits two minutes and spaces devices five seconds
+  apart. Battery devices are asked on demand by the learning step *Find
+  everything*, which also reads attributes a device reports but does not
+  list. Any cluster discovery a person runs also records answered facts, and
+  a one-off backfill turned older discoveries into facts.
+- **Observed**: `modules/device_observer.py` is fed every received frame and
+  records an attribute's first report on an EP each run, and its first
+  non-zero value. At start-up, `modules/vendor_cache.py` records every
+  maker's attribute zigpy already holds.
+- **Learned** and **user**: the learning wizard and the Identity panel.
+
+*Vendor-scoped* means a manufacturer code **or** a cluster id of 0xFC00 and
+up (`device_facts.vendor_scoped`): some makers' clusters answer only without
+a code.
+
+## 3. Rules and decisions
+
+A rule reads facts and gives `(subject, value, reason)`. Every decision is
+recorded in `device_decisions` (`modules/device_decisions.py`) with its rule,
+reason and previous value, written only when the conclusion changes. The
+order is always: the user's correction, then a ZMM entry or profile, then the
+rules. Consumers read the live classification; the table is its record.
+Decisions are re-derived on announce, after a correction, when an entry
+changes and at start-up, never on a timer.
+
+| Decides | From | Where |
+|---|---|---|
+| primary function | what the EP's clusters do (thermostat, cover, lock come before light or switch) | `modules/endpoint_kind.py` |
+| light or switch, per EP | load clusters, a dimmable type with Level (endpoint-classification.md) | `modules/endpoint_kind.py` |
+| device class | one decision for the whole device: functions, IAS zone type, sensing clusters, handler capabilities | `modules/device_class.py` |
+| metering scope, per EP | which EPs *report* power under load, not which declare 0x0B04 (§7) | `handlers/power.py` |
+| scaling | the device's answered scaling attributes; never a silent 1 (§7) | `handlers/power.py` |
+| actions | Multistate Input declared and presses seen | entry or learning |
+| settings | maker's attributes that answered or were reported, named by an entry (§4) | `modules/zmm_settings.py` |
+| power source | the node descriptor | `device_class.is_mains_powered` |
+
+Nothing downstream turns "neither light nor switch" into a switch.
+
+## 4. ZMM entries
+
+An entry is a profile with the `zmm` block (format in *ZMM entries* above).
+It holds facts only: behaviour (Aqara `0xF7` structs, Tuya datapoints) stays
+in handlers and is referred to by name. Nothing is copied from zhaquirks or
+Zigbee2MQTT; every value is traced to one of ZMM's own probes or a person's
+confirmation (`zmm.evidence`). A field in an entry is a `zmm` fact: it
+outranks the device's own declarations but loses to a person's correction on
+that device.
+
+- **Measurements.** An entry's scaling outranks the device's own; `null`
+  marks a measurement the device lacks, so it is never configured.
+- **Blob tags.** `zmm.struct_tags` relabels or drops the Aqara `0xF7`/`0xDF`
+  tags for the model: the tag layout differs per model, so the global map is
+  only a fallback. A standard cluster that measures the same thing (energy on
+  0x0702; power, voltage, current on 0x0B04 where the EP has them) always
+  outranks the blob, and on a battery device the map's mains and relay tags
+  are never used.
+- **Settings.** An entry's settings are offered on the EPs where the device
+  listed the attribute in discovery or reported it, written raw with the
+  entry's manufacturer code. A setting may carry `scale`, `min`, `max`,
+  `step` and `unit`, and its id is also a command (`zmm_settings.apply_command`):
+  a caller can set `child_lock` on any device whose entry names one, and
+  `device.supports_setting(name)` says whether it can. A report of the
+  attribute is filed under the setting's id.
+- **Readings.** An attribute mapping names a raw value; the name follows the
+  raw value on every report, and a binary device class yields true or false.
+
+## 5. Drafting an entry
+
+`modules/quirk_draft.py` drafts an entry from a device's evidence (*Draft
+ZMM entry* in the Identity tab): its EPs with their decided kinds, names and
+metering, Multistate actions, answered measurements and scaling, and the
+probes behind it. Only what the evidence supports goes in; anything it
+cannot settle is left out. A device with no On/Off EP is drafted as
+`generic`, which pins nothing. Writable maker's attributes are returned
+beside the draft as candidates. A person settles the rest by testing the
+device (learning-a-device.md) and saves it as their profile; a proven one is
+exported and added to `zmm_quirks/`.
+
+## 6. The identity panel
+
+The device modal's *Identity* tab (`static/js/modal/identity.js`,
+`GET/POST /api/device/{ieee}/identity`): per EP, each decision with its value,
+source and reason, and *confirm*, *correct* and *reset*. A correction writes a
+`user` fact and re-derives; when a re-derive changes a decision the panel
+shows old → new. EP names set here label the EP's Home Assistant entities. HA
+entity changes go through the retract-then-publish path. The learning wizard
+and the entry editor live in the same tab.
+
+## 7. Scaling and metering scope
+
+Scaling (`handlers/power.py`): the entry's, else the device's own (a fresh
+read, else zigpy's cached value, so a restart keeps it), else the handler's
+default, each recorded as a decision. The rules cannot tell a per-socket meter
+from a whole-device one, so the metering rule records `unknown` with the EPs
+that showed power; the scope (`self`, `device_total`, `none`, or
+`measures:<eps>` for a reading that covers other EPs) comes from the user
+after a load test, or from an entry, and then decides which EPs publish power
+and what the device total is.
+
+## 8. Model-name quirks give way to entries
+
+Older code recognised devices by model string. Each such rule now runs only
+where no entry says otherwise: the Philips SML controller quirk only where no
+entry marks a controller EP (`role: controller`); the Tuya presence guess and
+`TuyaDeviceTypeDetector`'s model strings only where no entry describes the
+device. An entry that names its maker never matches another maker's device,
+even through the store's model-only fallback.
+
+## 9. Limits and risks
+
+- **Firmware differences** are not handled: entries record `verified_fw`,
+  nothing compares it.
+- **Sleepy devices** cannot be interviewed at length: probe-lite skips them,
+  and they rely on observed traffic, entries, and *Find everything* when a
+  person wakes them.
+- **Network load**: probe-lite is discovery only, one device at a time.
+- **DB writes** go through the zigbee cache's write queue, batched per device
+  and only on change; the DB open itself stays off the event loop.
 

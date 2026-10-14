@@ -865,55 +865,15 @@ ai:
 
 ### Multi-region fuel prices
 
-The fuel subsystem was written UK-first and the assumption reached every layer:
-`E10/E5/B7/SDV` grade codes, a GBP-shaped pence-detection heuristic,
-`postcodes.io` for geocoding, a history table with no region column, and `p` /
-`Price/L (p)` hardcoded in the Drive tab and the Android Auto screen. Outside the
-UK the Drive tab is simply empty.
+Done. The region is a setting (`location.country`, and `location.subdivision`
+for Australia): fuel lookups, price history and the Android Auto screen run
+against that region's own source, in its currency, grades and volume unit.
+Supported: 🇬🇧 GB, 🇩🇪 DE, 🇪🇸 ES, 🇫🇷 FR, 🇮🇹 IT, 🇦🇺 NSW, QLD and WA, and
+🇺🇸 US, which has no free station-level feed and so shows an honest area
+average instead of a station list.
 
-The work makes the region a **setting**: you pick your country, and fuel lookups,
-history and the car screen run against that region's own data source, in its
-currency, grades and volume unit.
-
-**Landed so far**
-
-- `modules/fuel/` package with a `FuelProvider` ABC and two reusable bases — `BulkSnapshotProvider` (fetch the country, filter locally with haversine) and `RadiusQueryProvider` (ask per location, behind a coordinate-bucketed cache and a minimum-interval limiter)
-- Both UK sources ported onto it as ordinary providers, plus a region registry and `GET /api/fuel/regions`, `GET`/`POST /api/fuel/region`
-- The `location:` config block, with coordinate fallback to `weather.*` so existing installs keep working unedited
-- A units block (`currency`, `symbol`, `volume`, `display_scale`, `decimals`) and `station_level` on the API responses
-- The price-history schema rekeyed to `(region, site_id, fuel, feed_day)` with a `currency` column — because numeric site IDs from France, Spain, Italy and Germany would otherwise collide, and a median across mixed currencies is not a number that means anything
-- Geocoding moved off `postcodes.io` onto the hub's own multi-country `Geocoder`, whose per-country postal datasets accept the French and German postcodes the old two-to-eight-alphanumeric validation rejected
-- The Drive tab de-hardcoded: grades, attribution and an `Intl.NumberFormat` price formatter all come from the API's units block rather than assuming pence
-
-**Still to come**
-
-| Region | Source | Mode | Auth |
-|---|---|---|---|
-| 🇬🇧 GB | Fuel Finder, then retailer feeds | bulk | OAuth client credentials | 
-| 🇩🇪 DE | Tankerkönig | radius, ≤25 km | free UUID key (1 req/min, CC BY 4.0) |
-| 🇫🇷 FR | data.economie.gouv.fr *flux instantané v2* | bulk | none |
-| 🇪🇸 ES | MINETUR EstacionesTerrestres | bulk | none |
-| 🇮🇹 IT | MIMIT Osservaprezzi | bulk | none |
-| 🇦🇺 AU-NSW | FuelCheck v2 | radius | OAuth + apikey |
-| 🇦🇺 AU-QLD | QLD Fuel Price Reporting | bulk | free key |
-| 🇦🇺 AU-WA | FuelWatch | bulk | none (next-day prices) |
-| 🇺🇸 US | EIA petroleum prices | **area average** | free key |
-
-🇬🇧 GB is the only region registered today; the rest are adapters against the
-existing contract.
-
-The **United States is modelled honestly**: there is no free station-level US
-price feed, and the EIA API publishes weekly state and regional averages only.
-The US provider therefore reports `station_level: False` and the UI shows a
-single "average in your area" card instead of a station table. Inventing
-stations from an average would be worse than showing the average.
-
-The remaining client work is the **Android Auto screen**, which still hardcodes
-pence and the four UK grades (`FuelScreen.kt`, `Prefs.kt`). It can land after the
-adapters, because the `postcode` query parameter is kept as an alias for `q` —
-so the shipped app keeps working throughout.
-
-Full plan, including the verification gates: **[docs/plans/fuel_prices_region.md](docs/plans/fuel_prices_region.md)**.
+How it works, every region's source and quirks, and how to add one:
+**[docs/journeys.md → Fuel prices](docs/journeys.md#fuel-prices)**.
 
 ### Driver attribution
 
@@ -1042,7 +1002,6 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/frames.md](docs/frames.md) | Frames — auto-generated dashboards |
 | [docs/chambers.md](docs/chambers.md) | Chambers — the one room registry shared by devices, heating and the floor plan |
 | [docs/journeys.md](docs/journeys.md) | Drive tracking, trips, driving behaviour and fuel |
-| [docs/plans/fuel_prices_region.md](docs/plans/fuel_prices_region.md) | Multi-region fuel prices — the full plan |
 | [docs/beekeeper.md](docs/beekeeper.md) | Beekeeper — the built-in DNS ad/tracker blocker |
 | [docs/presence_detection.md](docs/presence_detection.md) | Presence — users, places and RSSI zones |
 | [docs/place-search.md](docs/place-search.md) | Local-first postcode and town lookup |

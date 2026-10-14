@@ -1,5 +1,5 @@
 """
-Step 3 of docs/plans/zmm-quirks.md: the identity panel's model shows each
+docs/device-profiles.md §6: the identity panel's model shows each
 endpoint's decisions with source and reason, and a user's confirmation or
 correction is stored, applied everywhere and resettable.
 """

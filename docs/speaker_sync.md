@@ -814,10 +814,73 @@ Hard-isolated: `tidalapi` is imported lazily and every failure is swallowed, so 
 Tidal breakage never affects Cast, WiiM or radio. The library is blocking
 (`requests`), so every call is wrapped in `asyncio.to_thread`.
 
-The session persists to `data/media/tidal_session.json` — a token rather than
-user-edited config, hence not in `config.yaml`. Login is a device/OAuth flow: the
-UI is handed a `link.tidal.com` URL while a background task waits for
-authorisation.
+Each ZMM user links their own Tidal account (see *One account per user*
+below). A login is a token rather than user-edited config, hence not in
+`config.yaml`. Login is a device/OAuth flow: the UI is handed a
+`link.tidal.com` URL while a background task waits for authorisation.
+
+#### One account per user
+
+ZMM is multi-user, so Tidal is too: whoever logs in links *their* account,
+and nobody's playback runs on someone else's subscription.
+
+`TidalSource` is a registry of `TidalAccount`s, one per linked user, each with
+its own session, login flow, favourites cache and quality-swap lock. Logins
+are stored as `data/media/tidal/<username>.json`, mode 0600. Nothing below the
+source changed: the controller, queue and players know only items and URLs.
+
+**Ownership travels with the playback.** Most Tidal work happens with no
+request in scope: queue auto-advance, restart resume, a zone's timeline,
+radio top-up, Cast lyrics, a speaker fetching a manifest, an automation rule.
+So every `MediaItem` carries `owner`, the ZMM user whose account it resolves
+against, stamped where items are made (`MediaService.tidal_items`), and every
+resolver, extender and lyrics call passes it through. It fails closed: an item
+with no owner, or an owner with no linked account, does not play. It never
+falls back to whichever account is logged in.
+
+**Routes act for the caller.** Every Tidal endpoint resolves the account from
+the request's principal; no account answers "logged out", which the Media page
+shows as *link your Tidal*. Favourites follow the viewer, not the item's
+owner: the heart on the now-playing card is your own library, and hearting a
+track a housemate queued adds it to yours. `GET /api/media/tidal/accounts`
+(admin) lists who has linked, by name and state only, never tokens.
+
+**Zones and rules store their owner, set by the server.** A zone's saved
+source is stamped with the caller's name when it is set, in
+`resolve_zone_media()`; `owner` is deliberately not a field the client can
+send, or an authenticated user could start a zone on a housemate's
+subscription. An automation step that plays Tidal stores `tidal_owner`,
+written from the principal who saves the rule: over whatever the body said on
+create, and only into an empty step on update, so editing someone else's rule
+does not move which account it plays on. A rule with no owner (written before
+this) resolves to the default account (`media.tidal.owner`); one whose owner
+was deleted or unlinked fails with "Tidal account for <user> is not linked".
+
+**The manifest URL names a token, not a user.** Cast speakers fetch the DASH
+manifest themselves and cannot carry a login, so the route is open on the
+LAN. Its URL is `/api/media/tidal/manifest/<token>.mpd`: a 16-byte random
+token minted at resolve time, mapped to (owner, track, time), valid for 600
+seconds (Cast may fetch again mid-track), with the live set capped at 256. An
+unknown or expired token is a 404. The manifest is served twice, by
+`routes/media_routes.py` for Cast and by `modules/media/device_http.py` for a
+zone's loopback fetch, and both redeem the token.
+
+**Upgrading from one shared login.** At start, a legacy
+`data/media/tidal_session.json` is adopted for one owner and renamed into the
+new directory: `media.tidal.owner` if set, else the sole enabled admin if
+there is exactly one, else `~unassigned`, a name outside the username
+charset that no account or request can collide with. A working single-user
+install therefore keeps working through the upgrade; an admin claims an
+unassigned login by setting `media.tidal.owner`. Adoption is skipped once any
+per-user file exists (a legacy file beside them came from a restored backup)
+and is a rename, so one login is never held twice. The default account, used
+only where nothing names a user, is the configured owner, else the only
+linked account, else the unassigned one: two linked accounts with no owner
+set is ambiguous and never picks one.
+
+Backups include `data/media/tidal/`, so a backup now carries every user's
+Tidal refresh token. `media.tidal.quality` stays a hub-wide setting; an
+account without lossless falls back to AAC on its own.
 
 #### The library, and why it pages
 

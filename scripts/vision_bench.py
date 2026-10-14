@@ -1,4 +1,4 @@
-"""Phase 0 of docs/plans/vision-enrolment.md: how fast the enrolment models run
+"""The benchmark behind docs/vision.md, "Cost on the hub": how fast the enrolment models run
 on this machine, and how well faces match on the household's own pictures.
 Not product code. Needs numpy, onnxruntime, ai-edge-litert and ffmpeg.
 
@@ -30,7 +30,7 @@ from vision.faces import SFace, YuNet, align, measure as pose, resize, sharpness
 _ZOO = "https://github.com/opencv/opencv_zoo/raw/47534e27c9851bb1128ccc0102f1145e27f23f98/models/"
 _CORAL = "https://raw.githubusercontent.com/google-coral/test_data/104342d2d3480b3e66203073dac24f4e2dbb4c41/"
 
-# name -> (url, sha256). YuNet MIT, SFace Apache-2.0, Coral Apache-2.0: docs/plans/vision-enrolment.md §1.
+# name -> (url, sha256). YuNet MIT, SFace Apache-2.0, Coral Apache-2.0: docs/vision.md, Models.
 MODELS = {
     "yunet.onnx": (_ZOO + "face_detection_yunet/face_detection_yunet_2026may.onnx",
                    "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0"),

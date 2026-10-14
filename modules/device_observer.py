@@ -1,6 +1,6 @@
 """
 Passive observation of what each endpoint actually reports
-(docs/plans/zmm-quirks.md §3.5, §4).
+(docs/device-profiles.md §1, §2).
 
 Fed every received frame by ZigbeeService.handle_message, so it sees reports
 whichever handler (if any) consumes them. Only Report Attributes frames are

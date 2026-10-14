@@ -1,5 +1,5 @@
 """
-Step 5 of docs/plans/zmm-quirks.md: ZMM entries (the format, where they load
+docs/device-profiles.md §4: ZMM entries (the format, where they load
 from and what they override), the shipped lumi.plug.aeu002 entry, and the
 draft generator that starts one from a device's evidence.
 """

@@ -1,6 +1,6 @@
 """
 Probe-lite: attribute discovery at join, recorded as `answered` facts
-(docs/plans/zmm-quirks.md §9 step 4).
+(docs/device-profiles.md §2).
 
 Discovery only: each input cluster's attribute list with access flags, plus
 manufacturer-scoped attributes on vendor clusters (0xFC00+). No reads, no

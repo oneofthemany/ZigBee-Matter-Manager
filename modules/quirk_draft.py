@@ -1,6 +1,6 @@
 """
 Draft a ZMM entry from a device's evidence and decisions
-(docs/plans/zmm-quirks.md §6, §7).
+(docs/device-profiles.md §4, §5).
 
 Only what the evidence supports goes in; anything it cannot settle is left
 out, never guessed. Writable manufacturer attributes are returned beside the

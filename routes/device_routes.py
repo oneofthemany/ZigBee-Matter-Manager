@@ -320,7 +320,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
 
     @app.get("/api/device/{ieee}/identity")
     async def device_identity(ieee: str):
-        """Per-endpoint decisions with their source and reason (zmm-quirks.md §8)."""
+        """Per-endpoint decisions with their source and reason (device-profiles.md §6)."""
         from modules.device_identity import identity
         svc = get_zigbee_service()
         if ieee not in svc.devices:
