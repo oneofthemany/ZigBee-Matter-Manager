@@ -135,7 +135,21 @@ reading. Then open **Details** and say what kind of value it is:
 - **On / off**: a switch, or for a reading, true or false.
 
 A setting also takes a label and a description; a reading takes its Home
-Assistant class (`temperature`, `occupancy`…). Once named, an attribute's raw
+Assistant class (`temperature`, `occupancy`…). Under *What ZMM asks of the
+device*:
+
+- **Report it when it changes**: ZMM configures the device to send the value
+  itself: at most every *n* seconds (0 for at once), at least every *n*
+  seconds even when nothing changed (so a missed change corrects itself), and
+  only when it moves by at least the amount given.
+- **Read it when the device joins**: for a value the device does not send
+  until something asks.
+
+Both are sent when the device joins and again when you save.
+
+**Actions** are one-shot commands the device takes as a write (restart, start
+learning): a name, the attribute, its type and the value written. Each
+becomes a button on the device's Control tab. Once named, an attribute's raw
 `opple 0x…` row disappears from the device's attribute list: the reading
 shows under its name, a setting under Device Settings.
 

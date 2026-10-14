@@ -230,12 +230,14 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
             w_attr = _to_int(w.get("attr"))
             if w_ep is None or w_cl is None or w_attr is None:
                 continue
+            w_mfr = _to_int(w.get("mfr"))
             norm_writes.append({
                 "ep":      w_ep,
                 "cluster": f"0x{w_cl:04X}",
                 "attr":    f"0x{w_attr:04X}",
                 "value":   w.get("value"),
                 "type":    w.get("type") or None,
+                **({"mfr": f"0x{w_mfr:04X}"} if w_mfr else {}),
             })
         actions_out.append({
             "id":      str(a.get("id") or f"action_{len(actions_out)}"),
@@ -259,15 +261,38 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
         at = _to_int(r.get("attr"))
         if ep is None or cl is None or at is None:
             continue
-        reporting_out.append({
+        num = lambda k, default: int(r[k]) if isinstance(r.get(k), (int, float)) \
+            and not isinstance(r.get(k), bool) and 0 <= r[k] <= 0xFFFF else default
+        row = {
             "ep":      ep,
             "cluster": f"0x{cl:04X}",
             "attr":    f"0x{at:04X}",
-            "min":     int(r.get("min") or 30),
-            "max":     int(r.get("max") or 600),
+            "min":     num("min", 30),       # 0 is a value: report at once
+            "max":     num("max", 600),
             "delta":   r.get("delta", 1),
-        })
+        }
+        # A maker's attribute zigpy has no definition for: its type and code
+        # are what the configure request has to carry.
+        mfr = _to_int(r.get("mfr"))
+        if mfr:
+            row["mfr"] = f"0x{mfr:04X}"
+        if r.get("type") in SETTING_TYPES:
+            row["type"] = r["type"]
+        reporting_out.append(row)
     out["reporting"] = reporting_out
+
+    # Attributes read when the profile is applied (at join), because the
+    # device does not send them by itself until something asks.
+    reads_out: List[Dict[str, Any]] = []
+    for r in (p.get("reads") or []):
+        if not isinstance(r, dict):
+            continue
+        ep, cl, at, mfr = (_to_int(r.get(k)) for k in ("ep", "cluster", "attr", "mfr"))
+        if ep is None or cl is None or at is None:
+            continue
+        reads_out.append({"ep": ep, "cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}",
+                          **({"mfr": f"0x{mfr:04X}"} if mfr else {})})
+    out["reads"] = reads_out
 
     # Friendly names for arbitrary state keys (Tuya datapoints, derived keys),
     # keyed by the literal key. Mirrors the per-device "state:<key>" learn

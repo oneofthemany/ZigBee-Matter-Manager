@@ -193,6 +193,35 @@ function detailsHtml(entry, a) {
             <td class="text-end"><button class="btn btn-outline-secondary btn-sm" data-qe-add="attr-value"
                 data-key="${esc(key)}">Add</button></td></tr></tbody></table>`;
     }
+    html += behaviourHtml(entry, a, key);
+    return html;
+}
+
+function reportRow(entry, a) {
+    return (entry.reporting || []).find(r => String(r.ep) === String(a.ep) && r.cluster === a.cluster && r.attr === a.attr);
+}
+
+function readRow(entry, a) {
+    return (entry.reads || []).find(r => String(r.ep) === String(a.ep) && r.cluster === a.cluster && r.attr === a.attr);
+}
+
+/** What ZMM asks of the device for this attribute: to report it, and to read it at join. */
+function behaviourHtml(entry, a, key) {
+    const rep = reportRow(entry, a);
+    const tick = (qe, on, label) => `<div class="form-check form-check-inline small">
+        <input class="form-check-input" type="checkbox" id="qe-${qe}-${esc(key)}" data-qe="${qe}" data-key="${esc(key)}"
+            ${on ? 'checked' : ''}><label class="form-check-label" for="qe-${qe}-${esc(key)}">${label}</label></div>`;
+    let html = `<div class="small fw-bold mt-2">What ZMM asks of the device</div>
+        ${tick('attr-rep-on', !!rep, 'Report it when it changes')}
+        ${tick('attr-read', !!readRow(entry, a), 'Read it when the device joins')}`;
+    if (rep) {
+        const f = (label, k, hint) => `<div class="col-4"><label class="form-label x-small mb-0">${label}</label>
+            <input type="number" min="0" step="any" class="form-control form-control-sm" data-qe="attr-rep"
+                data-f="${k}" data-key="${esc(key)}" value="${esc(rep[k] ?? '')}" title="${hint}"></div>`;
+        html += `<div class="row g-2">${f('At most every (s)', 'min', '0: as soon as it changes')}
+            ${f('At least every (s)', 'max', 'a report even when nothing changed')}
+            ${f('By at least (raw)', 'delta', 'how much it must change, in what the device sends')}</div>`;
+    }
     return html;
 }
 
@@ -259,7 +288,13 @@ function nameAttr(entry, a, name) {
     } else if (found.as === 'reading') {
         delete entry.endpoints[String(a.ep)].clusters[a.cluster].attributes[a.attr];
     }
-    if (!name) return;
+    if (!name) {
+        entry.reporting = (entry.reporting || []).filter(r => r !== reportRow(entry, a));
+        entry.reads = (entry.reads || []).filter(r => r !== readRow(entry, a));
+        if (!entry.reporting.length) delete entry.reporting;
+        if (!entry.reads.length) delete entry.reads;
+        return;
+    }
     if (a.writable && SETTING_TYPES.includes(a.type)) {
         const st = { id: name, label: humanise(name), type: a.type, ep: a.ep, cluster: a.cluster,
                      attr: a.attr, values: {} };
@@ -307,6 +342,56 @@ function setDetail(entry, a, f, raw) {
     return null;
 }
 
+/** One-shot writes (restart, start learning): a button on the device's Control tab. */
+function actionRows(entry, device) {
+    const vendor = (device.attributes || [])[0];
+    const ep0 = vendor?.ep ?? device.endpoints[0]?.ep ?? 1;
+    const cluster = vendor?.cluster || '0xFCC0';
+    const mfr = vendor?.mfr || '';
+    const typeSel = (attrs, current) => `<select class="form-select form-select-sm" style="min-width:6rem" ${attrs}>
+        ${SETTING_TYPES.filter(t => t !== 'bool').map(t => `<option ${t === current ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+    const rows = (entry.actions || []).map((a, i) => {
+        const w = (a.writes || [])[0];
+        if (!w) return '';
+        return `<tr>
+        <td><input class="form-control form-control-sm" style="min-width:8rem" data-qe="act-f" data-f="label"
+            data-i="${i}" value="${esc(a.label)}"></td>
+        <td><code>${esc(w.cluster)}/${esc(w.attr)}</code></td>
+        <td>${typeSel(`data-qe="act-f" data-f="type" data-i="${i}"`, w.type)}</td>
+        <td><input type="number" class="form-control form-control-sm" style="width:5rem" data-qe="act-f" data-f="value"
+            data-i="${i}" value="${esc(w.value)}"></td>
+        <td class="text-end"><button class="btn btn-outline-danger btn-sm" data-qe-del="action" data-i="${i}">×</button></td>
+    </tr>`;
+    }).join('');
+    return rows + `<tr>
+        <td><input class="form-control form-control-sm" style="min-width:8rem" data-qe-new="act-label" placeholder="Restart"></td>
+        <td><input class="form-control form-control-sm" style="width:6rem" data-qe-new="act-attr" placeholder="0x00E8"></td>
+        <td>${typeSel('data-qe-new="act-type"', 'uint8')}</td>
+        <td><input type="number" class="form-control form-control-sm" style="width:5rem" data-qe-new="act-value" placeholder="1"></td>
+        <td class="text-end"><button class="btn btn-outline-secondary btn-sm" data-qe-add="action"
+            data-ep="${esc(ep0)}" data-cluster="${esc(cluster)}" data-mfr="${esc(mfr)}">Add</button></td></tr>`;
+}
+
+function actionButton(entry, root, d) {
+    if (d.qeDel) {
+        entry.actions = (entry.actions || []).filter((_, i) => i !== Number(d.i));
+        return null;
+    }
+    const val = q => (root.querySelector(`[data-qe-new="${q}"]`)?.value || '').trim();
+    const label = val('act-label');
+    const attr = Number(val('act-attr'));
+    const value = Number(val('act-value'));
+    if (!label) return 'name the action';
+    if (!val('act-attr') || !Number.isInteger(attr) || attr < 0 || attr > 0xFFFF) return 'an attribute is a number such as 0x00E8';
+    if (val('act-value') === '' || !Number.isInteger(value)) return 'the value written is a whole number';
+    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'action';
+    const w = { ep: Number(d.ep), cluster: d.cluster, attr: `0x${attr.toString(16).toUpperCase().padStart(4, '0')}`,
+                value, type: val('act-type') || 'uint8' };
+    if (d.mfr) w.mfr = d.mfr;
+    (entry.actions ??= []).push({ id, label, ep: Number(d.ep), cluster: d.cluster, writes: [w] });
+    return null;
+}
+
 function pressRows(entry) {
     const presses = entry.zmm?.press_names || {};
     return Object.entries(presses).map(([value, name]) => `<tr>
@@ -336,6 +421,9 @@ export function editorHtml(entry, device) {
                   + 'can be set, otherwise as a reading. Then open Details to say what kind of value it is: '
                   + 'a number (with its unit, range and scale), one of a list (with what each value means), '
                   + 'or on / off.')
+        + section('Actions', ['Button', 'Writes', 'Type', 'Value', ''], actionRows(entry, device),
+                  'One-shot commands the device takes as a write, such as restart or start learning: '
+                  + 'each becomes a button on its Control tab.')
         + section('Blob tags', ['Tag', 'Last value', 'Name', 'Scale', ''], tagRows(entry, device),
                   'Values packed in the maker\'s status report (Aqara 0xF7/0xDF). Name a tag to publish it; '
                   + 'the scale turns the raw value into its unit (0.001 for mV → V).')
@@ -430,6 +518,54 @@ export function applyField(entry, el, device) {
         if (!a) return 'that attribute is no longer known';
         return setDetail(entry, a, d.f, el.value);
     }
+    case 'attr-rep-on': {
+        const a = findAttr(device, d.key);
+        if (!a) return 'that attribute is no longer known';
+        entry.reporting = (entry.reporting || []).filter(r => r !== reportRow(entry, a));
+        if (el.checked) {
+            // Report at once on any change, and at least hourly so a missed one corrects itself.
+            const row = { ep: a.ep, cluster: a.cluster, attr: a.attr, min: 0, max: 3600, delta: 1 };
+            if (a.mfr) row.mfr = a.mfr;
+            if (SETTING_TYPES.includes(a.type)) row.type = a.type;
+            entry.reporting.push(row);
+        }
+        if (!entry.reporting.length) delete entry.reporting;
+        break;
+    }
+    case 'attr-rep': {
+        const a = findAttr(device, d.key);
+        const row = a && reportRow(entry, a);
+        if (!row) return 'tick "Report it when it changes" first';
+        const n = Number(el.value);
+        if (el.value === '' || !Number.isFinite(n) || n < 0) return 'a number of 0 or more';
+        if (d.f !== 'delta' && (!Number.isInteger(n) || n > 0xFFFF)) return 'whole seconds, up to 65535';
+        row[d.f] = n;
+        if (row.max && row.min > row.max) return 'the shortest gap is above the longest';
+        break;
+    }
+    case 'attr-read': {
+        const a = findAttr(device, d.key);
+        if (!a) return 'that attribute is no longer known';
+        entry.reads = (entry.reads || []).filter(r => r !== readRow(entry, a));
+        if (el.checked) entry.reads.push({ ep: a.ep, cluster: a.cluster, attr: a.attr, ...(a.mfr ? { mfr: a.mfr } : {}) });
+        if (!entry.reads.length) delete entry.reads;
+        break;
+    }
+    case 'act-f': {
+        const act = (entry.actions || [])[Number(d.i)];
+        if (!act) return 'that action is no longer there';
+        const w = act.writes[0];
+        if (d.f === 'label') {
+            if (!el.value.trim()) return 'an action needs a name';
+            act.label = el.value.trim();
+        } else if (d.f === 'value') {
+            if (!Number.isInteger(Number(el.value))) return 'the value written is a whole number';
+            w.value = Number(el.value);
+        } else if (d.f === 'type') {
+            w.type = el.value;
+        }
+        break;
+    }
     case 'attr-v': {
         const a = findAttr(device, d.key);
         const { as, spec } = a ? specOf(entry, a) : {};
@@ -478,6 +614,7 @@ function valueButton(entry, root, d) {
 export function applyButton(entry, root, btn) {
     const d = btn.dataset;
     if (d.qeAdd === 'attr-value' || d.qeDel === 'attr-value') return valueButton(entry, root, d);
+    if (d.qeAdd === 'action' || d.qeDel === 'action') return actionButton(entry, root, d);
     if (d.qeDel) {
         const key = d.qeDel === 'tag' ? 'struct_tags' : 'press_names';
         delete (entry.zmm?.[key] || {})[d.key];

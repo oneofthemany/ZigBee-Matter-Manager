@@ -119,6 +119,45 @@ console.log('attributes');
   check('a bad name is refused', applyField(e, el('attr-name', { key: K('0x0142') }, 'Bad Name'), dev) !== null);
 }
 
+console.log('what ZMM asks of the device, and actions');
+{
+  global.CSS = { escape: x => x };
+  const dev = { ...device, attributes: [
+    { ep: 1, cluster: '0xFCC0', attr: '0x0142', mfr: '0x115F', type: 'uint8', value: 1, reported: true, writable: false }] };
+  const e = { id: 'x', match: { model: 'x' }, endpoints: {} };
+  const K = '1|0xFCC0|0x0142';
+  applyField(e, el('attr-name', { key: K }, 'presence'), dev);
+  applyField(e, el('attr-rep-on', { key: K }, '', true), dev);
+  check('reporting a maker\'s attribute carries its type and code: at once, and at least hourly',
+        JSON.stringify(e.reporting) === JSON.stringify([{ ep: 1, cluster: '0xFCC0', attr: '0x0142', min: 0, max: 3600,
+                                                          delta: 1, mfr: '0x115F', type: 'uint8' }]), e.reporting);
+  applyField(e, el('attr-rep', { key: K, f: 'max' }, '1800'), dev);
+  check('its gaps can be changed', e.reporting[0].max === 1800);
+  check('a negative or fractional gap is refused',
+        applyField(e, el('attr-rep', { key: K, f: 'min' }, '-1'), dev) !== null
+        && applyField(e, el('attr-rep', { key: K, f: 'min' }, '1.5'), dev) !== null);
+  applyField(e, el('attr-read', { key: K }, '', true), dev);
+  check('it can be read when the device joins', JSON.stringify(e.reads) ===
+        JSON.stringify([{ ep: 1, cluster: '0xFCC0', attr: '0x0142', mfr: '0x115F' }]), e.reads);
+  check('the details show both ticked', /attr-rep-on[^>]*checked/.test(editorHtml(e, { ...dev, open_attributes: new Set([K]) })));
+  applyField(e, el('attr-name', { key: K }, ''), dev);
+  check('unnaming it drops what was asked of it', !e.reporting && !e.reads);
+
+  const vals = { 'act-label': 'Restart device', 'act-attr': '0x00E8', 'act-type': 'uint8', 'act-value': '1' };
+  const root = { querySelector: q => { const m = /data-qe-new="([^"]+)"/.exec(q); return m && { value: vals[m[1]] }; } };
+  check('an action is added from a name, attribute, type and value',
+        applyButton(e, root, { dataset: { qeAdd: 'action', ep: '1', cluster: '0xFCC0', mfr: '0x115F' } }) === null);
+  check('as a write the Control tab can run: typed and with the maker\'s code',
+        JSON.stringify(e.actions) === JSON.stringify([{ id: 'restart_device', label: 'Restart device', ep: 1, cluster: '0xFCC0',
+          writes: [{ ep: 1, cluster: '0xFCC0', attr: '0x00E8', value: 1, type: 'uint8', mfr: '0x115F' }] }]), e.actions);
+  vals['act-attr'] = 'zz';
+  check('a bad attribute is refused', applyButton(e, root, { dataset: { qeAdd: 'action', ep: '1', cluster: '0xFCC0' } }) !== null);
+  applyField(e, el('act-f', { i: '0', f: 'value' }, '2'), dev);
+  check('its value can be changed', e.actions[0].writes[0].value === 2);
+  applyButton(e, root, { dataset: { qeDel: 'action', i: '0' } });
+  check('and it can be removed', e.actions.length === 0);
+}
+
 console.log('endpoints');
 applyField(entry, el('ep-kind', { ep: '3' }, 'switch'), device);
 applyField(entry, el('ep-label', { ep: '3' }, '  USB  '), device);

@@ -296,6 +296,41 @@ def _apply_attr_transform(value: Any, mapping: Dict[str, Any]) -> Any:
 
 # Reporting configuration
 
+def _reporting_def(device, cluster, ep_id: int, cid: int, aid: int, row: Dict[str, Any]):
+    """The attribute definition a configure request needs. zigpy's own where
+    it has one and the row names no maker code; otherwise built here, typed
+    from the row or from what the device answered (a maker's attribute zigpy
+    has never heard of). None when the type is not known."""
+    from zigpy.zcl import foundation
+    from modules.device_profiles import SETTING_TYPES
+    mfr = _to_int(row.get("mfr"))
+    if not mfr:
+        try:
+            return cluster.find_attribute(aid)
+        except (KeyError, AttributeError):
+            pass
+    type_name = row.get("type") or _answered_type(device, ep_id, cid, aid, mfr)
+    if type_name not in SETTING_TYPES:
+        return None
+    py_type = foundation.DataType.from_type_id(SETTING_TYPES[type_name]).python_type
+    return foundation.ZCLAttributeDef(id=aid, name=f"attr_{aid:04x}", type=py_type,
+                                      manufacturer_code=mfr or None)
+
+
+def _answered_type(device, ep_id: int, cid: int, aid: int, mfr: Optional[int]) -> Optional[str]:
+    import json
+    from modules.device_facts import attr_subject
+    try:
+        from modules.zigbee_cache import get_facts
+        subject = attr_subject("attr", cid, aid, mfr)
+        for f in get_facts(str(device.ieee)):
+            if f["endpoint_id"] == ep_id and f["subject"] == subject and f["source"] == "answered":
+                return str((json.loads(f["value"]) or {}).get("type") or "").split("/")[-1] or None
+    except Exception as e:
+        logger.debug(f"[{device.ieee}] attribute type unavailable: {e}")
+    return None
+
+
 async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
     """
     Push the profile's reporting rows to the device. Idempotent.
@@ -329,17 +364,24 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
             results.append({**r, "ok": False, "error": f"cluster 0x{cid:04X} missing"})
             continue
         try:
+            attr_def = _reporting_def(device, cluster, ep_id, cid, aid, r)
+            if attr_def is None:
+                results.append({**r, "ok": False, "error": "type unknown: run Find everything first"})
+                continue
             try:
                 await cluster.bind()
             except Exception as e:
                 logger.debug(f"[{device.ieee}] bind failed for 0x{cid:04X}: {e}")
+            from zigpy.zcl.helpers import ReportingConfig
             async with asyncio.timeout(8.0):
-                await cluster.configure_reporting(
-                    aid,
-                    min_interval=int(r.get("min") or 30),
-                    max_interval=int(r.get("max") or 600),
-                    reportable_change=r.get("delta", 1),
-                )
+                rsp = await cluster.configure_reporting_multiple({attr_def: ReportingConfig(
+                    min_interval=int(r["min"] if r.get("min") is not None else 30),
+                    max_interval=int(r["max"] if r.get("max") is not None else 600),
+                    reportable_change=r.get("delta", 1))})
+            refused = [rec for rec in (rsp or []) if int(getattr(rec, "status", 0)) != 0]
+            if refused:
+                results.append({**r, "ok": False, "error": f"refused: {refused[0].status}"})
+                continue
             ok += 1
             results.append({**r, "ok": True})
         except asyncio.TimeoutError:
@@ -349,6 +391,40 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
 
     logger.info(f"[{device.ieee}] Reporting applied: {ok}/{len(rows)} OK")
     return {"success": ok == len(rows), "configured": ok, "results": results}
+
+
+async def apply_reads(device, profile: Dict[str, Any]) -> int:
+    """Read the attributes the profile lists and hand each value to the
+    cluster's handler, as a report would. Returns values read."""
+    zdev = getattr(device, "zigpy_dev", None)
+    groups: Dict[Tuple[int, int, Optional[int]], List[int]] = {}
+    for r in profile.get("reads") or []:
+        groups.setdefault((r["ep"], _to_int(r["cluster"]), _to_int(r.get("mfr"))), []).append(_to_int(r["attr"]))
+    got = 0
+    for (ep_id, cid, mfr), attrs in groups.items():
+        ep = (zdev.endpoints or {}).get(ep_id) if zdev else None
+        cluster = (ep.in_clusters or {}).get(cid) if ep else None
+        handler = (getattr(device, "handlers", None) or {}).get((ep_id, cid))
+        if cluster is None:
+            continue
+        try:
+            async with asyncio.timeout(8.0):
+                rsp = await cluster.read_attributes_raw(attrs, manufacturer=mfr)
+        except Exception as e:
+            logger.debug(f"[{device.ieee}] profile read of 0x{cid:04X} failed: {e}")
+            continue
+        for rec in getattr(rsp, "status_records", None) or []:
+            if int(rec.status) != 0 or rec.value is None:
+                continue
+            got += 1
+            if handler is not None:
+                try:
+                    handler.attribute_updated(int(rec.attrid), rec.value.value)
+                except Exception as e:
+                    logger.debug(f"[{device.ieee}] read 0x{int(rec.attrid):04X} not handled: {e}")
+    if got:
+        logger.info(f"[{device.ieee}] Profile reads: {got} values")
+    return got
 
 
 # Action runner
@@ -388,6 +464,33 @@ async def run_action(device, action_id: str, args: Optional[List[Any]] = None) -
 
     # Path A — writes (preferred for atomic multi-write actions)
     writes = action.get("writes") or []
+    raw = [w for w in writes if w.get("mfr") or w.get("type")]
+    if raw:
+        # A maker's attribute, typed and coded by the entry: zigpy's
+        # write_attributes would refuse an id it has no definition for.
+        from zigpy.zcl import foundation
+        from modules.device_profiles import SETTING_TYPES
+        from modules.zmm_settings import _write_ok, typed_value
+        try:
+            for w in raw:
+                target_ep = zdev.endpoints.get(w.get("ep", ep_id))
+                target_cl = ((target_ep.in_clusters or {}) if target_ep else {}).get(_to_int(w.get("cluster")))
+                if target_cl is None or w.get("type") not in SETTING_TYPES:
+                    return {"success": False, "error": f"cannot write {w.get('cluster')}/{w.get('attr')}"}
+                attr = foundation.Attribute()
+                attr.attrid = _to_int(w.get("attr"))
+                attr.value = typed_value(SETTING_TYPES[w["type"]], int(w.get("value") or 0))
+                async with asyncio.timeout(10.0):
+                    ok = _write_ok(await target_cl.write_attributes_raw([attr], _to_int(w.get("mfr"))))
+                if not ok:
+                    return {"success": False, "error": "the device refused the write"}
+            writes = [w for w in writes if w not in raw]
+            if not writes:
+                return {"success": True, "action": action_id, "writes": len(raw)}
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "write timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     if writes:
         try:
             # Group writes by (ep, cluster) — usually all on one cluster
@@ -485,9 +588,10 @@ async def apply_profile(
         pass
 
     # 3. Reporting — opt-out via push_reporting=False
-    if push_reporting and profile.get("reporting"):
+    if push_reporting and (profile.get("reporting") or profile.get("reads")):
         try:
             summary["reporting"] = await apply_reporting(device, profile)
+            summary["reads"] = await apply_reads(device, profile)
         except Exception as e:
             logger.exception(f"[{ieee}] apply_reporting failed: {e}")
             summary["reporting"] = {"success": False, "error": str(e)}

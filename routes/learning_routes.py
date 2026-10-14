@@ -3,6 +3,7 @@ Device learning routes (docs/learning-a-device.md): the wizard's session,
 review and save, profile history and rollback, export and import.
 Registered from register_device_routes, under /api/device/{ieee}/...
 """
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI
@@ -103,6 +104,10 @@ def register_learning_routes(app: FastAPI, get_zigbee_service):
         out = learning.save(dev, request.entry)
         if out.get("success"):
             await svc.announce_device(ieee)
+            # Reporting rows reach the device now, not only at its next
+            # interview; a sleepy device may take seconds, so not in the request.
+            from modules.device_profiles_apply import apply_profile
+            asyncio.create_task(apply_profile(dev))
         return out
 
     @app.post("/api/device/{ieee}/profile/preview")
