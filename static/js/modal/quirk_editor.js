@@ -106,13 +106,94 @@ function tagRows(entry, device) {
 
 const SETTING_TYPES = ['bool', 'uint8', 'uint16', 'uint32', 'int8', 'int16', 'enum8'];
 
-/** What the entry calls an attribute now: a setting (writable) or a reading. */
-function attrName(entry, a) {
+/** The entry's description of an attribute: its setting (writable) or its reading. */
+function specOf(entry, a) {
     const st = (entry.zmm?.settings || []).find(x => x.cluster === a.cluster && x.attr === a.attr
         && (x.ep === a.ep || x.ep === 'each'));
-    if (st) return { name: st.id, scale: st.scale, as: 'setting' };
+    if (st) return { as: 'setting', spec: st, name: st.id };
     const m = entry.endpoints?.[String(a.ep)]?.clusters?.[a.cluster]?.attributes?.[a.attr];
-    return m?.name ? { name: m.name, scale: m.scale, as: 'reading' } : { name: '', scale: undefined, as: '' };
+    return m?.name ? { as: 'reading', spec: m, name: m.name } : { as: '', spec: null, name: '' };
+}
+
+const ONOFF_SETTING = { 0: 'Off', 1: 'On' };
+
+/** number, choice (named values) or onoff, as the spec now reads. */
+function kindOf(found, a) {
+    const { as, spec } = found;
+    if (!spec) return 'number';
+    if (as === 'setting') {
+        if (spec.type === 'bool') return 'onoff';
+        const v = spec.values || {};
+        const keys = Object.keys(v).sort();
+        if (keys.join() === '0,1' && v['0'] === 'Off' && v['1'] === 'On') return 'onoff';
+        return keys.length ? 'choice' : 'number';
+    }
+    const vm = spec.value_map || {};
+    if (Object.keys(vm).length === 2 && vm['1'] === true && vm['0'] === false) return 'onoff';
+    return Object.keys(vm).length ? 'choice' : 'number';
+}
+
+function attrKey(a) { return `${a.ep}|${a.cluster}|${a.attr}`; }
+
+/** Shown value: the raw one through the spec's labels, or divided by its scale. */
+function shownValue(found, a) {
+    const { as, spec } = found;
+    if (!spec) return null;
+    const labels = as === 'setting' ? spec.values : spec.value_map;
+    if (labels && String(a.value) in labels) return String(labels[String(a.value)]);
+    const n = Number(a.value);
+    return spec.scale && spec.scale !== 1 && Number.isFinite(n) ? String(+(n / spec.scale).toFixed(3)) : null;
+}
+
+function field(label, f, key, value, type = 'text', extra = '') {
+    return `<div class="col-6 col-md-3"><label class="form-label x-small mb-0">${label}</label>
+        <input class="form-control form-control-sm" type="${type}" ${type === 'number' ? 'step="any"' : ''}
+            data-qe="attr-f" data-f="${f}" data-key="${esc(key)}" value="${esc(value ?? '')}" ${extra}></div>`;
+}
+
+/** The details of one named attribute: what kind of value it is and how to show it. */
+function detailsHtml(entry, a) {
+    const found = specOf(entry, a);
+    const { as, spec } = found;
+    const key = attrKey(a);
+    const kind = kindOf(found, a);
+    const opt = (v, label) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${label}</option>`;
+    let html = `<div class="row g-2 align-items-end">
+        <div class="col-6 col-md-3"><label class="form-label x-small mb-0">Kind of value</label>
+            <select class="form-select form-select-sm" data-qe="attr-f" data-f="kind" data-key="${esc(key)}">
+            ${opt('number', 'A number')}${opt('choice', 'One of a list')}${opt('onoff', 'On / off')}</select></div>`;
+    if (as === 'setting') html += field('Label', 'label', key, spec.label);
+    if (kind === 'number') {
+        html += field('Unit', 'unit', key, spec.unit, 'text', 'placeholder="sec, °C, %"')
+            + field('Divide by', 'scale', key, spec.scale, 'number', 'min="0" placeholder="1"');
+        if (as === 'setting') {
+            html += field('Min', 'min', key, spec.min, 'number') + field('Max', 'max', key, spec.max, 'number')
+                + field('Step', 'step', key, spec.step, 'number', 'min="0"');
+        }
+    }
+    if (as === 'reading') html += field('Home Assistant class', 'device_class', key, spec.device_class, 'text',
+                                         'placeholder="temperature, occupancy…"');
+    if (as === 'setting') html += `<div class="col-12">${field('Description', 'description', key, spec.description)
+        .replace('col-6 col-md-3', 'w-100')}</div>`;
+    html += '</div>';
+    if (kind === 'choice') {
+        const labels = (as === 'setting' ? spec.values : spec.value_map) || {};
+        const rows = Object.entries(labels).sort((x, y) => Number(x[0]) - Number(y[0])).map(([raw, label]) => `<tr>
+            <td><code>${esc(raw)}</code></td>
+            <td><input class="form-control form-control-sm" data-qe="attr-v" data-key="${esc(key)}" data-raw="${esc(raw)}"
+                value="${esc(label)}"></td>
+            <td class="text-end"><button class="btn btn-outline-danger btn-sm" data-qe-del="attr-value"
+                data-key="${esc(key)}" data-raw="${esc(raw)}">×</button></td></tr>`).join('');
+        html += `<div class="small fw-bold mt-2">Values</div>
+            <table class="table table-sm small align-middle mb-0"><thead><tr><th>Device sends</th><th>Means</th><th></th></tr></thead>
+            <tbody>${rows}<tr>
+            <td><input type="number" class="form-control form-control-sm" style="width:6rem"
+                data-qe-new="attr-raw-${esc(key)}" placeholder="${esc(a.value)}"></td>
+            <td><input class="form-control form-control-sm" data-qe-new="attr-label-${esc(key)}" placeholder="e.g. low"></td>
+            <td class="text-end"><button class="btn btn-outline-secondary btn-sm" data-qe-add="attr-value"
+                data-key="${esc(key)}">Add</button></td></tr></tbody></table>`;
+    }
+    return html;
 }
 
 function attrRows(entry, device) {
@@ -120,25 +201,27 @@ function attrRows(entry, device) {
     // under that name, as a setting where it can be written, else as a reading.
     const all = device.attributes || [];
     const shown = device.show_all_attributes ? all : all.filter(a => a.reported);
+    const open = device.open_attributes || new Set();
     const rows = shown.map(a => {
-        const now = attrName(entry, a);
-        const n = Number(a.value);
-        const scaled = now.scale && now.scale !== 1 && Number.isFinite(n)
-            ? ` <span class="text-muted">→ ${esc(+(n / now.scale).toFixed(3))}</span>` : '';
+        const found = specOf(entry, a);
+        const pretty = shownValue(found, a);
         const access = a.writable === true ? '<span class="badge bg-success">settable</span>'
             : a.writable === false ? '<span class="badge bg-secondary">read-only</span>'
             : '<span class="badge bg-light text-dark border">unknown</span>';
-        const key = `${a.ep}|${a.cluster}|${a.attr}`;
+        const key = attrKey(a);
+        const isOpen = found.name && open.has(key);
+        const toggle = found.name ? `<input type="checkbox" class="btn-check" id="qe-open-${esc(key)}"
+            data-qe="attr-open" data-key="${esc(key)}" ${isOpen ? 'checked' : ''}>
+            <label class="btn btn-outline-secondary btn-sm" for="qe-open-${esc(key)}">Details</label>` : '';
         return `<tr>
         <td><code>${esc(a.attr)}</code></td>
-        <td class="text-nowrap">${esc(a.value)}${scaled}</td>
+        <td class="text-nowrap">${esc(a.value)}${pretty !== null ? ` <span class="text-muted">→ ${esc(pretty)}</span>` : ''}</td>
         <td>${access}</td>
-        <td><input class="form-control form-control-sm" style="min-width:10rem" data-qe="attr-name"
-            data-key="${esc(key)}" value="${esc(now.name)}" placeholder="unnamed"></td>
-        <td><input type="number" step="any" min="0" class="form-control form-control-sm" style="width:6rem"
-            data-qe="attr-scale" data-key="${esc(key)}" value="${esc(now.scale ?? '')}" placeholder="1"
-            ${now.name ? '' : 'disabled'} title="what the raw value is divided by: 1000 for ms → s"></td>
-    </tr>`;
+        <td><input class="form-control form-control-sm" style="min-width:8rem" data-qe="attr-name"
+            data-key="${esc(key)}" value="${esc(found.name)}" placeholder="unnamed"></td>
+        <td class="text-end position-relative">${toggle}</td>
+    </tr>` + (isOpen ? `<tr><td colspan="5" class="bg-light">
+        <div style="max-width:calc(100vw - 3rem)">${detailsHtml(entry, a)}</div></td></tr>` : '');
     }).join('');
     const hidden = all.length - shown.length;
     const toggle = all.some(a => !a.reported) ? `<tr><td colspan="5" class="small">
@@ -154,27 +237,74 @@ function findAttr(device, key) {
     return (device.attributes || []).find(a => String(a.ep) === ep && a.cluster === cluster && a.attr === attr);
 }
 
-/** Name (or unname) an attribute: one place in the entry, the right kind for it. */
-function nameAttr(entry, a, name, scale) {
-    entry.zmm ??= {};
-    entry.zmm.settings = (entry.zmm.settings || []).filter(x => !(x.cluster === a.cluster && x.attr === a.attr
-        && x.ep === a.ep));
-    const cl = entry.endpoints?.[String(a.ep)]?.clusters?.[a.cluster];
-    if (cl?.attributes) delete cl.attributes[a.attr];
-    if (!entry.zmm.settings.length) delete entry.zmm.settings;
+function humanise(name) {
+    return name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+}
+
+/** Name, rename or unname an attribute, keeping what its details already say. */
+function nameAttr(entry, a, name) {
+    const found = specOf(entry, a);
+    if (found.spec && name) {
+        if (found.as === 'setting') {
+            if (!found.spec.label || found.spec.label === humanise(found.spec.id)) found.spec.label = humanise(name);
+            found.spec.id = name;
+        } else {
+            found.spec.name = name;
+        }
+        return;
+    }
+    if (found.as === 'setting') {
+        entry.zmm.settings = entry.zmm.settings.filter(x => x !== found.spec);
+        if (!entry.zmm.settings.length) delete entry.zmm.settings;
+    } else if (found.as === 'reading') {
+        delete entry.endpoints[String(a.ep)].clusters[a.cluster].attributes[a.attr];
+    }
     if (!name) return;
     if (a.writable && SETTING_TYPES.includes(a.type)) {
-        const st = { id: name, label: name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()),
-                     type: a.type, ep: a.ep, cluster: a.cluster, attr: a.attr, values: {} };
+        const st = { id: name, label: humanise(name), type: a.type, ep: a.ep, cluster: a.cluster,
+                     attr: a.attr, values: {} };
         if (a.mfr) st.mfr = a.mfr;
-        if (scale && scale !== 1) st.scale = scale;
         zmm(entry, 'settings', []).push(st);
     } else {
         const c = ((ep(entry, a.ep).clusters ??= {})[a.cluster] ??= {});
-        const m = { name };
-        if (scale && scale !== 1) m.scale = scale;
-        (c.attributes ??= {})[a.attr] = m;
+        (c.attributes ??= {})[a.attr] = { name };
     }
+}
+
+/** One details field into the spec; returns an error message, or null. */
+function setDetail(entry, a, f, raw) {
+    const found = specOf(entry, a);
+    if (!found.spec) return 'name it first';
+    const { as, spec } = found;
+    const value = String(raw ?? '').trim();
+    if (f === 'kind') {
+        const labelsKey = as === 'setting' ? 'values' : 'value_map';
+        if (value === 'number') {
+            if (as === 'setting') spec.values = {}; else delete spec.value_map;
+        } else if (value === 'onoff') {
+            delete spec.scale; delete spec.unit; delete spec.min; delete spec.max; delete spec.step;
+            if (as === 'setting') spec.values = spec.type === 'bool' ? {} : { ...ONOFF_SETTING };
+            else spec.value_map = { 0: false, 1: true };
+        } else {
+            delete spec.scale; delete spec.unit; delete spec.min; delete spec.max; delete spec.step;
+            if (!Object.keys(spec[labelsKey] || {}).length || kindOf(found, a) === 'onoff') {
+                spec[labelsKey] = Number.isInteger(Number(a.value)) ? { [String(a.value)]: String(a.value) } : {};
+            }
+        }
+        return null;
+    }
+    if (['scale', 'min', 'max', 'step'].includes(f)) {
+        if (value === '') { delete spec[f]; return null; }
+        const n = Number(value);
+        if (!Number.isFinite(n)) return `${f} must be a number`;
+        if ((f === 'scale' || f === 'step') && n <= 0) return `${f === 'scale' ? 'divide by' : 'step'} must be above 0`;
+        if (f === 'scale' && n === 1) delete spec.scale; else spec[f] = n;
+        if (spec.min !== undefined && spec.max !== undefined && spec.min > spec.max) return 'min is above max';
+        return null;
+    }
+    if (f === 'unit' && value.length > 8) return 'a unit is at most 8 characters';
+    if (value === '') delete spec[f]; else spec[f] = value;
+    return null;
 }
 
 function pressRows(entry) {
@@ -200,10 +330,12 @@ export function editorHtml(entry, device) {
                    + 'ZMM then files it under what it really measures.')
         + (Object.keys(device.measurements).length
             ? section('Measurements', ['Reading', 'Handling', 'Scaling'], measurementRows(entry, device)) : '')
-        + section('Attributes', ['Attribute', 'Last value', 'Can be set', 'Name', 'Divide by'],
+        + section('Attributes', ['Attribute', 'Last value', 'Can be set', 'Name', ''],
                   attrRows(entry, device),
                   'The device\'s own values. Name one to publish it under that name: as a setting where it '
-                  + 'can be set, otherwise as a reading.')
+                  + 'can be set, otherwise as a reading. Then open Details to say what kind of value it is: '
+                  + 'a number (with its unit, range and scale), one of a list (with what each value means), '
+                  + 'or on / off.')
         + section('Blob tags', ['Tag', 'Last value', 'Name', 'Scale', ''], tagRows(entry, device),
                   'Values packed in the maker\'s status report (Aqara 0xF7/0xDF). Name a tag to publish it; '
                   + 'the scale turns the raw value into its unit (0.001 for mV → V).')
@@ -279,21 +411,32 @@ export function applyField(entry, el, device) {
         break;
     }
     case 'attr-all': device.show_all_attributes = el.checked; break;
+    case 'attr-open': {
+        const open = (device.open_attributes ??= new Set());
+        if (el.checked) open.add(d.key); else open.delete(d.key);
+        break;
+    }
     case 'attr-name': {
         const a = findAttr(device, d.key);
         const name = el.value.trim();
         if (!a) return 'that attribute is no longer known';
         if (name && !NAME_RE.test(name)) return 'a name is lower case letters, digits and _';
-        nameAttr(entry, a, name, attrName(entry, a).scale);
+        nameAttr(entry, a, name);
+        if (name) (device.open_attributes ??= new Set()).add(d.key);   // what it is comes next
         break;
     }
-    case 'attr-scale': {
+    case 'attr-f': {
         const a = findAttr(device, d.key);
-        const n = el.value === '' ? 1 : Number(el.value);
         if (!a) return 'that attribute is no longer known';
-        if (!Number.isFinite(n) || n <= 0) return 'divide by a number above 0';
-        const now = attrName(entry, a);
-        if (now.name) nameAttr(entry, a, now.name, n);
+        return setDetail(entry, a, d.f, el.value);
+    }
+    case 'attr-v': {
+        const a = findAttr(device, d.key);
+        const { as, spec } = a ? specOf(entry, a) : {};
+        if (!spec) return 'that attribute is no longer known';
+        const label = el.value.trim();
+        if (!label) return 'a value needs a meaning; remove it with × instead';
+        (as === 'setting' ? (spec.values ??= {}) : (spec.value_map ??= {}))[d.raw] = label;
         break;
     }
     case 'press-name': {
@@ -307,9 +450,34 @@ export function applyField(entry, el, device) {
     return null;
 }
 
+/** A named value of an attribute ("the device sends 2: it means medium"). */
+function specByKey(entry, key) {
+    const [epId, cluster, attr] = key.split('|');
+    const st = (entry.zmm?.settings || []).find(x => x.cluster === cluster && x.attr === attr
+        && String(x.ep) === epId);
+    if (st) return { labels: (st.values ??= {}) };
+    const m = entry.endpoints?.[epId]?.clusters?.[cluster]?.attributes?.[attr];
+    return m ? { labels: (m.value_map ??= {}) } : null;
+}
+
+function valueButton(entry, root, d) {
+    const found = specByKey(entry, d.key);
+    if (!found) return 'name it first';
+    if (d.qeDel) { delete found.labels[d.raw]; return null; }
+    const rawEl = root.querySelector(`[data-qe-new="attr-raw-${CSS.escape(d.key)}"]`);
+    const labelEl = root.querySelector(`[data-qe-new="attr-label-${CSS.escape(d.key)}"]`);
+    const raw = Number((rawEl?.value || '').trim());
+    const label = (labelEl?.value || '').trim();
+    if (!Number.isInteger(raw) || (rawEl?.value || '').trim() === '') return 'what the device sends is a whole number';
+    if (!label) return 'say what that value means';
+    found.labels[String(raw)] = label;
+    return null;
+}
+
 /** The "Add" and "×" buttons; returns an error message, or null. */
 export function applyButton(entry, root, btn) {
     const d = btn.dataset;
+    if (d.qeAdd === 'attr-value' || d.qeDel === 'attr-value') return valueButton(entry, root, d);
     if (d.qeDel) {
         const key = d.qeDel === 'tag' ? 'struct_tags' : 'press_names';
         delete (entry.zmm?.[key] || {})[d.key];

@@ -124,8 +124,22 @@ and **blob tags**.
 rows in its state): each with its last value and whether it can be set. Type
 a name to publish it under that name: as a setting if it can be set
 (it then moves from *Unnamed* to *Named* in Configuration), otherwise as a
-reading. **Divide by** turns the raw number into its unit (`1000` for a time
-held in milliseconds). Only the values the device sends by itself are listed
+reading. Then open **Details** and say what kind of value it is:
+
+- **A number**: its unit, **Divide by** (`1000` for a time the device holds in
+  milliseconds, `100` for a temperature in hundredths), and for a setting its
+  **Min**, **Max** and **Step** in the units you see, so the control in
+  Configuration only offers what the device accepts.
+- **One of a list**: what each number the device sends means (`0` off, `1`
+  low, `2` medium…). Configuration then shows a dropdown of those words.
+- **On / off**: a switch, or for a reading, true or false.
+
+A setting also takes a label and a description; a reading takes its Home
+Assistant class (`temperature`, `occupancy`…). Once named, an attribute's raw
+`opple 0x…` row disappears from the device's attribute list: the reading
+shows under its name, a setting under Device Settings.
+
+Only the values the device sends by itself are listed
 at first; tick the box to see the ones it only lists, usually the maker's
 internals. To find which is which, change one in Configuration → Unnamed and
 watch what the device does, or use *Values I know*.

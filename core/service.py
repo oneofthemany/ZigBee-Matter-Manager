@@ -2165,6 +2165,8 @@ class ZigbeeService(
                     "settings": self.device_settings.get(ieee, {}),
                     "available": zdev.is_available(),
                     "config_schema": zdev.get_device_config_schema() if hasattr(zdev, 'get_device_config_schema') else [],
+                    # Raw keys its entry names: shown under their name, not twice.
+                    "named_raw_keys": _named_raw_keys(zdev),
                     # Which valve controls the Control tab may draw: asked of
                     # the device, never inferred from who made it.
                     "valve_settings": [n for n in VALVE_CONTROL_SETTINGS
@@ -2193,3 +2195,12 @@ class ZigbeeService(
 
     def get_all_polling_intervals(self) -> Dict[str, int]:
         return dict(self.polling_scheduler._intervals)
+
+
+def _named_raw_keys(zdev) -> list:
+    try:
+        from modules.device_profiles_apply import named_raw_keys
+        return named_raw_keys(zdev)
+    except Exception as e:
+        logger.debug(f"[{getattr(zdev, 'ieee', '?')}] named raw keys unavailable: {e}")
+        return []

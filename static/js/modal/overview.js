@@ -123,9 +123,13 @@ export function renderOverviewTab(device) {
 
 
     const groups = { 'Global': {} };
+    // A raw key its entry has named appears under that name (a reading here,
+    // a setting under Device Settings), never alongside it.
+    const namedRaw = new Set(device.named_raw_keys || []);
 
     Object.keys(s).forEach(key => {
         if (configKeys.includes(key) || ignoredKeys.includes(key) || key.startsWith('dp_') || key.endsWith('_raw')) return;
+        if (namedRaw.has(key)) return;
         if (key.startsWith('startup_behavior_')) return;
         if (multiEpPowerKeys.includes(key)) return;
 
@@ -274,7 +278,8 @@ export function renderOverviewTab(device) {
     const controlHtml = def => {
         let val = def.current_value !== undefined && def.current_value !== null
             ? def.current_value : (s[def.name] !== undefined ? s[def.name] : '');
-        let html = `<div class="col-md-6"><label class="form-label x-small mb-0 fw-bold">${def.label}</label>`;
+        const unit = def.unit ? ` <span class="text-muted fw-normal">(${def.unit})</span>` : '';
+        let html = `<div class="col-md-6"><label class="form-label x-small mb-0 fw-bold">${def.label}${unit}</label>`;
         if (def.type === 'select' && def.options) {
             // State may hold the option's label ("medium") rather than its value (2).
             const hit = def.options.find(o => o.value == val)

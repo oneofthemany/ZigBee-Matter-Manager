@@ -26,9 +26,8 @@ def _entry_settings(device) -> List[Dict[str, Any]]:
 
 def _listed(device) -> Dict[Tuple[int, str], Any]:
     """{(ep, subject): fact value} for attributes the device has shown: one it
-    answered a discovery or read for, or one it reported. A report carries no
-    manufacturer code, so it is filed under the plain subject and under every
-    manufacturer-scoped form an entry might name it by (`_subject`)."""
+    answered a discovery or read for, or one it reported (`seen:`, under the
+    subject its frame gave it, with or without a manufacturer code)."""
     import json
     from modules.zigbee_cache import get_facts
     out: Dict[Tuple[int, str], Any] = {}
@@ -49,8 +48,10 @@ def _listed(device) -> Dict[Tuple[int, str], Any]:
 def _shown(listed: Dict[Tuple[int, str], Any], ep: int, st: Dict[str, Any]) -> Optional[Any]:
     """The fact for setting `st` on `ep`: answered first, else a report."""
     hit = listed.get((ep, _subject(st)))
-    if hit is None:
-        hit = listed.get((ep, f"seen:{st['cluster']}/{st['attr']}"))
+    # Reports are filed with the frame's manufacturer code, or with none.
+    for seen in (f"seen:{_subject(st)[len('attr:'):]}", f"seen:{st['cluster']}/{st['attr']}"):
+        if hit is None:
+            hit = listed.get((ep, seen))
     return hit
 
 

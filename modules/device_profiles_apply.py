@@ -224,6 +224,38 @@ BINARY_CLASSES = frozenset({"occupancy", "motion", "presence", "door", "window",
                             "problem", "safety", "sound", "lock", "plug", "running"})
 
 
+def _raw_attr(key: str) -> Optional[Tuple[int, int]]:
+    """(cluster, attr) a raw state key stands for, in any of its spellings."""
+    parts = key.split("_")
+    try:
+        if key.startswith("cluster_") and len(parts) >= 4 and parts[2] == "attr":
+            return int(parts[1], 16), int(parts[3], 16)
+        if key.startswith("attr_") and len(parts) == 3:
+            return int(parts[1], 16), int(parts[2], 16)
+        if key.startswith("opple_0x") and len(parts) == 2:
+            return 0xFCC0, int(parts[1], 16)
+    except ValueError:
+        pass
+    return None
+
+
+def named_raw_keys(device) -> List[str]:
+    """Raw state keys the device's entry names, as a reading or a setting:
+    the device's views show the name in their place, not both."""
+    profile = resolve_profile_for_device(device) or {}
+    named = set()
+    for ep in (profile.get("endpoints") or {}).values():
+        for cl_hex, cl in (ep.get("clusters") or {}).items():
+            for at_hex, m in (cl.get("attributes") or {}).items():
+                if (m or {}).get("name") and _to_int(cl_hex) is not None and _to_int(at_hex) is not None:
+                    named.add((_to_int(cl_hex), _to_int(at_hex)))
+    for st in (profile.get("zmm") or {}).get("settings") or []:
+        cid, aid = _to_int(st.get("cluster")), _to_int(st.get("attr"))
+        if cid is not None and aid is not None:
+            named.add((cid, aid))
+    return sorted(k for k in (getattr(device, "state", None) or {}) if _raw_attr(k) in named)
+
+
 def _apply_attr_transform(value: Any, mapping: Dict[str, Any]) -> Any:
     """Apply scale / value_map / invert to a raw value."""
     if value is None:

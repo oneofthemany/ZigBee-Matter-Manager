@@ -54,29 +54,69 @@ console.log('blob tags');
 
 console.log('attributes');
 {
+  global.CSS = { escape: x => x };
   const dev = { ...device, attributes: [
     { ep: 1, cluster: '0xFCC0', attr: '0x0162', mfr: '0x115F', type: 'uint32', value: 600000, reported: true, writable: true },
+    { ep: 1, cluster: '0xFCC0', attr: '0x0170', mfr: '0x115F', type: 'uint8', value: 1, reported: true, writable: true },
     { ep: 1, cluster: '0xFCC0', attr: '0x0142', mfr: '0x115F', type: 'uint8', value: 1, reported: true, writable: false },
     { ep: 1, cluster: '0xFCC0', attr: '0x0009', mfr: '0x115F', type: 'uint8', value: 0, reported: false, writable: true }] };
   const e = { id: 'x', match: { model: 'x' }, endpoints: {} };
+  const K = attr => `1|0xFCC0|${attr}`;
   let html = editorHtml(e, dev);
   check('the attributes the device sends are listed with value and access',
         html.includes('0x0162') && html.includes('600000') && html.includes('settable') && html.includes('read-only'));
   check('the ones it only lists are behind a tick box', !html.includes('0x0009') && html.includes('Also show the 1'));
   applyField(e, el('attr-all', {}, '', true), dev);
   check('which shows them', editorHtml(e, dev).includes('0x0009'));
-  applyField(e, el('attr-name', { key: '1|0xFCC0|0x0162' }, 'sampling_period'), dev);
-  applyField(e, el('attr-scale', { key: '1|0xFCC0|0x0162' }, '1000'), dev);
-  const st = (e.zmm.settings || [])[0] || {};
-  check('naming a settable one makes it a setting, with its type, maker code and scale',
-        [st.id, st.type, st.attr, st.mfr, st.scale].join() === 'sampling_period,uint32,0x0162,0x115F,1000', st);
-  check('and the form shows its value divided', editorHtml(e, dev).includes('600000 <span class="text-muted">→ 600'));
-  applyField(e, el('attr-name', { key: '1|0xFCC0|0x0142' }, 'occupancy'), dev);
-  check('naming a read-only one makes it a reading',
-        e.endpoints['1'].clusters['0xFCC0'].attributes['0x0142'].name === 'occupancy');
-  applyField(e, el('attr-name', { key: '1|0xFCC0|0x0162' }, ''), dev);
-  check('clearing a name removes it, leaving nothing behind', !e.zmm.settings);
-  check('a bad name is refused', applyField(e, el('attr-name', { key: '1|0xFCC0|0x0142' }, 'Bad Name'), dev) !== null);
+
+  // A number the device stores in milliseconds, shown in seconds, with its range (cf. a sampling period).
+  applyField(e, el('attr-name', { key: K('0x0162') }, 'sampling_period'), dev);
+  check('naming a settable one makes it a setting with its type and maker code, and opens its details',
+        [e.zmm.settings[0].id, e.zmm.settings[0].type, e.zmm.settings[0].mfr].join() === 'sampling_period,uint32,0x115F'
+        && editorHtml(e, dev).includes('Kind of value'));
+  for (const [f, v] of [['unit', 'sec'], ['scale', '1000'], ['min', '0.5'], ['max', '3600'], ['step', '0.5'],
+                        ['label', 'Sampling period'], ['description', 'How often readings are taken']]) {
+    check(`its ${f} is set`, applyField(e, el('attr-f', { key: K('0x0162'), f }, v), dev) === null);
+  }
+  const st = e.zmm.settings[0];
+  check('as the settings form needs it: seconds, 0.5 to 3600 in steps of 0.5, stored ×1000',
+        JSON.stringify([st.unit, st.scale, st.min, st.max, st.step, st.label])
+        === JSON.stringify(['sec', 1000, 0.5, 3600, 0.5, 'Sampling period']), st);
+  check('and the list shows its value as the user will see it', editorHtml(e, dev).includes('600000 <span class="text-muted">→ 600'));
+  check('a min above the max is refused', applyField(e, el('attr-f', { key: K('0x0162'), f: 'min' }, '5000'), dev) !== null);
+  applyField(e, el('attr-f', { key: K('0x0162'), f: 'min' }, '0.5'), dev);
+  check('so is a scale of 0', applyField(e, el('attr-f', { key: K('0x0162'), f: 'scale' }, '0'), dev) !== null);
+
+  // One of a list, each raw value named (cf. sampling off / low / medium / high / custom).
+  applyField(e, el('attr-name', { key: K('0x0170') }, 'sampling'), dev);
+  applyField(e, el('attr-f', { key: K('0x0170'), f: 'kind' }, 'choice'), dev);
+  const root = { querySelector: q => ({ [`[data-qe-new="attr-raw-${K('0x0170')}"]`]: { value: '0' },
+                                        [`[data-qe-new="attr-label-${K('0x0170')}"]`]: { value: 'off' } })[q] };
+  check('a value is added with what it means', applyButton(e, root, { dataset: { qeAdd: 'attr-value', key: K('0x0170') } }) === null);
+  applyField(e, el('attr-v', { key: K('0x0170'), raw: '1' }, 'low'), dev);
+  const sampling = e.zmm.settings.find(x => x.id === 'sampling');
+  check('the setting carries the value names the form offers as choices',
+        JSON.stringify(sampling.values) === JSON.stringify({ 0: 'off', 1: 'low' }), sampling.values);
+  check('and the list shows the device\'s value by its name', editorHtml(e, dev).includes('1 <span class="text-muted">→ low'));
+  check('an empty meaning is refused', applyField(e, el('attr-v', { key: K('0x0170'), raw: '1' }, ' '), dev) !== null);
+  applyButton(e, root, { dataset: { qeDel: 'attr-value', key: K('0x0170'), raw: '0' } });
+  check('and a value can be removed', !('0' in sampling.values));
+  applyField(e, el('attr-f', { key: K('0x0170'), f: 'kind' }, 'onoff'), dev);
+  check('on / off is the two values Off and On', JSON.stringify(sampling.values) === JSON.stringify({ 0: 'Off', 1: 'On' }));
+
+  // A reading.
+  applyField(e, el('attr-name', { key: K('0x0142') }, 'presence'), dev);
+  applyField(e, el('attr-f', { key: K('0x0142'), f: 'kind' }, 'onoff'), dev);
+  applyField(e, el('attr-f', { key: K('0x0142'), f: 'device_class' }, 'occupancy'), dev);
+  const r = e.endpoints['1'].clusters['0xFCC0'].attributes['0x0142'];
+  check('a read-only one is a reading; on / off makes it true or false, with its HA class',
+        r.name === 'presence' && r.value_map[1] === true && r.value_map[0] === false && r.device_class === 'occupancy', r);
+
+  applyField(e, el('attr-name', { key: K('0x0162') }, 'temp_sampling_period'), dev);
+  check('renaming keeps everything its details say', e.zmm.settings.find(x => x.id === 'temp_sampling_period')?.scale === 1000);
+  applyField(e, el('attr-name', { key: K('0x0162') }, ''), dev);
+  check('clearing a name removes it, leaving nothing behind', !e.zmm.settings.some(x => x.attr === '0x0162'));
+  check('a bad name is refused', applyField(e, el('attr-name', { key: K('0x0142') }, 'Bad Name'), dev) !== null);
 }
 
 console.log('endpoints');
