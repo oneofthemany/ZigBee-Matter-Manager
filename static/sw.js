@@ -1,7 +1,7 @@
 /* ZigBee Matter Manager — Service Worker (PWA) */
 
-// Bump this on every frontend change — the `activate` handler purges any
-// cache whose name != CACHE_NAME, so a new version wipes stale cached assets.
+// The /sw.js route appends the app version, so each release gets a new name and
+// `activate` purges the old cache; bump this base only to purge mid-release.
 var CACHE_NAME = 'zbm-v12';
 
 // App shell files to cache on install.

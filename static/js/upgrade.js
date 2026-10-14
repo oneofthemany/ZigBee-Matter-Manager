@@ -982,27 +982,54 @@ async function startSwap() {
     }
 }
 
+// Health answers 200 while bring-up is still running, so reload only once the
+// target version is fully up — the same bar scripts/upgrade.sh sets.
 function waitForHealth(tt) {
+    const { present, destination } = _versions;
     let attempts = 0;
+    let wentDown = false;
     const iv = setInterval(async () => {
         attempts++;
         try {
             const r = await fetch('/api/system/health', { cache: 'no-store' });
-            if (r.ok) {
+            const h = r.ok ? await r.json() : null;
+            if (!h) wentDown = true;
+            const ready = h && h.bringup === 'ready';
+            const arrived = ready && (!destination || h.version === destination);
+            // The old version back up after an outage means the watcher rolled back.
+            const rolledBack = ready && wentDown && present && h.version === present;
+            if (arrived || rolledBack) {
                 clearInterval(iv);
+                await purgeAssetCache();
                 // Accelerate to 88 and reload at the white-flash peak;
                 // without the overlay, keep the old quiet reload.
                 if (tt) tt.complete(() => location.reload());
                 else setTimeout(() => location.reload(), 1500);
                 return;
             }
-        } catch (_) { /* expected during swap */ }
-        if (attempts > 150) {
+        } catch (_) { wentDown = true; /* expected during swap */ }
+        if (attempts > 225) {
             clearInterval(iv);
             if (tt) tt.abort();
-            toast('danger', 'Server did not come back within 5 minutes. Check the host logs.');
+            toast('danger', 'Server did not finish starting within 7 minutes. Check the host logs.');
         }
     }, 2000);
+}
+
+// The service worker serves /static cache-first, so without this the reload
+// would pair the new page with the old release's JS and CSS.
+async function purgeAssetCache() {
+    try {
+        if (window.caches) {
+            const names = await caches.keys();
+            await Promise.all(names.map(n => caches.delete(n)));
+        }
+        // Assets now come from the network, so pwa.js needn't reload again
+        // when the new release's worker takes over.
+        sessionStorage.setItem('zmm.assetsFresh', '1');
+    } catch (e) {
+        log.warn('Asset cache purge failed:', e);
+    }
 }
 
 async function cancelUpgrade() {

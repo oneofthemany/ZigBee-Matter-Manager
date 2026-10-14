@@ -42,6 +42,27 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             .catch(function (err) {
                 zmmLog('pwa').warn('[PWA] Service worker registration failed:', err);
             });
+
+        // A new release's worker takes over after this page already rendered from
+        // the old cache. Reload if that's right after opening (nothing to lose);
+        // later, offer it so in-progress edits aren't discarded.
+        var hadController = !!navigator.serviceWorker.controller;
+        var loadedAt = Date.now();
+        var reloading = false;
+        var assetsFresh = false;
+        try {
+            assetsFresh = sessionStorage.getItem('zmm.assetsFresh') === '1';
+            sessionStorage.removeItem('zmm.assetsFresh');
+        } catch (e) {}
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+            if (!hadController || reloading || assetsFresh) return;
+            if (Date.now() - loadedAt < 20000) {
+                reloading = true;
+                window.location.reload();
+            } else if (window.toast) {
+                window.toast.info('A new version is installed — reload the page to use it.');
+            }
+        });
     }
 
     // 2. PLATFORM DETECTION & PREFERENCES
