@@ -133,6 +133,7 @@ class DeviceHandlerManagerMixin:
             try:
                 from modules import zmm_settings
                 await zmm_settings.apply(self, updates)
+                await zmm_settings.apply_raw(self, updates)
             except Exception as e:
                 logger.warning(f"[{self.ieee}] ZMM settings failed: {e}")
             for handler in self.handlers.values():

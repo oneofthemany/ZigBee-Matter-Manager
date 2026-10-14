@@ -192,7 +192,8 @@ async def _background(device, s: "Session", st: Dict[str, Any]) -> Dict[str, Any
 async def _run_background(device, s: "Session", st: Dict[str, Any], active: Dict[str, Any]) -> None:
     key = st["key"]
     try:
-        proposals = await (_write_probed if st["mode"] == "write_probe" else _discovered)(device)
+        proposals = await {"write_probe": _write_probed, "find_all": _found_all}.get(
+            st["mode"], _discovered)(device)
     except Exception as e:
         logger.warning(f"[{device.ieee}] {st['mode']} failed: {e}")
         proposals = []
@@ -209,6 +210,22 @@ async def _run_background(device, s: "Session", st: Dict[str, Any], active: Dict
                          "this step again straight away"}]}
     logger.info(f"[{device.ieee}] Learning step {key}: "
                 + ("; ".join(p["evidence"] for p in proposals) or "no answer from the device"))
+
+
+async def _found_all(device) -> List[Dict[str, Any]]:
+    """Discovery, then the write probe, summed up in plain words first, with
+    each part's own report beneath for whoever wants the detail."""
+    found = await _discovered(device)
+    if not found:
+        return []
+    probed = await _write_probed(device)
+    values, _ = _vendor_values(device)
+    access = _known_access(device)
+    writable = sum("W" in a for a in access.values())
+    summary = _note("high", f"Found {len(values)} values on this device; {writable} of them can be "
+                            "changed. They are now in its Configuration (unnamed ones under 'Unnamed'), "
+                            "and the steps below can name them.", "find_all")
+    return [summary] + found + probed
 
 
 def _note(confidence: str, evidence: str, op: str) -> Dict[str, Any]:
@@ -470,6 +487,7 @@ def state(device) -> Dict[str, Any]:
     for st in s.steps:
         res = s.results.get(st["key"]) or {}
         steps.append({"key": st["key"], "title": st["title"], "name": st.get("name") or "",
+                      "level": st.get("level", "simple"),
                       "label": st["label"],
                       "instruction": st["instruction"], "inputs": st["inputs"],
                       "window_s": st["window_s"], "mode": st.get("mode", "observe"),

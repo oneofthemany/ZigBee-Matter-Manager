@@ -1025,6 +1025,7 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/matter.md](docs/matter.md) | Matter integration — setup, supported features, architecture |
 | [docs/multipan.md](docs/multipan.md) | MultiPAN — MG24 firmware, CPC wire format, OTBR setup |
 | [docs/device-profiles.md](docs/device-profiles.md) | Unified Zigbee + Matter device modelling framework |
+| [docs/learning-a-device.md](docs/learning-a-device.md) | Teaching ZMM a new device: the guided learning steps, for anyone, with an advanced section |
 | [docs/onboarding.md](docs/onboarding.md) | Developer guide — handler architecture, adding device support |
 | [docs/onboarding_unsupported_devices.md](docs/onboarding_unsupported_devices.md) | User guide — visual attribute mapping |
 | [docs/aqara_cluster_guide.md](docs/aqara_cluster_guide.md) | Aqara `0xFCC0` cluster implementation reference |

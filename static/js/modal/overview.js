@@ -269,27 +269,54 @@ export function renderOverviewTab(device) {
 
     // 5. Generate Configuration Form
     let dynamicFormHtml = '';
+    // One control. Each records the value it showed (data-initial), so saving
+    // writes only what was changed, never every setting the device has.
+    const controlHtml = def => {
+        let val = def.current_value !== undefined && def.current_value !== null
+            ? def.current_value : (s[def.name] !== undefined ? s[def.name] : '');
+        let html = `<div class="col-md-6"><label class="form-label x-small mb-0 fw-bold">${def.label}</label>`;
+        if (def.type === 'select' && def.options) {
+            // State may hold the option's label ("medium") rather than its value (2).
+            const hit = def.options.find(o => o.value == val)
+                || def.options.find(o => String(o.label).toLowerCase() === String(val).toLowerCase());
+            val = hit ? hit.value : '';
+            const blank = hit ? '' : '<option value="" selected>—</option>';
+            const opts = def.options.map(o => `<option value="${o.value}" ${hit && o.value == hit.value ? 'selected' : ''}>${o.label}</option>`).join('');
+            html += `<select class="form-select form-select-sm" name="${def.name}" data-initial="${val}">${blank}${opts}</select>`;
+        } else {
+            html += `<input type="${def.type || 'text'}"
+                   class="form-control form-control-sm"
+                   name="${def.name}"
+                   value="${val}" data-initial="${val}"
+                   ${def.min !== undefined ? `min="${def.min}"` : ''}
+                   ${def.max !== undefined ? `max="${def.max}"` : ''}
+                   step="${def.step || 1}">`;
+        }
+        if (def.description) html += `<div class="form-text x-small mt-0">${def.description}</div>`;
+        return html + `</div>`;
+    };
+    const named = schema.filter(d => d.group !== 'unnamed');
+    const unnamed = schema.filter(d => d.group === 'unnamed');
     if (schema.length > 0) {
-        dynamicFormHtml += `<h6 class="text-primary mt-3 mb-2 border-bottom pb-1">Device Settings</h6><div class="row g-2">`;
-        schema.forEach(def => {
-            const val = s[def.name] !== undefined ? s[def.name] : '';
-            dynamicFormHtml += `<div class="col-md-6"><label class="form-label x-small mb-0 fw-bold">${def.label}</label>`;
-            if (def.type === 'select' && def.options) {
-                const opts = def.options.map(o => `<option value="${o.value}" ${val == o.value ? 'selected' : ''}>${o.label}</option>`).join('');
-                dynamicFormHtml += `<select class="form-select form-select-sm" name="${def.name}">${opts}</select>`;
-            } else {
-                dynamicFormHtml += `<input type="${def.type || 'text'}"
-                       class="form-control form-control-sm"
-                       name="${def.name}"
-                       value="${val}"
-                       min="${def.min}"
-                       max="${def.max}"
-                       step="${def.step || 1}">`;
-            }
-            if (def.description) dynamicFormHtml += `<div class="form-text x-small mt-0">${def.description}</div>`;
-            dynamicFormHtml += `</div>`;
-        });
-        dynamicFormHtml += `</div>`;
+        dynamicFormHtml += `<h6 class="text-primary mt-3 mb-2 border-bottom pb-1">Device Settings</h6>`;
+        if (unnamed.length) {
+            // Sub-tabs, not one long list: a device can have dozens of unnamed attributes.
+            dynamicFormHtml += `<ul class="nav nav-pills small mb-2 flex-nowrap overflow-auto" role="tablist">
+                <li class="nav-item"><button type="button" class="nav-link py-1 px-2 active text-nowrap"
+                    data-bs-toggle="pill" data-bs-target="#cfgNamed" role="tab">Named ${named.length}</button></li>
+                <li class="nav-item"><button type="button" class="nav-link py-1 px-2 text-nowrap"
+                    data-bs-toggle="pill" data-bs-target="#cfgUnnamed" role="tab">Unnamed ${unnamed.length}</button></li></ul>
+                <div class="tab-content">
+                <div class="tab-pane fade show active" id="cfgNamed" role="tabpanel"><div class="row g-2">
+                    ${named.map(controlHtml).join('') || '<div class="text-muted small fst-italic">None yet.</div>'}</div></div>
+                <div class="tab-pane fade" id="cfgUnnamed" role="tabpanel">
+                    <div class="small text-muted mb-2">Attributes this device accepts writes to that nothing
+                    has named yet. What each does is not known: change one, watch the device, and name it in
+                    Identity &rarr; Edit its entry.</div><div class="row g-2">${unnamed.map(controlHtml).join('')}</div></div>
+                </div>`;
+        } else {
+            dynamicFormHtml += `<div class="row g-2">${named.map(controlHtml).join('')}</div>`;
+        }
     } else {
         dynamicFormHtml = `<div class="text-muted small mt-3 fst-italic text-center">No configurable settings available.</div>`;
     }
@@ -363,6 +390,9 @@ export async function saveConfig(e) {
 
     for (let [key, value] of formData.entries()) {
         if (value === "") continue;
+        // A device setting left as it was shown is not sent: saving QoS must not rewrite them all.
+        const field = e.target.elements[key];
+        if (field?.dataset?.initial !== undefined && field.dataset.initial === value) continue;
 
         if (key === 'qos') { qos = parseInt(value); continue; }
         if (key === 'polling_interval') { pollingInterval = parseInt(value); continue; }

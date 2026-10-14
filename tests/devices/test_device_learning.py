@@ -127,7 +127,8 @@ def run() -> Checker:
         keys = [s["key"] for s in st["steps"]]
         c.check("the outlet gets a switch test per socket and USB, a press per button, a setting "
                 "and the metering map",
-                keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.from_history",
+                keys == ["buttons.press.1", "buttons.press.2", "discover.find_all", "discover.vendor_attributes",
+                         "discover.write_access", "manufacturer_setting.from_history",
                          "manufacturer_setting.known_values", "manufacturer_setting.change_setting",
                          "manufacturer_setting.set_number",
                          "manufacturer_setting.try_setting", "manufacturer_setting.try_behaviour", "metered_outlet.switch_test.1",
@@ -353,9 +354,10 @@ def run() -> Checker:
                 and cfg[0]["config"]["value_template"] == "{{ 'ON' if value_json.occupancy else 'OFF' }}",
                 cfg)
         c.section("a battery device's own attributes: woken, asked, then matched to known values")
-        c.check("a battery device with a maker's cluster is offered a wake-and-discover step; "
-                "a mains one, which is probed by itself, is not",
-                "discover.vendor_attributes" in pkeys and "discover.vendor_attributes" not in keys, pkeys)
+        c.check("any device with a maker's cluster is offered Find everything, its parts as advanced",
+                "discover.find_all" in pkeys and "discover.find_all" in keys
+                and [s["level"] for s in device_learning.state(pres)["steps"] if s["key"].startswith("discover.")]
+                == ["simple", "advanced", "advanced"], pkeys)
         st = asyncio.run(device_learning.begin(pres, "manufacturer_setting.known_values",
                                                {"known": "schedule_time_raw: 589845"}))
         c.check("with nothing known of its attributes, matching says to discover first",
@@ -443,6 +445,18 @@ def run() -> Checker:
         c.check("refused: it is read-only, and says so",
                 "1 are read-only" in _step(st, "discover.write_access")["proposals"][0]["evidence"],
                 _step(st, "discover.write_access"))
+        async def find_all():
+            await device_learning.begin(pres, "discover.find_all", {})
+            await device_learning._sessions[PRESENCE_IEEE].active["task"]
+            return _step(device_learning.state(pres), "discover.find_all")
+
+        everything = asyncio.run(find_all())
+        c.check("Find everything runs both parts and says first, in plain words, what it found",
+                everything["status"] == "done" and everything["proposals"][0]["evidence"].startswith("Found ")
+                and "can be changed" in everything["proposals"][0]["evidence"]
+                and any("lists 5 attributes" in p["evidence"] for p in everything["proposals"])
+                and any("nothing left to check" in p["evidence"] or "can be written" in p["evidence"]
+                        for p in everything["proposals"]), everything["proposals"])
         again = _step(asyncio.run(discover())[3], "discover.vendor_attributes")
         c.check("discovering again does not forget what the probe settled",
                 "which can be written is already known" in again["proposals"][1]["evidence"], again)

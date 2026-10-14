@@ -30,9 +30,13 @@ INPUT_TYPES = ("number", "text", "select")
 # with the user's inputs). discover: the device is asked what it has.
 # write_probe: each unlisted attribute's own value is written back to learn
 # whether it can be written.
-MODES = ("observe", "try_write", "history", "lookup", "discover", "write_probe")
+# find_all: discover then write_probe, as one step.
+MODES = ("observe", "try_write", "history", "lookup", "discover", "write_probe", "find_all")
 # Steps that question the device over many seconds and infer nothing.
-BACKGROUND = ("discover", "write_probe")
+BACKGROUND = ("discover", "write_probe", "find_all")
+# simple: shown to everyone. advanced: the parts a simple step runs, and
+# experiments that need some knowledge of the device; shown when asked for.
+LEVELS = ("simple", "advanced")
 WINDOW_S = (5, 900)
 _ID = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
@@ -88,7 +92,7 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return None
         if st.get("expect_kind") not in (None, "light", "switch"):
             return None
-        if st.get("expect") not in (None, "occupied", "clear"):
+        if st.get("expect") not in (None, "occupied", "clear") or st.get("level", "simple") not in LEVELS:
             return None
         if mode not in MODES or (mode in BACKGROUND and infer) or \
                 (mode == "try_write") != (bool(infer) and all(i["op"] == "confirmed_write" for i in infer)):
@@ -98,7 +102,7 @@ def validate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                       "instruction": str(st.get("instruction") or ""),
                       "inputs": inputs, "infer": infer, "window_s": window,
                       "expect_kind": st.get("expect_kind") or "switch",
-                      "expect": st.get("expect"), "mode": mode,
+                      "expect": st.get("expect"), "mode": mode, "level": st.get("level", "simple"),
                       "watch": {k: _hex(v) for k, v in watch.items() if _hex(v) is not None}})
     if not steps:
         return None

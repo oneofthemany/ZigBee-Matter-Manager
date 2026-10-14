@@ -17,7 +17,8 @@
           "op": "attribute_that_tracked",
           "yields": "zmm.settings"
         }
-      ]
+      ],
+      "level": "advanced"
     },
     {
       "id": "known_values",
@@ -74,7 +75,8 @@
           "op": "attribute_that_toggled",
           "yields": "zmm.settings"
         }
-      ]
+      ],
+      "level": "advanced"
     },
     {
       "id": "set_number",
@@ -108,7 +110,8 @@
           "op": "attribute_that_became",
           "yields": "zmm.settings"
         }
-      ]
+      ],
+      "level": "advanced"
     },
     {
       "id": "try_setting",
@@ -143,7 +146,8 @@
           "op": "confirmed_write",
           "yields": "zmm.settings"
         }
-      ]
+      ],
+      "level": "advanced"
     },
     {
       "id": "try_behaviour",
@@ -178,7 +182,8 @@
           "op": "confirmed_write",
           "yields": "zmm.settings"
         }
-      ]
+      ],
+      "level": "advanced"
     }
   ]
 }

@@ -221,3 +221,131 @@ def _write_ok(rsp: Any) -> bool:
         return all(int(getattr(r, "status", r)) == 0 for r in records)
     except (TypeError, ValueError):
         return False
+
+
+# Unnamed attributes (device-profiles.md, "Every writable attribute"): any the
+# device has shown can be written, by discovery or the write probe, offered as
+# a control under its id until an entry names it.
+
+RAW_PREFIX = "raw_"
+# What each type can hold, so the control refuses what the device would.
+TYPE_RANGES = {"uint8": (0, 0xFF), "uint16": (0, 0xFFFF), "uint32": (0, 0xFFFFFFFF),
+               "int8": (-0x80, 0x7F), "int16": (-0x8000, 0x7FFF), "enum8": (0, 0xFF)}
+
+
+def _raw_name(ep: int, cid: int, aid: int) -> str:
+    return f"{RAW_PREFIX}{ep}_{cid:04x}_{aid:04x}"
+
+
+def _writable(device) -> Dict[str, Dict[str, Any]]:
+    """{control name: (ep, cluster, attr, mfr, type, value)} for every maker's
+    attribute the device has shown to accept writes, of a type ZMM can write."""
+    import json
+    from modules.device_facts import parse_attr_subject, vendor_scoped
+    from modules.device_learning import NEVER_WRITE
+    from modules.device_profiles import SETTING_TYPES
+    from modules.zigbee_cache import get_facts
+    import modules.zigbee_cache as zigbee_cache
+    if zigbee_cache._db is None:
+        return {}
+    out = {}
+    for f in get_facts(str(device.ieee)):
+        parsed = parse_attr_subject(f["subject"]) if f["source"] == "answered" else None
+        if parsed is None or not vendor_scoped(parsed[0], parsed[2]) or parsed[:2] in NEVER_WRITE:
+            continue
+        try:
+            meta = json.loads(f["value"])
+        except ValueError:
+            continue
+        type_name = str((meta or {}).get("type") or "").split("/")[-1]
+        if "W" not in str((meta or {}).get("acl") or "") or type_name not in SETTING_TYPES:
+            continue
+        cid, aid, mfr = parsed
+        out[_raw_name(f["endpoint_id"], cid, aid)] = {
+            "ep": f["endpoint_id"], "cluster": cid, "attr": aid, "mfr": mfr,
+            "type": type_name, "value": meta.get("value")}
+    return out
+
+
+def _raw_state_key(device, cid: int, aid: int) -> Optional[str]:
+    """The state key a handler files this attribute under, if it has one."""
+    for key in (f"opple_0x{aid:04x}" if cid == 0xFCC0 else None,
+                f"attr_{cid:04x}_{aid:04x}", f"cluster_{cid:04x}_attr_{aid:04x}"):
+        if key and key in device.state:
+            return key
+    return None
+
+
+def raw_options(device, covered) -> List[Dict[str, Any]]:
+    """A control for each writable attribute no entry setting or handler
+    option already offers (`covered`: their attribute ids)."""
+    from modules.device_profiles import profile_for_device
+    eps = (profile_for_device(device) or {}).get("endpoints") or {}
+    opts = []
+    for name, a in sorted(_writable(device).items()):
+        if a["attr"] in covered:
+            continue
+        # Named as a reading but not yet as a setting: show the name it has.
+        called = ((((eps.get(str(a["ep"])) or {}).get("clusters") or {}).get(f"0x{a['cluster']:04X}") or {})
+                  .get("attributes") or {}).get(f"0x{a['attr']:04X}", {}).get("name")
+        key = _raw_state_key(device, a["cluster"], a["attr"])
+        current = device.state.get(key) if key else a["value"]
+        if isinstance(current, bool):
+            current = int(current)
+        opt: Dict[str, Any] = {
+            "name": name, "entry": True,
+            "label": f"{called} (0x{a['cluster']:04X}/0x{a['attr']:04X})" if called
+            else f"0x{a['cluster']:04X}/0x{a['attr']:04X}",
+            "group": "unnamed", "attribute_id": a["attr"], "current_value": current,
+            "description": f"{a['type']}; not named yet, so what it does is not known",
+        }
+        if a["type"] == "bool":
+            opt.update(type="select", options=[{"value": 0, "label": "Off"}, {"value": 1, "label": "On"}])
+        else:
+            lo, hi = TYPE_RANGES[a["type"]]
+            opt.update(type="number", min=lo, max=hi, step=1)
+        if a["mfr"]:
+            opt["manufacturer_code"] = a["mfr"]
+        opts.append(opt)
+    return opts
+
+
+async def apply_raw(device, updates: Dict[str, Any]) -> Dict[str, bool]:
+    """Write each `raw_...` control named in `updates`. {name: succeeded}."""
+    from zigpy.zcl import foundation
+    from modules.device_profiles import SETTING_TYPES
+    results: Dict[str, bool] = {}
+    wanted = {k: v for k, v in updates.items() if str(k).startswith(RAW_PREFIX)}
+    if not wanted:
+        return results
+    known = _writable(device)
+    for name, shown in wanted.items():
+        a = known.get(name)
+        if a is None:
+            results[name] = False
+            continue
+        try:
+            value = int(float(shown))
+            lo, hi = TYPE_RANGES.get(a["type"], (0, 1))
+            if a["type"] == "bool":
+                value = int(bool(value))
+            elif not lo <= value <= hi:
+                raise ValueError(f"{value} is outside {a['type']}")
+            cluster = (device.zigpy_dev.endpoints[a["ep"]].in_clusters or {}).get(a["cluster"])
+            attr = foundation.Attribute()
+            attr.attrid = a["attr"]
+            attr.value = typed_value(SETTING_TYPES[a["type"]], value)
+            ok = cluster is not None and _write_ok(await cluster.write_attributes_raw([attr], a["mfr"]))
+        except Exception as e:
+            logger.warning(f"[{device.ieee}] {name} write failed: {e}")
+            ok = False
+        results[name] = ok
+        if ok:
+            key = _raw_state_key(device, a["cluster"], a["attr"])
+            if key:
+                device.state[key] = value
+            logger.info(f"[{device.ieee}] {name} = {value}")
+        else:
+            logger.warning(f"[{device.ieee}] {name} refused by the device")
+    return results
+

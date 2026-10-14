@@ -74,6 +74,13 @@ class DeviceDiscoveryProviderMixin:
         keys = set()
         for o in schema:
             if o['name'] not in keys: unique.append(o); keys.add(o['name'])
+        # Every other attribute the device accepts writes to, by id until named.
+        try:
+            from modules import zmm_settings
+            covered = {o.get('attribute_id') for o in unique if o.get('attribute_id') is not None}
+            unique.extend(zmm_settings.raw_options(self, covered))
+        except Exception as e:
+            logger.debug(f"[{self.ieee}] unnamed attribute controls unavailable: {e}")
         return unique
 
     def _publish_json_state(self, changed_data: Dict[str, Any], endpoint_id: int = None):

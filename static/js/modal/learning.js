@@ -18,7 +18,15 @@ const STATUS = { pending: 'bg-light text-dark', running: 'bg-primary', done: 'bg
 
 // Steps that question the device by themselves: mode -> what to show meanwhile.
 const BACKGROUND = { discover: 'Asking the device what it has…',
-                     write_probe: 'Writing each value back unchanged…' };
+                     write_probe: 'Writing each value back unchanged…',
+                     find_all: 'Finding everything on the device…' };
+
+// Simple: a short guided list anyone can follow. Advanced: every step, by recipe.
+const VIEW_KEY = 'zmm.learning.view';
+function savedView() {
+    try { return localStorage.getItem(VIEW_KEY) === 'advanced' ? 'advanced' : 'simple'; } catch { return 'simple'; }
+}
+let view = savedView();
 
 const timers = new Map();      // ieee -> countdown interval
 const tabs = new Map();        // ieee -> the recipe (by title) whose steps are shown
@@ -167,11 +175,34 @@ function renderState(root, ieee, st) {
     startCountdown(root, ieee, st);
 }
 
+function viewPills() {
+    const pill = (v, label) => `<li class="nav-item"><button type="button" data-learn-view="${v}"
+        class="nav-link py-1 px-2 ${view === v ? 'active' : ''}">${label}</button></li>`;
+    return `<ul class="nav nav-pills small mb-2">${pill('simple', 'Simple')}${pill('advanced', 'Advanced')}</ul>`;
+}
+
+/** The simple view: the steps anyone can do, in the order to do them. */
+function simpleHtml(st) {
+    const rank = s => s.mode === 'find_all' ? 0 : s.mode === 'lookup' ? 2 : 1;
+    const steps = st.steps.filter(s => s.level !== 'advanced').sort((a, b) => rank(a) - rank(b));
+    const intro = `<div class="small text-muted mb-2">Work down the list. Each step says what to do;
+        press Start, do it, then accept what ZMM found. Finish with <b>Review &amp; save</b>.</div>`;
+    return intro + (steps.length ? steps.map((s, i) => stepHtml(s, st.running, st.trial, i + 1)).join('')
+        : '<div class="small text-muted">Nothing to do here: open Advanced for every step.</div>');
+}
+
 /** One recipe's steps at a time, under a tab per recipe: a device can have a dozen steps. */
 function renderSteps(root, ieee, st, follow = true) {
     const box = root.querySelector('[data-learn-steps]');
     if (!st.steps.length) {
         box.innerHTML = '<div class="small text-muted">No recipe applies to this device yet.</div>';
+        return;
+    }
+    const running = st.steps.find(s => s.key === st.running || s.key === st.trial?.step);
+    if (follow && running?.level === 'advanced') view = 'advanced';     // show what is running
+    if (view === 'simple') {
+        box.innerHTML = viewPills() + simpleHtml(st);
+        updateLive(root, st);
         return;
     }
     const titles = [...new Set(st.steps.map(s => s.title))];
@@ -189,7 +220,7 @@ function renderSteps(root, ieee, st, follow = true) {
             class="nav-link py-1 px-2 text-nowrap ${t === shown ? 'active' : ''}">${esc(t)}
             <span class="opacity-75">${mine.filter(s => DEALT.has(s.status)).length}/${mine.length}</span></button></li>`;
     }).join('');
-    box.innerHTML = `<ul class="nav nav-pills small flex-nowrap overflow-auto gap-1 mb-2">${pills}</ul>`
+    box.innerHTML = viewPills() + `<ul class="nav nav-pills small flex-nowrap overflow-auto gap-1 mb-2">${pills}</ul>`
         + of(shown).map((s, i) => stepHtml(s, st.running, st.trial, i + 1)).join('');
     updateLive(root, st);
 }
@@ -310,6 +341,11 @@ async function onClick(root, ieee, t) {
         return syncEntry(root, ieee, applyButton(root._entry, root, t));
     }
     const card = t.closest('[data-learn-step]');
+    if (d.learnView) {
+        view = d.learnView;
+        try { localStorage.setItem(VIEW_KEY, view); } catch { /* a private window: this visit only */ }
+        return renderSteps(root, ieee, root._learnState, false);
+    }
     if (d.learnTab) {               // not a full render: that would restart a running step's countdown
         tabs.set(ieee, d.learnTab);
         return renderSteps(root, ieee, root._learnState, false);

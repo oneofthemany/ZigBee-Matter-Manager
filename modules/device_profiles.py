@@ -437,6 +437,40 @@ def _normalise_attr_mapping(a: Dict[str, Any]) -> Dict[str, Any]:
 
 # Profile store
 
+# Values the normaliser fills in when a profile says nothing: an overlay that
+# holds one has not decided it, so the entry beneath it stands.
+_UNSET = ("", None, "primary", "generic")
+
+
+def _merge_by(base: List[Dict[str, Any]], top: List[Dict[str, Any]], key: str) -> List[Dict[str, Any]]:
+    out = {x.get(key): x for x in base if isinstance(x, dict)}
+    out.update({x.get(key): x for x in top if isinstance(x, dict)})
+    return list(out.values())
+
+
+def overlay_profile(base: Dict[str, Any], top: Dict[str, Any], _path: str = "") -> Dict[str, Any]:
+    """`top` (a user's edit) laid over `base` (the shipped entry it was made
+    from): what the user set wins, what they left unset keeps the entry's
+    value. Settings and actions merge by id; a blob tag's null is a value (drop
+    it), not unset."""
+    out = dict(base)
+    for k, v in top.items():
+        path = f"{_path}.{k}" if _path else k
+        if k not in base:
+            out[k] = v
+        elif isinstance(v, dict) and isinstance(base[k], dict):
+            out[k] = dict(v) if _path.endswith("struct_tags") else overlay_profile(base[k], v, path)
+        elif path == "zmm.settings" or path == "actions":
+            out[k] = _merge_by(base[k] or [], v or [], "id")
+        elif path == "capabilities":
+            out[k] = sorted(set(base[k] or []) | set(v or []))
+        elif isinstance(v, list):
+            out[k] = v or base[k]
+        elif _path.endswith("struct_tags") or v not in _UNSET:
+            out[k] = v
+    return out
+
+
 class ProfileStore:
     """
     File-backed registry of device profiles.
@@ -695,13 +729,20 @@ class ProfileStore:
                         out.append(p)
             return [dict(p) for p in out]
 
+    def _effective(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        """A user profile saved over a shipped one (same id) is an edit of it:
+        laid over it, so what the user's tools did not carry is not lost."""
+        base = self._profiles_bundled.get(p.get("id"))
+        if p.get("meta", {}).get("source") != "user" or base is None:
+            return dict(p)
+        return overlay_profile(base, p)
+
     def get_profile(self, profile_id: str) -> Optional[Dict[str, Any]]:
         if not profile_id:
             return None
         with self._lock:
-            return dict(self._profiles_user.get(profile_id)
-                        or self._profiles_bundled.get(profile_id)
-                        or {}) or None
+            p = self._profiles_user.get(profile_id) or self._profiles_bundled.get(profile_id)
+            return self._effective(p) if p else None
 
     def get_profile_for_device(
             self,
@@ -727,7 +768,7 @@ class ProfileStore:
             if pid:
                 p = self._profiles_user.get(pid) or self._profiles_bundled.get(pid)
                 if p:
-                    return dict(p)
+                    return self._effective(p)
 
             for table in (self._profiles_user, self._profiles_bundled):
                 # 2/3. Exact match
@@ -738,11 +779,11 @@ class ProfileStore:
                     if protocol == "zigbee":
                         if (model and m["model"] == model
                                 and (not m["manufacturer"] or m["manufacturer"] == manufacturer)):
-                            return dict(p)
+                            return self._effective(p)
                     else:  # matter
                         if (vendor_id is not None and m["vendor_id"] == vendor_id
                                 and product_id and m["product_id"] == product_id):
-                            return dict(p)
+                            return self._effective(p)
                 # 4. Model-only fuzzy fallback (Zigbee). Never for a ZMM entry
                 # that names its maker: generic models (Tuya TS0601) are shared
                 # by unrelated devices, and an entry decides what a device is.
@@ -750,7 +791,7 @@ class ProfileStore:
                     for p in table.values():
                         if p["protocol"] == "zigbee" and p["match"]["model"] == model \
                                 and not (p["meta"].get("source") == "zmm" and p["match"]["manufacturer"]):
-                            return dict(p)
+                            return self._effective(p)
         return None
 
     # CRUD — profiles

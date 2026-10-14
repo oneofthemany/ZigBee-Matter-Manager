@@ -27,6 +27,7 @@
 │    ├── debugging.md
 │    ├── swarm-intelligence.md
 │    ├── mqtt-explorer.md
+│    ├── learning-a-device.md
 │    └── onboarding.md
 │
 ├── ha_utils

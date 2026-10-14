@@ -133,6 +133,14 @@ Highest first:
 4. Bundled profile matching (same priorities)
 5. None — the device runs on built-in handlers / generic fallback
 
+A user profile with the same `id` as a shipped one (ZMM entry or community
+profile) is an edit of it, not a replacement: it is laid over the shipped one
+(`overlay_profile`). What the user set wins; what they left unset (an empty
+label, the default role, `generic` type) keeps the entry's value; settings and
+actions merge by id; capabilities are the union. A tool that saves only part of
+an entry therefore cannot drop the rest. A user profile under a new id still
+stands alone.
+
 ## Application order
 
 Profiles are applied after handler configure, so per-handler reporting wins on
@@ -183,3 +191,16 @@ to have given a real value owns `battery` and `battery_voltage`:
 dropped with it. A level is derived from a voltage only up to 3.6 V, where the
 coin-cell curve applies. `zmm.battery: "voltage"` remains for a device whose
 own percentage is flat until it dies.
+
+## Every writable attribute
+
+A device is configurable the day it joins, before anything names its
+attributes (`zmm_settings.raw_options`). Every maker's attribute the device
+has shown accepts writes (listed writable by discovery, or accepted by the
+learning write probe), of a whole-number or on/off type, and not offered by an
+entry setting or a handler option, is a control under its id
+(`raw_<ep>_<cluster>_<attr>`): a number bounded by its type, or Off/On. The
+settings form shows them under their own *Unnamed* tab and sends only the
+controls a person changed. Naming one in the entry turns it into an ordinary
+setting, and it leaves the Unnamed tab.
+
