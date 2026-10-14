@@ -6,7 +6,14 @@ const path = require('path');
 const REPO = path.resolve(__dirname, '../../..');
 let src = fs.readFileSync(path.join(REPO, 'static/js/drive.js'), 'utf8');
 
-src = src.replace(/^import .*$/m, '');
+// Every import statement, including ones split over lines; what they bring in
+// is supplied below: the real track helpers, and stubs for the rest.
+src = src.replace(/^import[\s\S]*?;[ \t]*$/gm, '');
+const trackSrc = fs.readFileSync(path.join(REPO, 'static/js/drive-track.js'), 'utf8')
+  .replace(/^export /gm, '');
+const TRACK = ['LAYERS', 'layerColour', 'findStops', 'findPeaks', 'nearestIndex',
+               'terrainOf', 'terrainSummary', 'terrainRuns'];
+const track = new Function(trackSrc + `\n; return { ${TRACK.join(', ')} };`)();
 const open = src.indexOf('(function () {');
 const close = src.lastIndexOf('})();');
 const body = src.slice(open + '(function () {'.length, close);
@@ -31,6 +38,8 @@ const stubs = {
     setItem: (k, v) => { store[k] = v; },
   },
   createChart: () => ({ dispose() {} }),
+  whileVisible: () => () => {},
+  ...track,
   fetch: async () => ({ ok: false, status: 500, json: async () => ({}) }),
   console,
 };
