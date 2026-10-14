@@ -87,6 +87,19 @@ def run() -> Checker:
         c.check("a model name alone does not",
                 "contact_sensor" not in caps.get_capabilities(), caps.get_capabilities())
 
+        c.section("an entry's capabilities hold from detection")
+        from device.state import DeviceStateManagerMixin
+        fp300 = _device("lumi.sensor_occupy.agl8", "Aqara", {
+            1: _ep(1, (0x0000, 0x0001, 0x0003, 0x0400, 0x0402, 0x0405, 0xFCC0))},
+            ieee="54:ef:44:10:01:65:58:b3")
+        caps = DeviceCapabilities(fp300)
+        c.check("a presence sensor on a maker cluster is a motion sensor before any join",
+                "motion_sensor" in caps.get_capabilities(), caps.get_capabilities())
+        fp300.capabilities = caps
+        fp300.state = {"occupancy": True, "temperature": 21.0}
+        DeviceStateManagerMixin.sanitise_state(fp300)
+        c.check("so a boot restore keeps its occupancy", "occupancy" in fp300.state, fp300.state)
+
         c.section("a controller EP does not strip a real actuator")
         zdir = tmp / "z2"
         zdir.mkdir()

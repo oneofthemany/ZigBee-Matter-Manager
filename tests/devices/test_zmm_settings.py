@@ -57,6 +57,9 @@ class _Store:
     def get_profile_for_device(self, **_):
         return ENTRY
 
+    def get_ieee_mappings(self, _):
+        return {}
+
 
 class _Fcc0:
     cluster_id = 0xFCC0
@@ -188,6 +191,27 @@ def run() -> Checker:
                 vc.writes[-2:] == [(0x0004, 0x20, 1, None), (0x0001, 0x10, True, None)], vc.writes[-2:])
         c.check("a command the device has no setting for is passed over, not failed",
                 asyncio.run(zmm_settings.apply_command(valve, "valve_detection", 1)) is None)
+
+        c.section("a written value stays until the device reports that attribute")
+        from modules.device_profiles_apply import transform_state_with_profile
+        valve.state["cluster_fc99_attr_0003"] = 2620
+        asyncio.run(zmm_settings.apply_command(valve, "external_temp", 19.5))
+        c.check("the write moves the raw key with it",
+                valve.state["cluster_fc99_attr_0003"] == 1950, valve.state)
+        valve.state["cluster_fc99_attr_0003"] = 2620     # as a store that missed the write
+        other = transform_state_with_profile(valve, {**valve.state, "cluster_fc99_attr_0001": 0},
+                                             changed={"cluster_fc99_attr_0001"})
+        c.check("a report of another attribute does not put the old value back",
+                other["external_temp"] == 19.5, other.get("external_temp"))
+        own = transform_state_with_profile(valve, {**valve.state, "cluster_fc99_attr_0003": 2000},
+                                           changed={"cluster_fc99_attr_0003"})
+        c.check("a report of its own attribute replaces it", own["external_temp"] == 20.0,
+                own.get("external_temp"))
+
+        c.section("a value its type cannot hold is never sent")
+        before = len(vc.writes)
+        ok = asyncio.run(zmm_settings.apply_command(valve, "sensor_type", 500))
+        c.check("it fails before the radio", ok is False and len(vc.writes) == before, vc.writes[before:])
         device_facts.forget(valve_ieee)
     finally:
         device_profiles._store = None

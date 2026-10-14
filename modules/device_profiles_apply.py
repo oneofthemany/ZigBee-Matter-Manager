@@ -164,9 +164,11 @@ def transform_state_with_profile(device, state: Dict[str, Any],
         setting = settings.get((cid, aid))
         if setting is not None:
             from modules.zmm_settings import _from_raw
-            # The report is the device's own word: it replaces what a write left.
-            out[setting["id"]] = _from_raw(setting, int(raw_value) if isinstance(raw_value, bool)
-                                           else raw_value)
+            # A report is the device's own word: it replaces what a write left.
+            # In a live update, a raw key the update does not carry is no report.
+            if setting["id"] not in out or not changed or key in changed:
+                out[setting["id"]] = _from_raw(setting, int(raw_value) if isinstance(raw_value, bool)
+                                               else raw_value)
             continue
 
         mapping = mappings.get(key) or profile_attrs.get((cid, aid))
@@ -387,9 +389,14 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
         except asyncio.TimeoutError:
             results.append({**r, "ok": False, "error": "timeout"})
         except Exception as e:
-            results.append({**r, "ok": False, "error": str(e)})
+            results.append({**r, "ok": False, "error": f"{type(e).__name__}: {e}"})
 
     logger.info(f"[{device.ieee}] Reporting applied: {ok}/{len(rows)} OK")
+    # A save applies this in the background: the log is the only place a reason shows.
+    for res in results:
+        if not res.get("ok"):
+            logger.warning(f"[{device.ieee}] Reporting {res.get('cluster')}/{res.get('attr')} "
+                           f"not set: {res.get('error') or 'no reason given'}")
     return {"success": ok == len(rows), "configured": ok, "results": results}
 
 

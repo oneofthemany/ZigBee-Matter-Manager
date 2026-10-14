@@ -130,6 +130,9 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         try:
             shown = updates[name]
             value = _to_raw(st, shown)
+            lo, hi = TYPE_RANGES.get(st["type"], (0, 1))
+            if not lo <= value <= hi:
+                raise ValueError(f"{value} does not fit {st['type']} (check the setting's scale and kind)")
             tv = typed_value(SETTING_TYPES[st["type"]], value)
             attr = foundation.Attribute()
             attr.attrid = int(st["attr"], 16)
@@ -139,10 +142,15 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             rsp = await cluster.write_attributes_raw([attr], mfr)
             ok = _write_ok(rsp)
         except Exception as e:
-            logger.warning(f"[{device.ieee}] ZMM setting {name} write failed: {e}")
+            logger.warning(f"[{device.ieee}] ZMM setting {name} write failed: {type(e).__name__}: {e}")
             ok = False
         results[name] = ok
         if ok:
+            # The raw key too: the profile recomputes the setting from it, and a
+            # stale one would put the old value back on the next report.
+            key = _raw_state_key(device, int(st["cluster"], 16), int(st["attr"], 16))
+            if key:
+                device.state[key] = value
             device.state[name] = _from_raw(st, value)
             logger.info(f"[{device.ieee}] ZMM setting {name} = {device.state[name]}")
         else:
@@ -338,7 +346,7 @@ async def apply_raw(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             attr.value = typed_value(SETTING_TYPES[a["type"]], value)
             ok = cluster is not None and _write_ok(await cluster.write_attributes_raw([attr], a["mfr"]))
         except Exception as e:
-            logger.warning(f"[{device.ieee}] {name} write failed: {e}")
+            logger.warning(f"[{device.ieee}] {name} write failed: {type(e).__name__}: {e}")
             ok = False
         results[name] = ok
         if ok:

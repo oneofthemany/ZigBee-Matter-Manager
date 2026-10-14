@@ -465,6 +465,12 @@ class DeviceCapabilities:
 
         # PHASE 3: Context-Aware Quirks
 
+        # The entry's capabilities hold from detection, not only after a join's
+        # apply_profile: a boot restore sanitises cached state against them.
+        from modules.device_profiles import profile_for_device
+        entry = profile_for_device(self.device)
+        self._capabilities |= set((entry or {}).get("capabilities") or [])
+
         # A contact that states itself on a client On/Off cluster looks, to
         # every cluster rule, like a button: only a person can say which.
         if pinned == 'contact_sensor':
@@ -479,8 +485,6 @@ class DeviceCapabilities:
         # `role: controller` says its On/Off/Level/Color are a remote's outputs,
         # not a load. Without one, a sensor's EP that sends those commands and
         # serves none is the same thing, by the device's own cluster lists.
-        from modules.device_profiles import profile_for_device
-        entry = profile_for_device(self.device)
         controllers = sorted(int(e) for e, v in ((entry or {}).get("endpoints") or {}).items()
                              if (v or {}).get("role") == "controller")
         if controllers:

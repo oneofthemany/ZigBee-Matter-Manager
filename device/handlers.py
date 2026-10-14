@@ -136,7 +136,8 @@ class DeviceHandlerManagerMixin:
                 await zmm_settings.apply_raw(self, updates)
             except Exception as e:
                 logger.warning(f"[{self.ieee}] ZMM settings failed: {e}")
-            for handler in self.handlers.values():
+            # Each handler is also stored under a bare cluster-id alias.
+            for handler in dict.fromkeys(self.handlers.values()):
                 if hasattr(handler, 'apply_configuration'):
                     try: await handler.apply_configuration(updates)
                     except Exception as e: logger.warning(f"[{self.ieee}] Config failed for {handler.__class__.__name__}: {e}")
