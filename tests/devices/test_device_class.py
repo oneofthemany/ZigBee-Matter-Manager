@@ -126,6 +126,15 @@ def run() -> Checker:
     c.check("the generic handler's key still is", out.get("mode") == "comfort", out)
     c.check("an attribute the entry does not name is left alone",
             out.get("attr_fc99_0009") == 4 and len(out) == 5, out)
+    device_profiles._store = _Store(normalise_profile(
+        {"id": "X1", "match": {"model": "X1", "manufacturer": "Acme"},
+         "endpoints": {"1": {"clusters": {"0xFC99": {"attributes": {
+             "0x0007": {"name": "occupancy", "device_class": "occupancy"},
+             "0x0005": {"name": "mode", "value_map": {"0": "eco", "1": "comfort"}}}}}}}}))
+    out = transform_state_with_profile(dev, {"attr_fc99_0007": 1})
+    c.check("a reading of a binary class is true or false even where its entry names no values",
+            out.get("occupancy") is True
+            and transform_state_with_profile(dev, {"attr_fc99_0007": 0}).get("occupancy") is False, out)
     c.check("a named value is kept while its source is not part of the update",
             transform_state_with_profile(dev, {"cluster_fc99_attr_0005": 0, "mode": "comfort"},
                                          changed={"temperature"})["mode"] == "comfort")

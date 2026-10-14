@@ -579,7 +579,13 @@ async function _saveAssemble(ieee, container) {
     if (rowsJson) {
         let baseRows = [];
         try { baseRows = JSON.parse(rowsJson); } catch {}
-        const newEndpoints = {};
+        // The table shows only some of a mapping (and nothing of an endpoint):
+        // start from the entry so what it does not show is kept.
+        const was = _draft.endpoints || {};
+        const newEndpoints = structuredClone(was);
+        for (const e of Object.values(newEndpoints)) {
+            for (const c of Object.values(e.clusters || {})) c.attributes = {};
+        }
         baseRows.forEach((r, i) => {
             const name  = container.querySelector(`.pd-attr-name[data-i="${i}"]`)?.value.trim() || '';
             if (!name) return;
@@ -588,8 +594,11 @@ async function _saveAssemble(ieee, container) {
             const cls   = container.querySelector(`.pd-attr-class[data-i="${i}"]`)?.value.trim() || '';
             const inv   = container.querySelector(`.pd-attr-inv[data-i="${i}"]`)?.checked || false;
             const ep    = newEndpoints[r.ep] ||= { role: 'primary', clusters: {} };
+            ep.clusters ||= {};
             const cl    = ep.clusters[r.cluster] ||= { attributes: {} };
-            const m     = { name };
+            cl.attributes ||= {};
+            const m     = { ...(was[r.ep]?.clusters?.[r.cluster]?.attributes?.[r.attr] || {}), name };
+            for (const k of ['scale', 'unit', 'device_class', 'invert']) delete m[k];
             if (scale !== 1) m.scale = scale;
             if (unit)        m.unit  = unit;
             if (cls)         m.device_class = cls;

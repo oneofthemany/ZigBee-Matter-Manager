@@ -126,6 +126,25 @@ def _vendor_values(device) -> Tuple[Dict[Any, Any], bool]:
     return {k: v for k, (_, v) in values.items()}, listed
 
 
+def _known_access(device) -> Dict[Any, str]:
+    """{(ep, cluster, attr, mfr): access letters} for the maker's attributes whose access is known."""
+    import json
+    from modules.device_facts import parse_attr_subject, vendor_scoped
+    from modules.zigbee_cache import get_facts
+    out = {}
+    for f in get_facts(str(device.ieee)):
+        parsed = parse_attr_subject(f["subject"]) if f["source"] == "answered" else None
+        if parsed is None or not vendor_scoped(parsed[0], parsed[2]):
+            continue
+        try:
+            acl = json.loads(f["value"]).get("acl")
+        except (ValueError, AttributeError):
+            continue
+        if acl is not None:
+            out[(f["endpoint_id"], *parsed)] = acl
+    return out
+
+
 async def _lookup(device, s: "Session", st: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
     """A step concluded from the evidence already held and what the user enters."""
     from modules.learning_ops import OPS
@@ -308,9 +327,11 @@ async def _discovered(device) -> List[Dict[str, Any]]:
     facts = [Fact(ep, attr_subject("attr", cid, aid, mfr), "answered",
                   _j({**meta, "value": (read.get((ep, cid, aid, mfr)) or {}).get("value")}))
              for (ep, cid, aid, mfr), meta in found.items()]
+    # Access already settled for an unlisted attribute (the write probe) stands.
+    access = _known_access(device)
     facts += [Fact(k[0], attr_subject("attr", k[1], k[2], k[3]), "answered",
                    _j({"type": type_name(read[k]["type"]) if read[k].get("type") is not None else None,
-                       "acl": None, "value": read[k]["value"]}))
+                       "acl": access.get(k), "value": read[k]["value"]}))
               for k in unlisted if k in read]
     record(str(device.ieee), facts)
     from modules.zigbee_cache import drain
@@ -323,11 +344,13 @@ async def _discovered(device) -> List[Dict[str, Any]]:
                       "evidence": f"EP{ep} 0x{cid:04X} lists {len(mine)} attributes, {writable} "
                                   f"writable; {sum(k in read for k in mine)} read"})
         extra = [k for k in unlisted if k[:2] == (ep, cid)]
+        unknown = sum(k not in access for k in extra)
         if extra:
             notes.append({"path": "", "value": None, "confidence": "medium", "op": "discover",
                           "evidence": f"EP{ep} 0x{cid:04X} also reports {len(extra)} attributes it "
                                       f"does not list ({sum(k in read for k in extra)} read): "
-                                      "whether those can be written is not known"})
+                                      + (f"whether {unknown} of those can be written is not known"
+                                         if unknown else "which can be written is already known")})
     return notes
 
 

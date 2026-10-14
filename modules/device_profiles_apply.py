@@ -218,6 +218,12 @@ def transform_state_with_profile(device, state: Dict[str, Any],
     return out
 
 
+# Home Assistant binary_sensor classes: a reading of one is true or false.
+BINARY_CLASSES = frozenset({"occupancy", "motion", "presence", "door", "window", "opening",
+                            "garage_door", "moisture", "smoke", "gas", "vibration", "tamper",
+                            "problem", "safety", "sound", "lock", "plug", "running"})
+
+
 def _apply_attr_transform(value: Any, mapping: Dict[str, Any]) -> Any:
     """Apply scale / value_map / invert to a raw value."""
     if value is None:
@@ -238,6 +244,12 @@ def _apply_attr_transform(value: Any, mapping: Dict[str, Any]) -> Any:
             value = not value
         elif isinstance(value, (int, float)):
             value = 1 - value if value in (0, 1) else value
+
+    # A mapping that names the class but not the two values still yields a
+    # truth value: consumers test `is True`, and 1 is not.
+    if mapping.get("device_class") in BINARY_CLASSES and not isinstance(value, bool) \
+            and isinstance(value, int) and value in (0, 1):
+        return bool(value)
 
     # scale
     scale = mapping.get("scale")

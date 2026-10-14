@@ -443,6 +443,9 @@ def run() -> Checker:
         c.check("refused: it is read-only, and says so",
                 "1 are read-only" in _step(st, "discover.write_access")["proposals"][0]["evidence"],
                 _step(st, "discover.write_access"))
+        again = _step(asyncio.run(discover())[3], "discover.vendor_attributes")
+        c.check("discovering again does not forget what the probe settled",
+                "which can be written is already known" in again["proposals"][1]["evidence"], again)
         st = asyncio.run(probe())
         c.check("with every attribute's access known, there is nothing left to try",
                 fcc0.written == [(0x014F, 3500)]
