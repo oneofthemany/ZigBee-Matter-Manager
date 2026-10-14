@@ -280,6 +280,22 @@ export function renderOverviewTab(device) {
             ? def.current_value : (s[def.name] !== undefined ? s[def.name] : '');
         const unit = def.unit ? ` <span class="text-muted fw-normal">(${def.unit})</span>` : '';
         let html = `<div class="col-md-6"><label class="form-label x-small mb-0 fw-bold">${def.label}${unit}</label>`;
+        if (def.type === 'zones') {
+            // One toggle per zone; the hidden field carries the mask the form saves.
+            const mask = Number.isInteger(Number(val)) && val !== '' ? Number(val) : null;
+            const bits = Array.from({ length: def.bits }, (_, i) => {
+                const id = `zone-${def.name}-${i}`;
+                const on = mask !== null && Math.floor(mask / 2 ** i) % 2 === 1;
+                return `<input type="checkbox" class="btn-check zmm-zone" id="${id}" data-zones="${def.name}"
+                    data-bit="${i}" ${on ? 'checked' : ''} ${mask === null ? 'disabled' : ''}>
+                    <label class="btn btn-outline-primary btn-sm px-2 py-0" for="${id}">${i}</label>`;
+            }).join('');
+            html += `<input type="hidden" name="${def.name}" value="${mask ?? ''}" data-initial="${mask ?? ''}">
+                <div class="d-flex flex-wrap gap-1">${bits}</div>
+                ${mask === null ? '<div class="form-text x-small mt-0">Not read from the device yet.</div>' : ''}`;
+            if (def.description) html += `<div class="form-text x-small mt-0">${def.description}</div>`;
+            return html + `</div>`;
+        }
         if (def.type === 'select' && def.options) {
             // State may hold the option's label ("medium") rather than its value (2).
             const hit = def.options.find(o => o.value == val)
@@ -452,3 +468,16 @@ export async function saveConfig(e) {
     }
 }
 window.saveConfig = saveConfig;
+
+// A zone toggle rewrites its setting's mask, which the form then sends as one number.
+document.addEventListener('change', e => {
+    const t = e.target;
+    if (!t.classList?.contains('zmm-zone')) return;
+    const form = t.closest('form');
+    const name = t.dataset.zones;
+    let mask = 0;
+    form.querySelectorAll(`.zmm-zone[data-zones="${name}"]`).forEach(z => {
+        if (z.checked) mask += 2 ** Number(z.dataset.bit);
+    });
+    form.elements[name].value = String(mask);
+});

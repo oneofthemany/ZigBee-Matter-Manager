@@ -18,6 +18,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.zmm_settings")
 
+ZONES = "zones"         # modules.device_profiles.ZONES
+OCTSTR = 0x41
+
 
 def _entry_settings(device) -> List[Dict[str, Any]]:
     from modules.device_profiles import profile_for_device
@@ -101,7 +104,9 @@ def options(device) -> List[Dict[str, Any]]:
         for k in ("min", "max", "step", "unit"):
             if st.get(k) is not None:
                 opt[k] = st[k]
-        if st["type"] == "bool":
+        if st["type"] == ZONES:
+            opt.update(type="zones", bits=st["bits"])
+        elif st["type"] == "bool":
             opt.update(type="select", options=[{"value": 0, "label": "Off"}, {"value": 1, "label": "On"}])
         elif st["values"]:
             opt.update(type="select", options=[{"value": int(k, 0), "label": v}
@@ -127,13 +132,24 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         if cluster is None:
             results[name] = False
             continue
+        cid, aid = int(st["cluster"], 16), int(st["attr"], 16)
+        key = _raw_state_key(device, cid, aid)
         try:
             shown = updates[name]
-            value = _to_raw(st, shown)
-            lo, hi = TYPE_RANGES.get(st["type"], (0, 1))
-            if not lo <= value <= hi:
-                raise ValueError(f"{value} does not fit {st['type']} (check the setting's scale and kind)")
-            tv = typed_value(SETTING_TYPES[st["type"]], value)
+            if st["type"] == ZONES:
+                current = device.state.get(key) if key else None
+                if current is None:
+                    current = (_shown(_listed(device), ep, st) or {}).get("value")
+                value = _zones_write(st, current, int(float(shown)))
+                if isinstance(current, str):
+                    value = value.hex()         # as the cache and the handler's state hold it
+                tv = typed_value(OCTSTR, bytes.fromhex(value) if isinstance(value, str) else value)
+            else:
+                value = _to_raw(st, shown)
+                lo, hi = TYPE_RANGES.get(st["type"], (0, 1))
+                if not lo <= value <= hi:
+                    raise ValueError(f"{value} does not fit {st['type']} (check the setting's scale and kind)")
+                tv = typed_value(SETTING_TYPES[st["type"]], value)
             attr = foundation.Attribute()
             attr.attrid = int(st["attr"], 16)
             attr.value = tv
@@ -148,7 +164,6 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         if ok:
             # The raw key too: the profile recomputes the setting from it, and a
             # stale one would put the old value back on the next report.
-            key = _raw_state_key(device, int(st["cluster"], 16), int(st["attr"], 16))
             if key:
                 device.state[key] = value
             device.state[name] = _from_raw(st, value)
@@ -188,7 +203,45 @@ def _to_raw(st: Dict[str, Any], shown: Any) -> int:
     return int(round(float(shown) * st["scale"])) if st.get("scale") else int(shown)
 
 
+def _octets(raw: Any) -> Optional[bytes]:
+    """An octet string as handlers and the cache hold it: bytes, or their hex."""
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    if isinstance(raw, str):
+        try:
+            return bytes.fromhex(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _zone_width(st: Dict[str, Any]) -> int:
+    return (st["bits"] + 7) // 8
+
+
+def _zones_mask(st: Dict[str, Any], raw: Any) -> Optional[int]:
+    """Zone i on is bit i of the trailing bytes, read big-endian."""
+    b = _octets(raw)
+    if b is None or len(b) < _zone_width(st):
+        return None
+    return int.from_bytes(b[-_zone_width(st):], "big") & ((1 << st["bits"]) - 1)
+
+
+def _zones_write(st: Dict[str, Any], current: Any, mask: int) -> bytes:
+    """`current` with its zone bits replaced; the leading bytes are the device's."""
+    b = _octets(current)
+    if b is None or len(b) < _zone_width(st):
+        raise ValueError("the device's current value is not known yet: read it first")
+    if not 0 <= mask < (1 << st["bits"]):
+        raise ValueError(f"{mask} is more than {st['bits']} zones")
+    width = _zone_width(st)
+    keep = int.from_bytes(b[-width:], "big") & ~((1 << st["bits"]) - 1)
+    return b[:-width] + (keep | mask).to_bytes(width, "big")
+
+
 def _from_raw(st: Dict[str, Any], raw: Any) -> Any:
+    if st["type"] == ZONES:
+        return _zones_mask(st, raw)
     if raw is None or isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return raw
     if st["type"] == "bool":

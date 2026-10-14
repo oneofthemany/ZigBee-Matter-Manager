@@ -119,6 +119,33 @@ console.log('attributes');
   check('a bad name is refused', applyField(e, el('attr-name', { key: K('0x0142') }, 'Bad Name'), dev) !== null);
 }
 
+console.log('zones');
+{
+  global.CSS = { escape: x => x };
+  // A byte string whose trailing bits are on/off zones (cf. a radar's detection range).
+  const dev = { ...device, attributes: [
+    { ep: 1, cluster: '0xFCC0', attr: '0x019A', mfr: '0x115F', type: 'octstr', value: '0003ffffff', reported: true, writable: null }] };
+  const e = { id: 'x', match: { model: 'x' }, endpoints: {} };
+  const K = '1|0xFCC0|0x019A';
+  applyField(e, el('attr-name', { key: K }, 'detection_range'), dev);
+  applyField(e, el('attr-open', { key: K }, '', true), dev);
+  check('a byte string is named as a reading', e.endpoints['1'].clusters['0xFCC0'].attributes['0x019A']?.name === 'detection_range');
+  const html = editorHtml(e, dev);
+  check('its details offer zones, not number kinds', html.includes('Zones (on / off bits)') && !html.includes('One of a list'));
+  check('as zones', applyField(e, el('attr-f', { key: K, f: 'kind' }, 'zones'), dev) === null);
+  const st = (e.zmm?.settings || []).find(x => x.attr === '0x019A');
+  check('it becomes a setting with its maker code, and the reading goes',
+        st?.type === 'zones' && st.id === 'detection_range' && st.mfr === '0x115F'
+        && !('0x019A' in e.endpoints['1'].clusters['0xFCC0'].attributes), st);
+  check('a zone count is set', applyField(e, el('attr-f', { key: K, f: 'bits' }, '24'), dev) === null && st.bits === 24);
+  check('one outside 1 to 48 is refused', applyField(e, el('attr-f', { key: K, f: 'bits' }, '64'), dev) !== null && st.bits === 24);
+  check('the details show the count', editorHtml(e, dev).includes('data-f="bits"'));
+  applyField(e, el('attr-f', { key: K, f: 'kind' }, 'number'), dev);
+  check('back to as sent, it is a reading again',
+        e.endpoints['1'].clusters['0xFCC0'].attributes['0x019A']?.name === 'detection_range'
+        && !e.zmm.settings.some(x => x.attr === '0x019A'));
+}
+
 console.log('what ZMM asks of the device, and actions');
 {
   global.CSS = { escape: x => x };

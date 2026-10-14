@@ -93,7 +93,8 @@ def _real_library(c: Checker) -> None:
     c.check("a response schema of successes is accepted",
             zmm_settings._write_ok(Schema(status_records=ok)))
     c.check("one refused record is a refusal", not zmm_settings._write_ok(Schema(status_records=bad)))
-    for type_id, raw in ((0x10, 1), (0x20, 100), (0x29, 700), (0x30, 1), (0x23, 300), (0x28, -3)):
+    for type_id, raw in ((0x10, 1), (0x20, 100), (0x29, 700), (0x30, 1), (0x23, 300), (0x28, -3),
+                         (0x41, bytes.fromhex("0003ffffff"))):
         attr = foundation.Attribute()
         attr.attrid = 0x6000
         attr.value = zmm_settings.typed_value(type_id, raw)
@@ -213,6 +214,45 @@ def run() -> Checker:
         ok = asyncio.run(zmm_settings.apply_command(valve, "sensor_type", 500))
         c.check("it fails before the radio", ok is False and len(vc.writes) == before, vc.writes[before:])
         device_facts.forget(valve_ieee)
+
+        c.section("zones: on/off bits at the end of a byte string")
+        c.check("a zones setting with no zone count is dropped",
+                not normalise_profile({"id": "R", "match": {"model": "R"}, "zmm": {"settings": [
+                    {"id": "range", "type": "zones", "ep": 1, "cluster": "0xFCC0", "attr": "0x019A"}]}})
+                .get("zmm", {}).get("settings"))
+        ENTRY = normalise_profile({
+            "id": "RADAR-1", "match": {"model": "RADAR-1"},
+            "zmm": {"settings": [{"id": "detection_range", "type": "zones", "bits": 24, "ep": 1,
+                                  "cluster": "0xFCC0", "attr": "0x019A", "mfr": "0x115F", "scale": 10}]}})
+        st = ENTRY["zmm"]["settings"][0]
+        c.check("it keeps its zone count and nothing a number would have",
+                st["bits"] == 24 and "scale" not in st, st)
+        radar_ieee = "aa:bb:cc:00:00:00:00:02"
+        rc = _Fcc0()
+        radar = NS(ieee=radar_ieee, state={},
+                   zigpy_dev=NS(endpoints={0: None, 1: NS(in_clusters={0xFCC0: rc})}, model="RADAR-1"))
+        device_facts.forget(radar_ieee)
+        record(radar_ieee, [Fact(1, "attr:0xFCC0/0x019A@0x115F", "answered",
+                                 _j({"acl": None, "type": "0x41/octstr", "value": "0003ffffff"}))])
+        opt = {o["name"]: o for o in zmm_settings.options(radar)}.get("detection_range") or {}
+        c.check("it is offered as zones, every one on as the device said",
+                opt.get("type") == "zones" and opt.get("bits") == 24 and opt.get("current_value") == 0xFFFFFF, opt)
+        ok = asyncio.run(zmm_settings.apply(radar, {"detection_range": 0x000FFF}))
+        attr, typ, value, mfr = rc.writes[-1] if rc.writes else (None,) * 4
+        c.check("zones 0-11 on are written as a byte string, its leading bytes kept, with the maker's code",
+                ok == {"detection_range": True} and (attr, typ, bytes(value), mfr)
+                == (0x019A, 0x41, bytes.fromhex("0003000fff"), 0x115F), rc.writes)
+        c.check("and shown as the mask", radar.state.get("detection_range") == 0x000FFF, radar.state)
+        radar.state["opple_0x019a"] = "0003000fff"
+        asyncio.run(zmm_settings.apply(radar, {"detection_range": 0xFFFFFF}))
+        c.check("the next write starts from the device's own value, in the form state holds it",
+                radar.state["opple_0x019a"] == "0003ffffff" and bytes(rc.writes[-1][2]) == bytes.fromhex("0003ffffff"),
+                radar.state)
+        before = len(rc.writes)
+        ok = asyncio.run(zmm_settings.apply(radar, {"detection_range": 1 << 24}))
+        c.check("more zones than it has is never sent",
+                ok == {"detection_range": False} and len(rc.writes) == before)
+        device_facts.forget(radar_ieee)
     finally:
         device_profiles._store = None
         if zigbee_cache._db is not None:

@@ -134,6 +134,13 @@ reading. Then open **Details** and say what kind of value it is:
   low, `2` medium…). Configuration then shows a dropdown of those words.
 - **On / off**: a switch, or for a reading, true or false.
 
+A value the device sends as a string of bytes (a radar's detection range,
+`0003ffffff`) is either shown **As sent**, as a reading, or treated as
+**Zones**: say how many, and its last bits become a row of numbered on/off
+buttons in Configuration (zone 0 the lowest bit). ZMM writes back the bytes
+before the zones as the device gave them. Which zone is which spot in the
+room is for you to find: turn one off and walk through it.
+
 A setting also takes a label and a description; a reading takes its Home
 Assistant class (`temperature`, `occupancy`…). Under *What ZMM asks of the
 device*:
@@ -149,7 +156,10 @@ Both are sent when the device joins and again when you save.
 
 **Actions** are one-shot commands the device takes as a write (restart, start
 learning): a name, the attribute, its type and the value written. Each
-becomes a button on the device's Control tab. Once named, an attribute's raw
+becomes a button on the device's Control tab. Some values only appear after
+one: a radar that measures distance only while tracking reports it once a
+*start tracking* action has been sent, and it can then be named like any
+other. Once named, an attribute's raw
 `opple 0x…` row disappears from the device's attribute list: the reading
 shows under its name, a setting under Device Settings.
 

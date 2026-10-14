@@ -333,7 +333,15 @@ that device.
   `step` and `unit`, and its id is also a command (`zmm_settings.apply_command`):
   a caller can set `child_lock` on any device whose entry names one, and
   `device.supports_setting(name)` says whether it can. A report of the
-  attribute is filed under the setting's id.
+  attribute is filed under the setting's id, and a write moves the raw value
+  with it, so only a later report of that attribute replaces what was written.
+- **Zones.** A setting of type `zones` with `bits: N` (1 to 48) is an octet
+  string whose last N bits are on/off zones: zone *i* is bit *i* of the
+  trailing bytes read big-endian. It is shown and saved as that mask; a write
+  keeps the bytes before the zones, and any spare bits, as the device last gave
+  them, so it needs the current value from a read or a report first. Which
+  zone is which place is the device's: find it by switching one off and
+  walking through it. 48 is the most a browser number carries exactly.
 - **Readings.** An attribute mapping names a raw value; the name follows the
   raw value on every report, and a binary device class yields true or false.
 

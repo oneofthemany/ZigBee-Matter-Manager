@@ -351,6 +351,9 @@ def measured_endpoints(v: Any) -> Optional[List[int]]:
     return None
 SETTING_TYPES = {"bool": 0x10, "uint8": 0x20, "uint16": 0x21, "uint32": 0x23, "int8": 0x28,
                  "int16": 0x29, "enum8": 0x30}
+# An octet string whose last `bits` bits are on/off zones; the bytes before them
+# are kept as the device last gave them (device-profiles.md §4, "Zones").
+ZONES = "zones"
 
 
 def _normalise_zmm(z: Any) -> Dict[str, Any]:
@@ -397,8 +400,12 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
         sid, typ = str(st.get("id") or ""), str(st.get("type") or "")
         cl, at, mfr = _to_int(st.get("cluster")), _to_int(st.get("attr")), _to_int(st.get("mfr"))
         ep = st.get("ep")
-        if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", sid) or typ not in SETTING_TYPES \
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", sid) or (typ not in SETTING_TYPES and typ != ZONES) \
                 or cl is None or at is None or not (ep == "each" or _to_int(ep) is not None):
+            continue
+        bits = st.get("bits")
+        # 48: the mask travels as a browser number, exact only to 2**53.
+        if typ == ZONES and not (isinstance(bits, int) and not isinstance(bits, bool) and 1 <= bits <= 48):
             continue
         values = {str(k): str(v) for k, v in (st.get("values") or {}).items()
                   if _to_int(k) is not None}
@@ -416,6 +423,11 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
                 setting[k] = v
         if st.get("unit"):
             setting["unit"] = str(st["unit"])[:8]
+        if typ == ZONES:
+            setting["bits"] = bits
+            for k in ("scale", "min", "max", "step", "unit"):
+                setting.pop(k, None)
+            setting["values"] = {}
         settings.append(setting)
     if settings:
         out["settings"] = settings

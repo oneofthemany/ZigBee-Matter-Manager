@@ -122,6 +122,7 @@ function kindOf(found, a) {
     const { as, spec } = found;
     if (!spec) return 'number';
     if (as === 'setting') {
+        if (spec.type === 'zones') return 'zones';
         if (spec.type === 'bool') return 'onoff';
         const v = spec.values || {};
         const keys = Object.keys(v).sort();
@@ -158,11 +159,20 @@ function detailsHtml(entry, a) {
     const key = attrKey(a);
     const kind = kindOf(found, a);
     const opt = (v, label) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${label}</option>`;
+    // A byte string is no number: it is shown as sent, or its trailing bits are zones.
+    const kinds = a.type === 'octstr' || kind === 'zones'
+        ? opt('number', 'As sent (a reading)') + opt('zones', 'Zones (on / off bits)')
+        : opt('number', 'A number') + opt('choice', 'One of a list') + opt('onoff', 'On / off');
     let html = `<div class="row g-2 align-items-end">
         <div class="col-6 col-md-3"><label class="form-label x-small mb-0">Kind of value</label>
             <select class="form-select form-select-sm" data-qe="attr-f" data-f="kind" data-key="${esc(key)}">
-            ${opt('number', 'A number')}${opt('choice', 'One of a list')}${opt('onoff', 'On / off')}</select></div>`;
+            ${kinds}</select></div>`;
     if (as === 'setting') html += field('Label', 'label', key, spec.label);
+    if (kind === 'zones') {
+        html += field('Zones', 'bits', key, spec.bits, 'number', 'min="1" max="48" step="1"');
+        html += `<div class="col-12 form-text x-small mt-0">The last bits of the value, zone 0 the lowest;
+            the bytes before them are sent back as the device gave them.</div>`;
+    }
     if (kind === 'number') {
         html += field('Unit', 'unit', key, spec.unit, 'text', 'placeholder="sec, °C, %"')
             + field('Divide by', 'scale', key, spec.scale, 'number', 'min="0" placeholder="1"');
@@ -312,6 +322,29 @@ function setDetail(entry, a, f, raw) {
     if (!found.spec) return 'name it first';
     const { as, spec } = found;
     const value = String(raw ?? '').trim();
+    if (f === 'kind' && (value === 'zones') !== (kindOf(found, a) === 'zones')) {
+        // Zones are a setting (they are written); leaving them, the name stays a reading.
+        const name = found.name;
+        if (as === 'setting') entry.zmm.settings = entry.zmm.settings.filter(x => x !== spec);
+        else delete entry.endpoints[String(a.ep)].clusters[a.cluster].attributes[a.attr];
+        if (value === 'zones') {
+            const st = { id: name, label: humanise(name), type: 'zones', bits: 8, ep: a.ep,
+                         cluster: a.cluster, attr: a.attr, values: {} };
+            if (a.mfr) st.mfr = a.mfr;
+            zmm(entry, 'settings', []).push(st);
+        } else {
+            const c = ((ep(entry, a.ep).clusters ??= {})[a.cluster] ??= {});
+            (c.attributes ??= {})[a.attr] = { name };
+        }
+        return null;
+    }
+    if (f === 'kind' && value === 'zones') return null;
+    if (f === 'bits') {
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 1 || n > 48) return 'zones must be a whole number from 1 to 48';
+        spec.bits = n;
+        return null;
+    }
     if (f === 'kind') {
         const labelsKey = as === 'setting' ? 'values' : 'value_map';
         if (value === 'number') {
