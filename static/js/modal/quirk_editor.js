@@ -70,17 +70,37 @@ function measurementRows(entry, device) {
     }).join('');
 }
 
-function tagRows(entry) {
+function tagRows(entry, device) {
+    // Every tag the device has sent, with its value, beside those the entry names:
+    // the value is what a person matches against what they know.
     const tags = entry.zmm?.struct_tags || {};
-    return Object.entries(tags).map(([tag, spec]) => `<tr>
+    const seen = Object.fromEntries((device.blob_tags || []).map(t => [t.tag, t]));
+    const keys = [...new Set([...Object.keys(seen), ...Object.keys(tags)])]
+        .sort((a, b) => parseInt(a, 16) - parseInt(b, 16));
+    const shown = (t, spec) => {
+        if (!t) return '<span class="text-muted">not seen</span>';
+        const v = esc(t.value);
+        const n = Number(t.value);
+        return spec?.scale && spec.scale !== 1 && Number.isFinite(n)
+            ? `${v} <span class="text-muted">→ ${esc(+(n * spec.scale).toFixed(3))}</span>` : v;
+    };
+    return keys.map(tag => {
+        const spec = tags[tag];
+        const named = tag in tags;
+        const hint = named ? 'dropped' : (seen[tag]?.map ? `unnamed (map: ${seen[tag].map})` : 'unnamed');
+        return `<tr>
         <td><code>${esc(tag)}</code></td>
-        <td><input class="form-control form-control-sm" data-qe="tag-name" data-key="${esc(tag)}"
-            value="${esc(spec?.name || '')}" placeholder="dropped"></td>
+        <td class="text-nowrap">${shown(seen[tag], spec)}</td>
+        <td><input class="form-control form-control-sm" style="min-width:10rem" data-qe="tag-name"
+            data-key="${esc(tag)}" value="${esc(spec?.name || '')}" placeholder="${esc(hint)}"></td>
         <td><input type="number" step="any" class="form-control form-control-sm" style="width:6rem"
             data-qe="tag-scale" data-key="${esc(tag)}" value="${esc(spec?.scale ?? '')}" ${spec ? '' : 'disabled'}></td>
-        <td class="text-end"><button class="btn btn-outline-danger btn-sm" data-qe-del="tag" data-key="${esc(tag)}">×</button></td>
-    </tr>`).join('') + `<tr><td><input class="form-control form-control-sm" style="width:5rem"
-        data-qe-new="tag" placeholder="0x97"></td><td colspan="2" class="text-muted small">empty name = never publish it</td>
+        <td class="text-end">${named ? `<button class="btn btn-outline-danger btn-sm" data-qe-del="tag"
+            data-key="${esc(tag)}" title="forget what the entry says of it">×</button>` : ''}</td>
+    </tr>`;
+    }).join('') + `<tr><td><input class="form-control form-control-sm" style="width:5rem"
+        data-qe-new="tag" placeholder="0x97"></td><td colspan="3" class="text-muted small">a tag not seen yet;
+        an empty name drops it</td>
         <td class="text-end"><button class="btn btn-outline-secondary btn-sm" data-qe-add="tag">Add</button></td></tr>`;
 }
 
@@ -107,7 +127,9 @@ export function editorHtml(entry, device) {
                    + 'ZMM then files it under what it really measures.')
         + (Object.keys(device.measurements).length
             ? section('Measurements', ['Reading', 'Handling', 'Scaling'], measurementRows(entry, device)) : '')
-        + section('Blob tags', null, tagRows(entry), 'Values packed in the maker\'s status report (Aqara 0xF7/0xDF).')
+        + section('Blob tags', ['Tag', 'Last value', 'Name', 'Scale', ''], tagRows(entry, device),
+                  'Values packed in the maker\'s status report (Aqara 0xF7/0xDF). Name a tag to publish it; '
+                  + 'the scale turns the raw value into its unit (0.001 for mV → V).')
         + section('Press names', null, pressRows(entry), 'Button value → action name.')
         + (settings.length ? `<div class="small text-muted">Settings: ${settings.map(s => esc(s.label || s.id)).join(', ')}
             (edit in the JSON below)</div>` : '');
@@ -168,6 +190,7 @@ export function applyField(entry, el, device) {
         const name = el.value.trim();
         if (name && !NAME_RE.test(name)) return 'a tag name is lower case letters, digits and _';
         const tags = zmm(entry, 'struct_tags', {});
+        if (!name && !(d.key in tags)) break;       // a seen tag left unnamed stays as it was
         tags[d.key] = name ? { name, scale: tags[d.key]?.scale ?? 1 } : null;
         break;
     }

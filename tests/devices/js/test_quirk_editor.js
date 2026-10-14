@@ -34,6 +34,24 @@ const device = {
 const el = (qe, data, value, checked) => ({ dataset: { qe, ...data }, value, checked });
 const entry = { id: 'lumi.plug.aeu002', match: { model: 'lumi.plug.aeu002' }, endpoints: {} };
 
+console.log('blob tags');
+{
+  const dev = { ...device, blob_tags: [{ tag: '0x17', blob: '0x00F7', value: 3211, map: null },
+                                       { tag: '0x05', blob: '0x00F7', value: 1, map: 'voltage' }] };
+  const e = { id: 'x', match: { model: 'x' }, endpoints: {}, zmm: { struct_tags: { '0x18': { name: 'battery', scale: 1 } } } };
+  const html = editorHtml(e, dev);
+  check('every tag the device sent is listed with its last value', html.includes('3211') && html.includes('0x05'));
+  check('and what the global map would call one left unnamed', html.includes('unnamed (map: voltage)'));
+  check('a tag the entry names but the device has not sent says so', html.includes('not seen'));
+  applyField(e, el('tag-name', { key: '0x17' }, ''), dev);
+  check('leaving a seen tag unnamed adds nothing to the entry', !('0x17' in e.zmm.struct_tags));
+  applyField(e, el('tag-name', { key: '0x17' }, 'battery_voltage'), dev);
+  applyField(e, el('tag-scale', { key: '0x17' }, '0.001'), dev);
+  check('naming it, with a scale, makes it an entry tag',
+        JSON.stringify(e.zmm.struct_tags['0x17']) === JSON.stringify({ name: 'battery_voltage', scale: 0.001 }));
+  check('and the form shows the scaled value beside the raw one', editorHtml(e, dev).includes('3211 <span class="text-muted">→ 3.211'));
+}
+
 console.log('endpoints');
 applyField(entry, el('ep-kind', { ep: '3' }, 'switch'), device);
 applyField(entry, el('ep-label', { ep: '3' }, '  USB  '), device);

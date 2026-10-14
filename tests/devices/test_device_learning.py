@@ -485,6 +485,17 @@ def run() -> Checker:
         c.check("accepted, they are settings in the entry the review would save",
                 {x["id"] for x in rv["entry"]["zmm"]["settings"]}
                 == {"schedule_time_raw", "temp_and_humidity_sampling_period"}, rv["entry"]["zmm"])
+        device_facts.record(PRESENCE_IEEE, [device_facts.Fact(
+            1, "reports:0xFCC0/0x00F7@0x115F", "observed", json.dumps(
+                {"nonzero": True, "last": "052101000a21529c1721960c18206401395c8f4a43"}))])
+        asyncio.run(zigbee_cache.drain())
+        tags = {t["tag"]: t for t in device_learning.editor_context(pres)["blob_tags"]}
+        c.check("the editor is given every tag of the device's status blob with its last value",
+                tags["0x17"]["value"] == 3222 and tags["0x18"]["value"] == 100
+                and tags["0x01"]["value"] == 202.56 and tags["0x0A"]["value"] == 40018, tags)
+        c.check("and the name the global map would give a tag left unnamed",
+                tags["0x05"]["map"] == "voltage" and tags["0x17"]["map"] is None, tags)
+
         asyncio.run(device_learning.end(pres))
 
         asyncio.run(device_learning.end(dev))

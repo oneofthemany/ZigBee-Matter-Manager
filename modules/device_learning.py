@@ -951,8 +951,33 @@ def editor_context(device) -> Dict[str, Any]:
         for name, (cl, at) in EDITABLE_MEASUREMENTS.items():
             if cl in clusters and name not in measurements:
                 measurements[name] = {"cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}", "ep": ep_id}
-    return {"endpoints": eps, "measurements": measurements,
+    return {"endpoints": eps, "measurements": measurements, "blob_tags": blob_tags(device),
             "model": str(device.zigpy_dev.model or "")}
+
+
+def blob_tags(device) -> List[Dict[str, Any]]:
+    """Every tag in the device's latest Aqara status blobs with the value it
+    last carried, so a person can match them against what they know (a
+    battery at 3.2 V, a power-on count) and name them. The global map's name,
+    where it has one, is what ZMM falls back on for a tag left unnamed."""
+    from handlers.aqara import BLOB_ATTRS_SEEN, XIAOMI_ATTR_MAP, parse_xiaomi_struct
+    values, _ = _vendor_values(device)
+    out: Dict[int, Dict[str, Any]] = {}
+    for (ep, cid, aid, _mfr), raw in sorted(values.items(), key=lambda kv: str(kv[0])):
+        if cid != 0xFCC0 or aid not in BLOB_ATTRS_SEEN or not isinstance(raw, str):
+            continue
+        try:
+            tags = parse_xiaomi_struct(bytes.fromhex(raw))
+        except ValueError:
+            continue
+        for tag, v in tags.items():
+            if isinstance(v, float):
+                v = round(v, 3)
+            elif isinstance(v, (bytes, bytearray)):
+                v = bytes(v).hex()
+            out.setdefault(tag, {"tag": f"0x{tag:02X}", "blob": f"0x{aid:04X}", "value": v,
+                                 "map": XIAOMI_ATTR_MAP.get(tag, (None,))[0]})
+    return [out[t] for t in sorted(out)]
 
 
 def preview_entry(device, entry: Dict[str, Any]) -> Dict[str, Any]:

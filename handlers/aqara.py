@@ -128,6 +128,9 @@ XIAOMI_ATTR_MAP = {
     0x6F: ("startup_on_off", lambda v: v),  # power-on behaviour
 }
 
+# The attributes that carry a status blob (0xF7 most; 0xDF on some models).
+BLOB_ATTRS_SEEN = (0x00DC, 0x00DF, 0x00E5, 0x00F7)
+
 # Tags the map reads as mains measurements or a relay's state. A battery
 # device has neither: there the same slots hold something else.
 XIAOMI_MAINS_TAGS = frozenset({0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x64, 0x65, 0x6E, 0x6F,
@@ -513,7 +516,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             logger.info(f"[{self.device.ieee}] Measurement interval: {value}s")
 
         # Xiaomi Structured Attributes (0x00DF and 0x00F7)
-        elif attrid in (0x00DC, 0x00DF, 0x00E5, 0x00F7):
+        elif attrid in BLOB_ATTRS_SEEN:
             if isinstance(value, (bytes, bytearray)):
                 try:
                     parsed = parse_xiaomi_struct(value)
