@@ -31,6 +31,8 @@ const fns = [
   'export function coerceParam(spec, raw) {',
   'export function colourName(spec, value) {',
   'export function paramField(p) {',
+  'function defaultGroup(s, slot) {',
+  'function groupPicker(s, slot) {',
   'export function cardHtml(s, opts) {',
   'export function summaryLine(sum, shown, hiddenDismissed) {',
 ].map(mark => slice(mark, '\n}').replace('export ', '')).join('\n');
@@ -267,6 +269,40 @@ section('a collected slot is a checklist');
         !S.cardHtml(DUSK, { editable: false }).includes('data-sg-member'));
   check('a built card shows badges, not boxes',
         !S.cardHtml({ ...DUSK, status: 'active' }, { editable: true }).includes('data-sg-member'));
+}
+
+section('alike lights, and the group that holds them');
+{
+  const ids = ['0xa', '0xb', '0xc'];
+  const KITCHEN = {
+    id: 'sg_kit', pattern_id: 'presence_light_when_dark', title: 'Light when someone comes in',
+    sentence: 'When someone is detected in Kitchen, turn on A, turn on B and 1 more',
+    category: 'lighting', room: 'kitchen', room_label: 'Kitchen', confidence: 'high',
+    status: 'available', choosable: ['light'],
+    groups: { light: [
+      { id: 'group:13', name: 'Kitchen <Lights>', members: ids, covers_all: true },
+      { id: 'group:20', name: 'Pair', members: ['0xa', '0xb'], covers_all: false }] },
+    devices: [
+      { slot: 'sensor', ieee: '0xmotion', name: 'Motion - Kitchen', offer: 'presence:detected' },
+      ...ids.map(i => ({ slot: 'light', ieee: i, name: 'Light ' + i, offer: 'lighting:on' })),
+      ...ids.map(i => ({ slot: 'off', ieee: i, name: 'Light ' + i, offer: 'lighting:off', follows: 'light' })),
+    ],
+  };
+  const html = S.cardHtml(KITCHEN, { editable: true, dismissed: false });
+  check('each light is listed once, though off follows on',
+        (html.match(/data-sg-member=/g) || []).length === 3, html.match(/data-sg-member="[^"]+"/g));
+  check('the card can send to a group', html.includes('data-sg-group="light"'));
+  check('starting on the group holding exactly these lights',
+        /value="group:13"[^>]*selected/.test(html.replace(/\s+/g, ' ')), html);
+  check('light by light is the other choice', html.includes('Each ticked device'));
+  check('a chosen group locks its lights ticked',
+        (html.match(/\bdisabled\b/g) || []).length === 3);
+  check('group names are escaped', html.includes('Kitchen &lt;Lights&gt;'));
+  const plain = S.cardHtml({ ...KITCHEN, groups: {} }, { editable: true });
+  check('with no group, no picker and nothing locked',
+        !plain.includes('data-sg-group') && !/\bdisabled\b/.test(plain));
+  check('a built card offers no group', !S.cardHtml({ ...KITCHEN, status: 'active' },
+        { editable: true }).includes('data-sg-group'));
 }
 
 section('summaryLine');

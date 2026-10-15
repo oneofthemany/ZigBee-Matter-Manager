@@ -16,7 +16,7 @@ offering the second is not useful.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from modules.automation import TIME_SOURCE, TRIGGER_OPERATORS, iter_leaf_conditions
 
@@ -43,12 +43,16 @@ def _walk_steps(steps: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
             yield from _walk_steps(branch)
 
 
-def _targets(rule: Dict[str, Any]) -> Tuple[Tuple[str, str], ...]:
+def _targets(rule: Dict[str, Any],
+             groups: Optional[Dict[str, Dict[str, Any]]] = None) -> Tuple[Tuple[str, str], ...]:
     """(target, command) pairs a rule drives, from both sequences.
 
     A message counts as a target so that "leak detected -> tell Sean" is not
-    re-offered; the recipient is the target and "message" the command.
+    re-offered; the recipient is the target and "message" the command. A group
+    in `groups` is its members: a rule switching "Kitchen Lights" switches the
+    kitchen's lights, and a suggestion for them is that rule.
     """
+    groups = groups or {}
     out: Set[Tuple[str, str]] = set()
     for field in ("then_sequence", "else_sequence"):
         for step in _walk_steps(rule.get(field) or []):
@@ -60,7 +64,9 @@ def _targets(rule: Dict[str, Any]) -> Tuple[Tuple[str, str], ...]:
                 # a setpoint of 21 and one of 21.5 are the same one.
                 if isinstance(step.get("value"), str) and step["value"]:
                     command = f"{command}:{step['value'].lower()}"
-                out.add((str(step["target_ieee"]), command))
+                target = str(step["target_ieee"])
+                for member in (groups.get(target) or {}).get("members") or [target]:
+                    out.add((str(member), command))
             elif kind == "request" and step.get("to_user"):
                 out.add((str(step["to_user"]), "message"))
             elif kind == "media" and step.get("player_id"):
@@ -150,18 +156,21 @@ def _shape(rule: Dict[str, Any]) -> Tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def signature(rule: Dict[str, Any]) -> Signature:
+def signature(rule: Dict[str, Any],
+              groups: Optional[Dict[str, Dict[str, Any]]] = None) -> Signature:
     """The wiring a rule represents. Thresholds and names are deliberately out."""
-    return (str(rule.get("source_ieee", "")), _watched(rule), _targets(rule),
+    return (str(rule.get("source_ieee", "")), _watched(rule), _targets(rule, groups),
             _shape(rule))
 
 
-def index_rules(rules: Iterable[Dict[str, Any]]) -> Dict[Signature, List[Dict[str, Any]]]:
+def index_rules(rules: Iterable[Dict[str, Any]],
+                groups: Optional[Dict[str, Dict[str, Any]]] = None
+                ) -> Dict[Signature, List[Dict[str, Any]]]:
     """Existing rules keyed by wiring, so a candidate can be looked up directly."""
     index: Dict[Signature, List[Dict[str, Any]]] = {}
     for rule in rules or []:
         try:
-            index.setdefault(signature(rule), []).append(rule)
+            index.setdefault(signature(rule, groups), []).append(rule)
         except Exception as e:                                  # noqa: BLE001
             # A malformed saved rule must not take the whole suggestion list
             # down with it; it is reported by diagnostics instead.
@@ -195,7 +204,8 @@ def status_for(compiled: Dict[str, Any],
 
 
 def coverage(described: List[Dict[str, Any]],
-             rules: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+             rules: Iterable[Dict[str, Any]],
+             groups: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Which devices participate in at least one rule, and which do not.
 
     A device counts as covered whether it triggers a rule or is driven by one —
@@ -211,7 +221,7 @@ def coverage(described: List[Dict[str, Any]],
     # A device a trigger condition names takes part as much as the source does.
     sources |= {str(c["ieee"]) for r in rules
                 for c in iter_leaf_conditions(r.get("conditions")) if c.get("ieee")}
-    targets = {t for r in rules for t, _ in _targets(r)}
+    targets = {t for r in rules for t, _ in _targets(r, groups)}
     involved = sources | targets
 
     covered, uncovered = [], []

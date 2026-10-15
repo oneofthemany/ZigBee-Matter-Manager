@@ -215,6 +215,46 @@ export function readExcluded(card) {
         .filter(el => !el.checked).map(el => el.dataset.sgMember);
 }
 
+/** {slot: group id} for each slot the card sends to a group instead of light by light. */
+export function readGroups(card) {
+    const out = {};
+    card.querySelectorAll('[data-sg-group]').forEach(sel => {
+        if (sel.value) out[sel.dataset.sgGroup] = sel.value;
+    });
+    return out;
+}
+
+/** The group a slot starts on: the one holding exactly its devices, else none. */
+function defaultGroup(s, slot) {
+    return ((s.groups || {})[slot] || []).find(g => g.covers_all)?.id || '';
+}
+
+/** A chosen group switches all of its members, so they stay ticked while it is chosen. */
+export function syncGroupMembers(card, slot) {
+    const sel = card.querySelector(`[data-sg-group="${CSS.escape(slot)}"]`);
+    const group = [...(sel?.options || [])].find(o => o.selected && o.value);
+    const inside = new Set(group ? JSON.parse(group.dataset.members || '[]') : []);
+    card.querySelectorAll(`[data-sg-member][data-sg-slot="${CSS.escape(slot)}"]`).forEach(box => {
+        const covered = inside.has(box.dataset.sgMember);
+        if (covered) box.checked = true;
+        box.disabled = covered;
+    });
+}
+
+function groupPicker(s, slot) {
+    const offered = (s.groups || {})[slot] || [];
+    if (!offered.length) return '';
+    const chosen = defaultGroup(s, slot);
+    const options = [`<option value=""${chosen ? '' : ' selected'}>Each ticked device</option>`]
+        .concat(offered.map(g => `<option value="${esc(g.id)}" data-members="${esc(JSON.stringify(g.members))}"
+            ${g.id === chosen ? 'selected' : ''}>Group: ${esc(g.name)} (${g.members.length})</option>`));
+    return `<div class="d-flex flex-wrap align-items-center gap-2 mt-2 small">
+        <label class="text-muted" for="sg-group-${esc(s.id)}-${esc(slot)}">Send to</label>
+        <select class="form-select form-select-sm w-auto mw-100" id="sg-group-${esc(s.id)}-${esc(slot)}"
+                data-sg-group="${esc(slot)}" title="A group is one command for all its devices">
+            ${options.join('')}</select></div>`;
+}
+
 // RENDER
 
 export function cardHtml(s, opts) {
@@ -227,10 +267,15 @@ export function cardHtml(s, opts) {
     // A collected action ("every light") is a checklist the user may untick;
     // everything else is fixed by the pattern and shown as a badge.
     const choosable = new Set(!built && editable ? (s.choosable || []) : []);
-    const devices = (s.devices || []).map(d => choosable.has(d.slot)
+    const inGroup = slot => new Set(((s.groups || {})[slot] || [])
+        .find(g => g.id === defaultGroup(s, slot))?.members || []);
+    // A slot that follows another ("otherwise turn off" those lights) takes its
+    // ticks and group from it, so its devices are not listed twice.
+    const devices = (s.devices || []).filter(d => !d.follows).map(d => choosable.has(d.slot)
         ? `<label class="badge bg-light text-dark border fw-normal" title="${esc(d.label || d.offer)}">
                <input type="checkbox" class="form-check-input me-1 align-middle" checked
-                      data-sg-member="${esc(d.ieee)}">${esc(d.name)}</label>`
+                      ${inGroup(d.slot).has(d.ieee) ? 'disabled' : ''}
+                      data-sg-member="${esc(d.ieee)}" data-sg-slot="${esc(d.slot)}">${esc(d.name)}</label>`
         : `<span class="badge bg-light text-dark border fw-normal${d.proposed ? ' border-info' : ''}"
                title="${esc(d.label || d.offer)}">${d.proposed ? '<i class="fas fa-plus me-1"></i>' : ''}
             ${esc(d.name)}</span>`).join(' ');
@@ -273,6 +318,7 @@ export function cardHtml(s, opts) {
           </div>
           <div class="small text-muted mt-1">${esc(s.sentence)}</div>
           <div class="mt-2 d-flex flex-wrap gap-1">${devices}</div>
+          ${[...choosable].map(slot => groupPicker(s, slot)).join('')}
           ${creates}
           ${params}
           <div class="mt-auto pt-3 d-flex flex-wrap align-items-center gap-2">${actions}</div>
@@ -431,6 +477,10 @@ function bind(host) {
         });
     }
 
+    host.querySelectorAll('[data-sg-group]').forEach(sel => {
+        sel.addEventListener('change', () => syncGroupMembers(sel.closest('[data-sg-card]'), sel.dataset.sgGroup));
+    });
+
     host.querySelectorAll('[data-sg-action]').forEach(btn => {
         btn.addEventListener('click', () => {
             const id = btn.dataset.id;
@@ -450,6 +500,7 @@ async function create(id, btn) {
     const card = document.querySelector(`[data-sg-card="${CSS.escape(id)}"]`);
     const params = card ? readParams(card, suggestion.params) : {};
     const exclude = card ? readExcluded(card) : [];
+    const groups = card ? readGroups(card) : {};
 
     await withBusy(btn, async () => {
         try {
@@ -457,7 +508,7 @@ async function create(id, btn) {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ params, exclude }),
+                body: JSON.stringify({ params, exclude, groups }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Could not build that suggestion');

@@ -52,6 +52,10 @@ ALWAYS_REACTIVE_TYPES = ("zone", "offline")
 # otherwise exhaust, and switching them together is what anyone would expect.
 PARALLEL_AFTER = 3
 
+# Commands the engine can send to a Zigbee group (AutomationEngine._step_group_command);
+# a slot offers its group only where its steps are one of these.
+GROUP_COMMANDS = ("on", "off", "toggle", "brightness", "color_temp")
+
 _SLOT_PART = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)@(value|name)")
 _SLOT_ALL = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)@all")
 _SLOT_TOKEN = re.compile(r"\$[a-zA-Z_][a-zA-Z0-9_]*")
@@ -141,6 +145,30 @@ def _members(fill: Dict[str, Any]) -> List[Dict[str, Any]]:
     return fill.get("members") or [fill]
 
 
+def _split_group(fill: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]],
+                                               List[Dict[str, Any]]]:
+    """(group, members it covers, members it does not) for a slot sent to a group."""
+    group = fill.get("group")
+    members = _members(fill)
+    if not group:
+        return None, [], members
+    inside = set(group["members"])
+    return (group, [m for m in members if m["ieee"] in inside],
+            [m for m in members if m["ieee"] not in inside])
+
+
+def group_fits(fill: Dict[str, Any], group: Dict[str, Any]) -> bool:
+    """Whether a slot may be sent to `group`: every group member is one of the
+    slot's devices (so it switches nothing the suggestion did not name), and
+    the slot's command is one a group takes."""
+    members = _members(fill)
+    ieees = {m["ieee"] for m in members}
+    commands = {str((m["offer"].get("step") or {}).get("command")) for m in members}
+    return (len(group.get("members") or []) >= 2 and set(group["members"]) <= ieees
+            and all(m["offer"].get("step", {}).get("type") == "command" for m in members)
+            and commands <= set(GROUP_COMMANDS))
+
+
 class _Context:
     def __init__(self, pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
                  overrides: Optional[Dict[str, Any]], trigger_device: str,
@@ -164,8 +192,8 @@ class _Context:
             return []
         params = self.slot_params(slot)
         ref = self.value_ref((self.slots.get(slot) or {}).get("value_from_slot"))
-        out = []
-        for member in _members(fill):
+
+        def step_of(member: Dict[str, Any]) -> Dict[str, Any]:
             step = copy.deepcopy(member["offer"].get("step") or {})
             pid = member["offer"].get("param")
             if pid and pid in params and "value" in step:
@@ -173,7 +201,18 @@ class _Context:
             # A shared number read live, rather than a literal baked in.
             if ref is not None and step.get("type") == "command":
                 step["value"] = dict(ref)
+            return step
+
+        group, inside, rest = _split_group(fill)
+        out = []
+        if group:
+            # One group command, built from a member's own step, in place of a
+            # step per light: one frame on the radio rather than one each.
+            step = step_of(inside[0] if inside else _members(fill)[0])
+            step["target_ieee"] = group["id"]
+            step["endpoint_id"] = None
             out.append(step)
+        out.extend(step_of(m) for m in rest)
         if len(out) > PARALLEL_AFTER:
             return [{"type": "parallel", "branches": [[step] for step in out]}]
         return out
@@ -462,16 +501,22 @@ def describe_candidate(pattern: Dict[str, Any],
             return None
         spec = slots.get(slot) or {}
         params = effective_params(pattern, slot=slot)
-        members = _members(fill)
+        group, inside, members = _split_group(fill)
         source = fills.get(spec.get("value_from_slot") or "")
         shown = _members(source)[0]["device"]["name"] if source else None
         texts = [_render_label(m["offer"], params, shown) for m in members]
+        if group and inside:
+            # The group in its members' words: "turn on Kitchen Lights".
+            first = inside[0]
+            texts.insert(0, _render_label(first["offer"], params, shown)
+                         .replace(first["device"]["name"], group["name"]))
+        many = spec.get("collect") or fill.get("merged")
         if joiner is None and spec.get("collect") and len(texts) > 1:
             # A group reads in brackets, as the builder's humanizer shows one:
             # "leaves and (A is open, B is open or C is open)" is not ambiguous.
             logic = spec.get("collect_logic", "or")
             text = f"({', '.join(texts[:-1])} {logic} {texts[-1]})"
-        elif spec.get("collect") and len(texts) > PARALLEL_AFTER:
+        elif many and len(texts) > PARALLEL_AFTER:
             # Twelve "turn off …" clauses is a list, not a sentence.
             text = f"{', '.join(texts[:2])} and {len(texts) - 2} more"
         else:

@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from modules.automation import RUN_MODES, TIME_SOURCE
 from modules.swarm.capabilities import WORKER_TEMPLATES, worker_payload, worker_satisfies
 from modules.swarm.compiler import (
-    CompileError, compile_rule, describe_candidate, effective_params,
+    CompileError, compile_rule, describe_candidate, effective_params, group_fits,
 )
 from modules.swarm.resolver import hub_device, proposed_worker_device
 from modules.swarm.dedupe import coverage, index_rules, status_for
@@ -150,11 +150,15 @@ def build(described: List[Dict[str, Any]],
           rooms: Optional[Dict[str, str]] = None,
           names: Optional[Dict[str, str]] = None,
           validator: Optional[Any] = None,
-          patterns: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+          patterns: Optional[List[Dict[str, Any]]] = None,
+          groups: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Every suggestion the swarm can make, with the trace behind it.
 
     `validator` is the AutomationEngine; when supplied, each compiled rule is put
-    through its validation and anything rejected is withheld.
+    through its validation and anything rejected is withheld. `groups` is the
+    engine's like-for-like groups, {"group:<id>": {"id", "name", "members"}}:
+    a rule driving one counts as driving its members, and a slot whose devices
+    hold one may be sent to it.
     """
     rules = list(rules or [])
     rooms = rooms or {}
@@ -163,7 +167,8 @@ def build(described: List[Dict[str, Any]],
     names = names or {d["ieee"]: d["name"] for d in described}
     proposed = {d["ieee"] for d in described if d.get("proposed_template")}
 
-    index = index_rules(rules)
+    groups = groups or {}
+    index = index_rules(rules, groups)
     suggestions: List[Dict[str, Any]] = []
     traces: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
@@ -229,15 +234,18 @@ def build(described: List[Dict[str, Any]],
                 "devices": [{"slot": k, "ieee": m["ieee"],
                              "name": m["device"]["name"], "offer": m["offer"]["key"],
                              "label": m["offer"]["label"],
-                             "proposed": bool(m["device"].get("proposed_template"))}
+                             "proposed": bool(m["device"].get("proposed_template")),
+                             **({"follows": v["follows"]} if v.get("follows") else {})}
                             for k, v in candidate["fills"].items()
                             for m in (v.get("members") or [v])],
                 "creates_workers": _creates_workers(candidate["fills"]),
                 "params": _exposed_params(pattern),
                 "alternatives": candidate.get("alternatives") or {},
-                "choosable": choosable_slots(pattern),
+                "choosable": choosable_slots(pattern, candidate["fills"]),
+                "groups": fitting_groups(pattern, candidate["fills"], groups),
                 "rule": rule,
-                **status_for(rule, index, subset_ok=bool(choosable_slots(pattern))),
+                **status_for(rule, index,
+                             subset_ok=bool(choosable_slots(pattern, candidate["fills"]))),
             })
 
     suggestions.sort(key=lambda s: (
@@ -249,7 +257,7 @@ def build(described: List[Dict[str, Any]],
 
     return {
         "suggestions": suggestions,
-        "coverage": coverage(described, rules),
+        "coverage": coverage(described, rules, groups),
         "summary": _summarise(suggestions, patterns, traces),
         "trace": traces,
         "rejected": rejected,
@@ -335,10 +343,60 @@ def find(built: Dict[str, Any], suggestion_id_: str) -> Optional[Dict[str, Any]]
     return None
 
 
-def choosable_slots(pattern: Dict[str, Any]) -> List[str]:
-    """Collected action slots: every light, say, of which the user may untick some."""
-    return sorted(name for name, spec in (pattern.get("slots") or {}).items()
-                  if spec.get("role") == "action" and spec.get("collect"))
+def choosable_slots(pattern: Dict[str, Any],
+                    fills: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
+    """Action slots holding several devices, of which the user may untick some:
+    a collected slot ("every light"), or alike devices merged into one variant."""
+    out = {name for name, spec in (pattern.get("slots") or {}).items()
+           if spec.get("role") == "action" and spec.get("collect")}
+    out |= {name for name, fill in (fills or {}).items()
+            if fill.get("merged") and not fill.get("follows")}
+    return sorted(out)
+
+
+def _followers(fills: Dict[str, Dict[str, Any]], slot: str) -> List[str]:
+    """Slots that mirror `slot` ("otherwise turn off" the lights it turned on):
+    what is unticked or grouped there is unticked or grouped in them too."""
+    return sorted(n for n, f in fills.items() if f.get("follows") == slot)
+
+
+def fitting_groups(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
+                   groups: Dict[str, Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """{slot: groups it may be sent to}, for each choosable slot, the group
+    holding all of the slot's devices first."""
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for name in choosable_slots(pattern, fills):
+        fill = fills.get(name)
+        if not fill:
+            continue
+        ieees = {m["ieee"] for m in (fill.get("members") or [fill])}
+        fit = [{"id": gid, "name": g["name"], "members": sorted(g["members"]),
+                "covers_all": set(g["members"]) == ieees}
+               for gid, g in sorted(groups.items()) if group_fits(fill, g)]
+        if fit:
+            out[name] = sorted(fit, key=lambda g: (not g["covers_all"], -len(g["members"]), g["name"]))
+    return out
+
+
+def with_groups(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
+                chosen: Optional[Dict[str, Any]],
+                groups: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """``fills`` with each chosen slot sent to its group. Only a group the slot
+    was offered may be chosen, so a client cannot aim a rule elsewhere."""
+    if not chosen:
+        return fills
+    offered = fitting_groups(pattern, fills, groups)
+    out = dict(fills)
+    for name, gid in chosen.items():
+        if not gid:
+            continue
+        if not any(g["id"] == gid for g in offered.get(name, [])):
+            raise CompileError(f"{gid!r} is not a group slot {name!r} can be sent to")
+        group = {"id": gid, "name": groups[gid]["name"], "members": list(groups[gid]["members"])}
+        for slot in [name] + _followers(fills, name):
+            if slot == name or group_fits(out[slot], groups[gid]):
+                out[slot] = {**out[slot], "group": group}
+    return out
 
 
 def without_members(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
@@ -353,7 +411,8 @@ def without_members(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
         return fills
     slots = pattern.get("slots") or {}
     out = dict(fills)
-    for name in choosable_slots(pattern):
+    leaders = choosable_slots(pattern, fills)
+    for name in leaders + [f for slot in leaders for f in _followers(fills, slot)]:
         fill = out.get(name)
         if not fill:
             continue
@@ -364,7 +423,7 @@ def without_members(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
                 raise CompileError(f"leave at least one device in {name!r}")
             out.pop(name)
             continue
-        out[name] = {"ieee": kept[0]["ieee"], "device": kept[0]["device"],
+        out[name] = {**fill, "ieee": kept[0]["ieee"], "device": kept[0]["device"],
                      "offer": kept[0]["offer"], "members": kept}
     return out
 
@@ -373,18 +432,23 @@ def recompile(pattern: Dict[str, Any], suggestion: Dict[str, Any],
               described: List[Dict[str, Any]],
               overrides: Optional[Dict[str, Any]] = None,
               rooms: Optional[Dict[str, str]] = None,
-              exclude: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+              exclude: Optional[Iterable[str]] = None,
+              chosen_groups: Optional[Dict[str, Any]] = None,
+              groups: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Rebuild one suggestion's rule with user-supplied parameter values.
 
     Applying a suggestion re-matches rather than trusting a rule carried back
     from the client: the network may have changed since it was offered, and a
     client-supplied rule is a client-supplied rule. ``exclude`` only ever
-    narrows a choosable slot, so it cannot add a device the match did not.
+    narrows a choosable slot, so it cannot add a device the match did not;
+    ``chosen_groups`` ({slot: "group:<id>"}) sends a slot to a group it was offered,
+    which then covers its members whether ticked or not.
     """
     result = match_pattern(pattern, with_synthetic(described, [pattern]), rooms or {})
     for candidate in result["candidates"]:
         if suggestion_id(pattern["id"], candidate["fills"]) == suggestion["id"]:
-            fills = without_members(pattern, candidate["fills"], exclude or ())
+            fills = with_groups(pattern, candidate["fills"], chosen_groups, groups or {})
+            fills = without_members(pattern, fills, exclude or ())
             return compile_rule(pattern, fills, overrides,
                                 candidate.get("room_label"))
     raise CompileError(

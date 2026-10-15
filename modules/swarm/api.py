@@ -129,10 +129,24 @@ def register_swarm_routes(app: FastAPI,
             logger.warning(f"Could not read rules for deduplication: {exc}")
             return []
 
+    def _groups() -> Dict[str, Dict[str, Any]]:
+        """The engine's like-for-like groups — the ones it offers as targets."""
+        e = engine()
+        try:
+            gm = e._get_group_manager() if e and getattr(e, "_get_group_manager", None) else None
+            if not gm:
+                return {}
+            return {f"group:{gid}": {"id": f"group:{gid}", "name": g["name"],
+                                     "members": [str(m) for m in g.get("members") or []]}
+                    for gid, g in gm.groups.items() if e._is_group_homogeneous(gm, g)}
+        except Exception as exc:
+            logger.warning(f"Could not read groups for suggestions: {exc}")
+            return {}
+
     def _build():
         described, names = _described()
         return described, sg.build(described, rules=_rules(), rooms=load_rooms(),
-                                   names=names, validator=engine())
+                                   names=names, validator=engine(), groups=_groups())
 
     @app.get("/api/swarm/stigmergy", tags=["swarm"])
     async def list_patterns():
@@ -221,9 +235,12 @@ def register_swarm_routes(app: FastAPI,
             exclude = body.get("exclude") or []
             if not isinstance(exclude, list):
                 raise HTTPException(400, "exclude must be a list of device ids")
+            chosen = body.get("groups") or {}
+            if not isinstance(chosen, dict):
+                raise HTTPException(400, "groups must map a slot to a group id")
             rule = sg.recompile(pattern, found, described,
                                 overrides=body.get("params"), rooms=load_rooms(),
-                                exclude=exclude)
+                                exclude=exclude, chosen_groups=chosen, groups=_groups())
         except CompileError as exc:
             raise HTTPException(409, str(exc))
 

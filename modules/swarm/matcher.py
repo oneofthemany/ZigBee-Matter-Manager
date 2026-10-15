@@ -27,8 +27,8 @@ NO_OFFER_IN_SCOPE = "no_offer_in_scope"   # it exists, but not in this room
 CLASS_MISMATCH = "class_mismatch"    # offered, but by the wrong kind of device
 PREFERENCE_UNMET = "preference_unmet"     # required same-device pairing absent
 
-# A room with many lights would otherwise produce a suggestion per light, which
-# reads as noise. The cap keeps the obvious ones and drops the tail.
+# Variants of a varying slot per scope. Alike actions are already one variant
+# (_merge_alike), so this caps the kinds of thing, not the lamps.
 MAX_VARIANTS_PER_SLOT = 4
 # House-wide, the trigger is the only partition there is: "tell me when a
 # battery runs low" is one automation per battery device, and capping that at
@@ -190,6 +190,33 @@ def _distinct_devices(pairs: List[Tuple[Dict, Dict]]) -> List[Tuple[Dict, Dict]]
     return out
 
 
+def _fill(pair: Tuple[Dict, Dict]) -> Dict[str, Any]:
+    dev, offer = pair
+    return {"ieee": dev["ieee"], "device": dev, "offer": offer}
+
+
+def _merge_alike(pairs: List[Tuple[Dict, Dict]]) -> List[Dict[str, Any]]:
+    """A varying action slot's variants: devices doing the same thing (same
+    offer, same device class) as one fill whose members the user may untick,
+    and each other device on its own (docs/swarm-intelligence.md, "What varies").
+
+    Six kitchen spots are one automation with six targets, not six; a light and
+    a socket in the same room are still two.
+    """
+    kinds: Dict[Tuple[Any, Any], List[Tuple[Dict, Dict]]] = {}
+    for dev, offer in pairs:
+        kinds.setdefault((offer["key"], dev.get("device_class")), []).append((dev, offer))
+    out = []
+    for same in kinds.values():
+        if len(same) == 1:
+            out.append(_fill(same[0]))
+            continue
+        kept = same[:MAX_COLLECT_STEPS]
+        out.append({**_fill(kept[0]), "merged": True,
+                    "members": [_fill(p) for p in kept]})
+    return out
+
+
 def _scope_pool(described: List[Dict[str, Any]], room: Optional[str]
                 ) -> List[Dict[str, Any]]:
     """Devices a room-scoped slot may draw on: that room, plus house-scope devices.
@@ -257,7 +284,7 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
     blocked: Optional[str] = None
 
     vary_slots = _vary_slots(pattern)
-    vary_pairs: Dict[str, List[Tuple[Dict, Dict]]] = {}
+    vary_pairs: Dict[str, List[Dict[str, Any]]] = {}
     house = pattern.get("scope") == SCOPE_HOUSE
     source_slot = emits.get("source")
 
@@ -309,9 +336,12 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
                                 "alternatives": 0, "note": None}
             continue
         if name in vary_slots:
-            cap = MAX_SOURCE_VARIANTS if house and name == source_slot else MAX_VARIANTS_PER_SLOT
-            vary_pairs[name] = _distinct_devices(
-                _rank_anchored(ranked, name, slots, pool))[:cap]
+            distinct = _distinct_devices(_rank_anchored(ranked, name, slots, pool))
+            if house and name == source_slot:
+                # A house-wide trigger is the partition: one rule per battery.
+                vary_pairs[name] = [_fill(p) for p in distinct[:MAX_SOURCE_VARIANTS]]
+            else:
+                vary_pairs[name] = _merge_alike(distinct)[:MAX_VARIANTS_PER_SLOT]
         dev, offer = ranked[0]
         fills[name] = {"ieee": dev["ieee"], "device": dev, "offer": offer}
         if len(ranked) > 1:
@@ -343,17 +373,27 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
     candidates = []
     for combo in combos:
         these = dict(fills)
-        for name, (dev, offer) in combo.items():
-            these[name] = {"ieee": dev["ieee"], "device": dev, "offer": offer}
+        for name, variant in combo.items():
+            these[name] = variant
+            dev, offer = variant["device"], variant["offer"]
             # A slot pinned to a varying one follows it.
             for other, spec in slots.items():
                 if spec.get("prefer_slot") != name or other not in these:
                     continue
-                repin = _prefer_filter(_candidates(pool, spec)[0],
-                                       spec.get("prefer") or "same_device", dev, offer)
-                if repin:
-                    these[other] = {"ieee": repin[0][0]["ieee"],
-                                    "device": repin[0][0], "offer": repin[0][1]}
+                found = _candidates(pool, spec)[0]
+                prefer = spec.get("prefer") or "same_device"
+                # Merged alike devices: the pinned slot follows each of them, so
+                # "otherwise turn off" turns off every light "turn on" lit.
+                followed = []
+                for m in variant.get("members") or [variant]:
+                    repin = _prefer_filter(found, prefer, m["device"], m["offer"])
+                    if repin:
+                        followed.append(_fill(repin[0]))
+                if len(followed) > 1:
+                    these[other] = {**followed[0], "merged": True, "follows": name,
+                                    "members": followed}
+                elif followed:
+                    these[other] = followed[0]
                 elif spec.get("optional"):
                     these.pop(other, None)
         if not _resolve_exclusions(these, slots, pool):
@@ -385,7 +425,15 @@ def _resolve_exclusions(these: Dict[str, Dict[str, Any]],
         other = spec.get("exclude_slot")
         if not other or name not in these or other not in these:
             continue
-        if these[name]["ieee"] != these[other]["ieee"]:
+        if these[name].get("merged"):
+            # Alike devices together: only the one it must differ from leaves.
+            kept = [m for m in these[name]["members"] if m["ieee"] != these[other]["ieee"]]
+            if len(kept) == len(these[name]["members"]):
+                continue
+            if kept:
+                these[name] = {**kept[0], "merged": True, "members": kept}
+                continue
+        elif these[name]["ieee"] != these[other]["ieee"]:
             continue
         alt = [p for p in _rank_fills(_candidates(pool, spec)[0])
                if p[0]["ieee"] != these[other]["ieee"]]

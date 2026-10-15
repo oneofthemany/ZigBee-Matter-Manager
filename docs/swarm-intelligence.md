@@ -686,7 +686,12 @@ Some checks are never prerequisites, whatever supplies them:
 A pattern matched in one scope can still yield several suggestions, and which
 slot varies is a judgement about what a person would want twice:
 
-- The **action** slot varies. Two lamps in a room are two real automations.
+- The **action** slot varies by **kind**. Devices making the same offer with
+  the same device class — five kitchen lights — are one variant: one card whose
+  devices are a ticked checklist, so a single-light rule is the same card with
+  the others unticked. A light and a socket in one room are still two
+  (`matcher._merge_alike`). A slot pinned to it ("otherwise turn off" those
+  lights) follows every member, and takes its ticks and its group from it.
 - In a **house**-scoped pattern the **trigger** varies too. Nothing else
   partitions it: "tell me when a battery runs low" must produce one per battery
   device, and "unlock when someone gets home" one per person.
@@ -696,8 +701,8 @@ slot varies is a judgement about what a person would want twice:
 - **collected** slots never vary — they already hold every device. A new
   device joining one changes the suggestion's id, since it is a different rule.
 
-A varying action is capped at four per scope (`MAX_VARIANTS_PER_SLOT`): a room
-with many lamps gets the obvious ones. A varying *trigger* in a house-scoped
+A varying action is capped at four variants per scope (`MAX_VARIANTS_PER_SLOT`):
+four kinds of thing, since alike lamps are already one. A varying *trigger* in a house-scoped
 pattern is capped at 24 (`MAX_SOURCE_VARIANTS`) and a house scope at 48
 candidates, because there the trigger is the only partition — capping battery
 alerts at four silently dropped two thirds of a real house's batteries.
@@ -770,6 +775,17 @@ source, triggers and shape whose targets are a non-empty **subset** of a
 choosable suggestion's as that suggestion, built — so "every light at dusk,
 minus the pendant" does not re-offer "every light at dusk".
 
+A choosable slot also lists the **groups** that fit it (`groups`): the
+engine's like-for-like groups whose every member is one of the slot's devices,
+for a command a group takes (`compiler.GROUP_COMMANDS`). The one holding exactly
+the slot's devices comes first, marked `covers_all`. Apply takes
+`groups: {slot: "group:<id>"}` and compiles one group step — one frame on the
+radio, where six bulbs switched in parallel can time out — plus a step for each
+ticked device the group does not hold. Only an offered group is accepted, so a
+client cannot aim a rule elsewhere. Dedupe and coverage read a group target as
+its members, so a rule switching "Kitchen Lights" is the kitchen-lights
+suggestion, built, and counts those lights as automated.
+
 Workers the suggestion needs (`creates_workers`) are created through the
 worker manager first, starting at the card's parameters, so the rule's source
 and targets exist when the engine checks them; any made for a rule the engine
@@ -823,7 +839,9 @@ call and never seen. **Automations → Suggested** is that list.
 Each card is one suggestion: its sentence, the devices that fill its slots, and
 its tunable parameters as live fields. Devices in a choosable slot are
 checkboxes, all ticked — *Lights on as daylight fades* lists every light, and
-unticking one leaves it out of the rule. Cards are grouped by the room the pattern
+unticking one leaves it out of the rule. Where a group fits, **Send to** picks
+it or *Each ticked device*; it starts on the group holding exactly those
+devices, and a chosen group's members stay ticked, since it switches them all. Cards are grouped by the room the pattern
 matched in, with house-scoped patterns (`room: null`) under *Whole house* rather
 than lumped in with the unassigned.
 
