@@ -601,14 +601,18 @@ A practical example — turn on a light when a door opens in low light, turn it 
 
 **Conditions:**
 - IF `contact` = `open`
-- AND `illuminance` < `11`
 
 **THEN:**
+- 🚧 Gate → `illuminance` < `11`
 - ⚡ Command → Hall Light → ON
 
 **ELSE:**
 - ⏱ Delay → 5 seconds
 - ⚡ Command → Hall Light → OFF
+
+The lux check is a Gate, not a condition. As a condition, the light's own glow
+on the sensor would fail it, which runs the ELSE and turns the light off again.
+As a Gate it only decides whether the light comes on.
 
 ---
 
