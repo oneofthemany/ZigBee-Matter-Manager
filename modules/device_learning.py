@@ -1019,7 +1019,7 @@ def blob_tags(device) -> List[Dict[str, Any]]:
     where it has one, is what ZMM falls back on for a tag left unnamed."""
     from handlers.aqara import BLOB_ATTRS_SEEN, XIAOMI_ATTR_MAP, parse_xiaomi_struct
     values, _ = _vendor_values(device)
-    out: Dict[int, Dict[str, Any]] = {}
+    seen: Dict[Tuple[int, int], Any] = {}
     for (ep, cid, aid, _mfr), raw in sorted(values.items(), key=lambda kv: str(kv[0])):
         if cid != 0xFCC0 or aid not in BLOB_ATTRS_SEEN or not isinstance(raw, str):
             continue
@@ -1032,9 +1032,17 @@ def blob_tags(device) -> List[Dict[str, Any]]:
                 v = round(v, 3)
             elif isinstance(v, (bytes, bytearray)):
                 v = bytes(v).hex()
-            out.setdefault(tag, {"tag": f"0x{tag:02X}", "blob": f"0x{aid:04X}", "value": v,
-                                 "map": XIAOMI_ATTR_MAP.get(tag, (None,))[0]})
-    return [out[t] for t in sorted(out)]
+            seen.setdefault((tag, aid), v)
+    # A tag one blob carries is named for every blob ("0x05"); one that two
+    # blobs carry is listed, and named, per blob ("0x00F7/0x05"): a model may use
+    # one number for different things in each (device-profiles.md §4, "Blob tags").
+    blobs: Dict[int, int] = {}
+    for tag, _aid in seen:
+        blobs[tag] = blobs.get(tag, 0) + 1
+    return [{"tag": f"0x{tag:02X}", "blob": f"0x{aid:04X}",
+             "key": f"0x{aid:04X}/0x{tag:02X}" if blobs[tag] > 1 else f"0x{tag:02X}",
+             "value": v, "map": XIAOMI_ATTR_MAP.get(tag, (None,))[0]}
+            for (tag, aid), v in sorted(seen.items())]
 
 
 def preview_entry(device, entry: Dict[str, Any]) -> Dict[str, Any]:

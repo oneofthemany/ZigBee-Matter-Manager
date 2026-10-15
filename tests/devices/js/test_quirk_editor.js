@@ -52,6 +52,22 @@ console.log('blob tags');
   check('and the form shows the scaled value beside the raw one', editorHtml(e, dev).includes('3211 <span class="text-muted">→ 3.211'));
 }
 
+console.log('a tag two blobs carry');
+{
+  const dev = { ...device, blob_tags: [
+    { tag: '0x05', blob: '0x00DF', key: '0x00DF/0x05', value: 8, map: 'voltage' },
+    { tag: '0x05', blob: '0x00F7', key: '0x00F7/0x05', value: 1, map: 'voltage' }] };
+  const e = { id: 'x', match: { model: 'x' }, endpoints: {}, zmm: { struct_tags: { '0x05': null } } };
+  const html = editorHtml(e, dev);
+  check('it is a row per blob, saying which', html.includes('in 0x00F7') && html.includes('in 0x00DF'));
+  check('and the every-blob drop is shown on each', (html.match(/dropped \(every blob\)/g) || []).length === 2);
+  applyField(e, el('tag-name', { key: '0x00F7/0x05' }, 'power_outage_count'), dev);
+  check('naming one names it in that blob only',
+        JSON.stringify(e.zmm.struct_tags) === JSON.stringify({ '0x05': null, '0x00F7/0x05': { name: 'power_outage_count', scale: 1 } }),
+        e.zmm.struct_tags);
+  check('the every-blob key keeps a row of its own, so it can be removed', /every blob<\/div>/.test(editorHtml(e, dev)));
+}
+
 console.log('attributes');
 {
   global.CSS = { escape: x => x };

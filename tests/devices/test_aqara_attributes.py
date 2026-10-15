@@ -232,6 +232,15 @@ def run() -> Checker:
         h.attribute_updated(0x00DF, AGL8_DF)
         c.check("the tags its entry names are the battery: 100 % at 3.222 V",
                 (dev.state.get("battery"), dev.state.get("battery_voltage")) == (100, 3.222), dev.state)
+        c.check("its power-outage count is 0x00F7's tag 0x05, not 0x00DF's, which counts something else",
+                dev.state.get("power_outage_count") == 1, dev.state.get("power_outage_count"))
+        from modules.device_profiles import normalise_profile
+        kept = normalise_profile({"id": "x", "match": {"model": "x"}, "zmm": {"struct_tags": {
+            "0xf7/5": {"name": "a"}, "0x00DF/0x05": None, "0x05": {"name": "b"}, "zz/0x05": {"name": "c"}}}})
+        c.check("an entry may name a tag in one blob only; a malformed blob is dropped",
+                kept["zmm"]["struct_tags"] == {"0x00F7/0x05": {"name": "a", "scale": 1},
+                                               "0x00DF/0x05": None, "0x05": {"name": "b", "scale": 1}},
+                kept["zmm"]["struct_tags"])
         c.check("its other tags are not filed as a plug's voltage, power or switches",
                 not {"voltage", "power", "device_temperature", "switch_state",
                      "switch_state_ep2"} & set(dev.state), dev.state)

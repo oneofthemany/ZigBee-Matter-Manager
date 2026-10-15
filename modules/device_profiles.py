@@ -434,14 +434,18 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
 
     tags: Dict[str, Any] = {}
     for key, spec in (z.get("struct_tags") or {}).items():      # Aqara 0xF7/0xDF blob tags
-        tag = _to_int(key)
-        if tag is None or not 0 <= tag <= 0xFFFF:
+        # "0x05" is that tag in every blob; "0x00F7/0x05" in that blob only, for
+        # a model whose blobs use one tag number for different things.
+        blob, _, part = str(key).rpartition("/")
+        tag, blob_id = _to_int(part), _to_int(blob) if blob else None
+        if tag is None or not 0 <= tag <= 0xFFFF or (blob and blob_id is None):
             continue
+        key = f"0x{blob_id:04X}/0x{tag:02X}" if blob else f"0x{tag:02X}"
         if spec is None:
-            tags[f"0x{tag:02X}"] = None
+            tags[key] = None
         elif isinstance(spec, dict) and re.fullmatch(r"[a-z][a-z0-9_]{0,39}", str(spec.get("name") or "")):
             scale = spec.get("scale", 1)
-            tags[f"0x{tag:02X}"] = {"name": spec["name"],
+            tags[key] = {"name": spec["name"],
                                     "scale": scale if isinstance(scale, (int, float))
                                     and not isinstance(scale, bool) else 1}
     if tags:

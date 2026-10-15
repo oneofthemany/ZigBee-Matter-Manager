@@ -323,7 +323,11 @@ that device.
   marks a measurement the device lacks, so it is never configured.
 - **Blob tags.** `zmm.struct_tags` relabels or drops the Aqara `0xF7`/`0xDF`
   tags for the model: the tag layout differs per model, so the global map is
-  only a fallback. A standard cluster that measures the same thing (energy on
+  only a fallback. A key `"0x05"` is that tag in every blob; `"0x00F7/0x05"`
+  is that tag in one blob only, and wins over the plain key there. One model
+  can use a number for different things in each blob (the FP300's 0x05 is a
+  power-outage count in `0x00F7` and another counter in `0x00DF`), so the
+  editor lists a tag two blobs carry once per blob. A standard cluster that measures the same thing (energy on
   0x0702; power, voltage, current on 0x0B04 where the EP has them) always
   outranks the blob, and on a battery device the map's mains and relay tags
   are never used.

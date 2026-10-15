@@ -4,7 +4,7 @@ Handles: Buttons, Cubes, Vibration sensors (MultistateInput)
 """
 import logging
 import struct
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import asyncio
 import zigpy.types as t
 
@@ -521,7 +521,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 try:
                     parsed = parse_xiaomi_struct(value)
 
-                    tags, from_entry = self._struct_tags()
+                    tags, from_entry = self._struct_tags(attrid)
                     for sub_id, sub_value in parsed.items():
                         if sub_id in XIAOMI_ENUM_TAGS and sub_id not in from_entry \
                                 and not isinstance(sub_value, int):
@@ -609,10 +609,12 @@ class AqaraManufacturerCluster(ClusterHandler):
     _CLUSTER_MEASURES = {"energy": (0x0702, None), "power": (0x0B04, 0x050B),
                          "voltage": (0x0B04, 0x0505), "current": (0x0B04, 0x0508)}
 
-    def _struct_tags(self):
-        """(tag -> (name or None, converter), tags the model's entry set). The
-        tag layout differs per model; an entry's `zmm.struct_tags` overrides
-        the global map, and a null there drops the tag."""
+    def _struct_tags(self, blob: Optional[int] = None):
+        """(tag -> (name or None, converter), tags the model's entry set), for
+        `blob` (0x00F7, 0x00DF…) or, with none, for any. The tag layout differs
+        per model, and per blob within one: an entry's `zmm.struct_tags`
+        overrides the global map, a "0x00F7/0x05" key that tag in that blob
+        only, and a null drops the tag."""
         from modules.device_class import is_mains_powered
         from modules.device_profiles import profile_for_device
         tags = dict(XIAOMI_ATTR_MAP)
@@ -620,8 +622,13 @@ class AqaraManufacturerCluster(ClusterHandler):
             tags = {t: v for t, v in tags.items() if t not in XIAOMI_MAINS_TAGS}
         entry = ((profile_for_device(self.device) or {}).get("zmm") or {}).get("struct_tags") or {}
         own = set()
-        for key, spec in entry.items():
-            tag = int(key, 16)
+        # Every-blob keys first, so a blob's own key wins over them.
+        ordered = sorted(entry.items(), key=lambda kv: "/" in kv[0])
+        for key, spec in ordered:
+            where, _, part = key.rpartition("/")
+            if where and (blob is None and spec is None or blob is not None and int(where, 16) != blob):
+                continue        # another blob's tag (and with no blob, a drop says nothing)
+            tag = int(part, 16)
             own.add(tag)
             if spec is None:
                 tags[tag] = (None, None)

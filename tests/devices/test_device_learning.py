@@ -513,6 +513,17 @@ def run() -> Checker:
                 and attrs["0x0162"]["writable"] is True and attrs["0x014F"]["reported"] is True, attrs)
         c.check("and the name the global map would give a tag left unnamed",
                 tags["0x05"]["map"] == "voltage" and tags["0x17"]["map"] is None, tags)
+        device_facts.record(PRESENCE_IEEE, [device_facts.Fact(
+            1, "reports:0xFCC0/0x00DF@0x115F", "observed", json.dumps(
+                {"nonzero": True, "last": "0323a40800000421cb00052108002923000000002a23000000002b21529c2c29beff"
+                                          "2d23000000002e23010600002f210100"}))])
+        asyncio.run(zigbee_cache.drain())
+        rows = device_learning.editor_context(pres)["blob_tags"]
+        keys = {(t["blob"], t["key"]) for t in rows if t["tag"] == "0x05"}
+        c.check("a tag both blobs carry is listed, and keyed, per blob",
+                keys == {("0x00F7", "0x00F7/0x05"), ("0x00DF", "0x00DF/0x05")}, keys)
+        c.check("one only one blob carries keeps its plain key",
+                [t["key"] for t in rows if t["tag"] == "0x17"] == ["0x17"], rows)
 
         asyncio.run(device_learning.end(pres))
 

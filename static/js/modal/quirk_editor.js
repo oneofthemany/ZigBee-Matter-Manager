@@ -73,10 +73,13 @@ function measurementRows(entry, device) {
 function tagRows(entry, device) {
     // Every tag the device has sent, with its value, beside those the entry names:
     // the value is what a person matches against what they know.
+    // A tag two blobs carry is a row per blob, keyed "0x00F7/0x05": one model
+    // can use a number for different things in each.
     const tags = entry.zmm?.struct_tags || {};
-    const seen = Object.fromEntries((device.blob_tags || []).map(t => [t.tag, t]));
+    const seen = Object.fromEntries((device.blob_tags || []).map(t => [t.key || t.tag, t]));
+    const tagOf = k => k.split('/').pop();
     const keys = [...new Set([...Object.keys(seen), ...Object.keys(tags)])]
-        .sort((a, b) => parseInt(a, 16) - parseInt(b, 16));
+        .sort((a, b) => parseInt(tagOf(a), 16) - parseInt(tagOf(b), 16) || a.localeCompare(b));
     const shown = (t, spec) => {
         if (!t) return '<span class="text-muted">not seen</span>';
         const v = esc(t.value);
@@ -87,10 +90,16 @@ function tagRows(entry, device) {
     return keys.map(tag => {
         const spec = tags[tag];
         const named = tag in tags;
-        const hint = named ? 'dropped' : (seen[tag]?.map ? `unnamed (map: ${seen[tag].map})` : 'unnamed');
+        // A blob's row with no name of its own takes the every-blob one.
+        const every = tag.includes('/') ? tags[tagOf(tag)] : undefined;
+        const hint = named ? 'dropped'
+            : every !== undefined ? (every ? `${every.name} (every blob)` : 'dropped (every blob)')
+            : (seen[tag]?.map ? `unnamed (map: ${seen[tag].map})` : 'unnamed');
+        const where = tag.includes('/') ? `<div class="text-muted x-small">in ${esc(tag.split('/')[0])}</div>`
+            : !seen[tag] && named && keys.some(k => k.endsWith('/' + tag)) ? '<div class="text-muted x-small">every blob</div>' : '';
         return `<tr>
-        <td><code>${esc(tag)}</code></td>
-        <td class="text-nowrap">${shown(seen[tag], spec)}</td>
+        <td><code>${esc(tagOf(tag))}</code>${where}</td>
+        <td class="text-nowrap">${shown(seen[tag], spec ?? every)}</td>
         <td><input class="form-control form-control-sm" style="min-width:10rem" data-qe="tag-name"
             data-key="${esc(tag)}" value="${esc(spec?.name || '')}" placeholder="${esc(hint)}"></td>
         <td><input type="number" step="any" class="form-control form-control-sm" style="width:6rem"
