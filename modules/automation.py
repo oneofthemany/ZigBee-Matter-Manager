@@ -3716,7 +3716,9 @@ class AutomationEngine:
         # Merged view — matter/nuki/etc. devices trigger automations too
         devices = self._get_all_devices()
         if ieee not in devices: return []
-        state = devices[ieee].state
+        # A handler may hold raw bytes (an Aqara octet string): FastAPI cannot encode them.
+        from modules.json_helpers import prepare_for_json
+        state = prepare_for_json(dict(devices[ieee].state or {}))
         skip = {"last_seen","available","manufacturer","model","power_source","lqi","linkquality"}
         is_presence = ieee.startswith("user::")
         attrs = []
@@ -3770,7 +3772,8 @@ class AutomationEngine:
         devices = self._get_all_devices()
         names = self._get_all_names()
         if ieee not in devices: return {}
-        state = devices[ieee].state or {}
+        from modules.json_helpers import prepare_for_json
+        state = prepare_for_json(dict(devices[ieee].state or {}))     # raw bytes: as above
         is_presence = ieee.startswith("user::")
         attrs = []
         for k, v in state.items():

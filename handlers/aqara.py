@@ -571,8 +571,9 @@ class AqaraManufacturerCluster(ClusterHandler):
         else:
             # Unknown attribute - log for debugging (but don't log 0x00DF/0x00F7 here)
             logger.debug(f"[{self.device.ieee}] Aqara 0xFCC0 unknown attr 0x{attrid:04x} = {value}")
-            # Store with opple prefix for visibility
-            updates[f"opple_0x{attrid:04x}"] = value
+            # Store with opple prefix for visibility. Bytes as hex, as the state cache
+            # restores them: every reader then sees one form, and all of them can encode it.
+            updates[f"opple_0x{attrid:04x}"] = value.hex() if isinstance(value, (bytes, bytearray)) else value
 
         # Update device state
         if updates:
