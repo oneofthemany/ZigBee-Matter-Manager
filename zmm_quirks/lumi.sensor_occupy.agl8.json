@@ -35,7 +35,8 @@
     "struct_tags": {
       "0x17": { "name": "battery_voltage", "scale": 0.001 },
       "0x18": { "name": "battery" },
-      "0x03": null, "0x04": null, "0x05": { "name": "power_outage_count" }, "0x64": null, "0x65": null
+      "0x03": null, "0x04": null, "0x64": null, "0x65": null,
+      "0x05": null, "0x00F7/0x05": { "name": "power_outage_count" }
     },
     "settings": [
       { "id": "presence_detection_options", "label": "Presence detection options", "type": "uint8",
