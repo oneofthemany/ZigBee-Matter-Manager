@@ -236,9 +236,11 @@ body > .container-fluid {
     gap: 1rem;
 }
 
+/* The brand gives way first, but never below its logo: shrunk past it, the
+   logo spilled over the first status pill. */
 .hive-header .navbar-brand {
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: 0 100 auto;
+    min-width: calc(var(--brand-logo, 36px) + var(--brand-logo-gap, 0.7rem));
     margin-right: 0;
 }
 
@@ -251,8 +253,31 @@ body > .container-fluid {
 }
 
 .hive-controls {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
     flex-wrap: nowrap;
+}
+
+.hive-controls > * {
+    flex-shrink: 0;
+}
+
+/* Only the status pills give way within the controls: they scroll, and
+   Pair and the menu keep their place. Nothing here opens a dropdown, so the
+   clipping cannot cut one off (their panels open on <body>). */
+.hive-controls > .hive-status {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.hive-status::-webkit-scrollbar {
+    display: none;
+}
+
+.hive-status > * {
+    flex-shrink: 0;
 }
 
 .hive-controls > .btn-group {
@@ -265,11 +290,12 @@ body > .container-fluid {
 }
 
 .brand-logo {
-    width: 36px;
-    height: 36px;
+    flex-shrink: 0;
+    width: var(--brand-logo, 36px);
+    height: var(--brand-logo, 36px);
     border-radius: 50%;
     border: 1px solid var(--honey-deep);
-    margin-right: 0.7rem;
+    margin-right: var(--brand-logo-gap, 0.7rem);
 }
 
 .brand-text {

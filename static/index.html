@@ -78,6 +78,9 @@
 
         <!-- Connection Status Group -->
         <div class="d-flex align-items-center gap-3 hive-controls">
+          <!-- Status pills scroll sideways when a phone has no room for them all,
+               so Pair and the menu after them are never pushed off screen. -->
+          <div class="d-flex align-items-center gap-3 hive-status">
             <!-- Home Assistant Status Badge -->
             <!-- Hidden until the first status check; stays hidden when HA is disabled -->
             <span class="badge rounded-pill bg-secondary" id="ha-status-badge" title="Home Assistant Connection" style="display: none">
@@ -106,6 +109,7 @@
 
             <!-- Messages between users. Populated by messages-ui.js. -->
            <span class="navbar-text ms-2" id="messages-badge-host"></span>
+          </div>
 
             <!-- Pairing Dropdown Group -->
            <div class="btn-group">

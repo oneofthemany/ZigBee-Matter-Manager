@@ -75,10 +75,9 @@ html, body {
         display: none;
     }
 
-    .brand-logo {
-        width: 30px;
-        height: 30px;
-        margin-right: 0;
+    .hive-header {
+        --brand-logo: 30px;
+        --brand-logo-gap: 0px;
     }
 
     .navbar .d-flex.align-items-center.gap-3 {
