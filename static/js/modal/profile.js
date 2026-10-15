@@ -643,8 +643,11 @@ async function _deleteProfile(ieee) {
     })) return;
     const r = await fetch(`/api/profiles/${encodeURIComponent(_draft.id)}`, { method: 'DELETE' });
     const d = await r.json();
-    if (d.success) await initProfileTab(ieee);
-    else window.toast.error(d.error || 'Delete failed');
+    if (!d.success) { window.toast.error(d.error || 'Delete failed'); return; }
+    // What matches now (a shipped entry, say) is applied, so its reporting is sent
+    // now rather than at the device's next join.
+    try { await fetch(`/api/profiles/apply/${encodeURIComponent(ieee)}`, { method: 'POST' }); } catch {}
+    await initProfileTab(ieee);
 }
 
 async function _exportProfile() {
