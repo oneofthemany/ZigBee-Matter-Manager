@@ -93,6 +93,13 @@ def options(device) -> List[Dict[str, Any]]:
         if st["ep"] == "each":
             label = f"{label} ({endpoint_label(device, ep) or f'EP{ep}'})"
         current = device.state.get(name)
+        if st["type"] == ZONES and not isinstance(current, int):
+            # A mask, from wherever the bytes are: the name may still hold them
+            # raw (named once as a reading), else the raw key or the evidence.
+            key = _raw_state_key(device, int(st["cluster"], 16), int(st["attr"], 16))
+            current = _zones_mask(st, current)
+            if current is None and key:
+                current = _zones_mask(st, device.state.get(key))
         if current is None:
             listed = listed if listed is not None else _listed(device)
             current = _from_raw(st, (_shown(listed, ep, st) or {}).get("value"))

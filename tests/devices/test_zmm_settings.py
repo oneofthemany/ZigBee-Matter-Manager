@@ -237,6 +237,11 @@ def run() -> Checker:
         opt = {o["name"]: o for o in zmm_settings.options(radar)}.get("detection_range") or {}
         c.check("it is offered as zones, every one on as the device said",
                 opt.get("type") == "zones" and opt.get("bits") == 24 and opt.get("current_value") == 0xFFFFFF, opt)
+        radar.state["detection_range"] = "0003ffffff"      # the name, once a reading, holds the bytes
+        opt = {o["name"]: o for o in zmm_settings.options(radar)}.get("detection_range") or {}
+        c.check("bytes left under its name from when it was a reading still show as zones",
+                opt.get("current_value") == 0xFFFFFF, opt.get("current_value"))
+        radar.state.clear()
         ok = asyncio.run(zmm_settings.apply(radar, {"detection_range": 0x000FFF}))
         attr, typ, value, mfr = rc.writes[-1] if rc.writes else (None,) * 4
         c.check("zones 0-11 on are written as a byte string, its leading bytes kept, with the maker's code",
