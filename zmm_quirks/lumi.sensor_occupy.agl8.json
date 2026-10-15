@@ -27,12 +27,85 @@
       }
     }
   },
+  "reporting": [
+    { "ep": 1, "cluster": "0xFCC0", "attr": "0x0142", "min": 0, "max": 3600, "delta": 1, "mfr": "0x115F", "type": "uint8" },
+    { "ep": 1, "cluster": "0xFCC0", "attr": "0x014D", "min": 0, "max": 3600, "delta": 1, "mfr": "0x115F", "type": "uint8" }
+  ],
   "zmm": {
     "struct_tags": {
       "0x17": { "name": "battery_voltage", "scale": 0.001 },
       "0x18": { "name": "battery" },
       "0x03": null, "0x04": null, "0x05": { "name": "power_outage_count" }, "0x64": null, "0x65": null
-    }
+    },
+    "settings": [
+      { "id": "presence_detection_options", "label": "Presence detection options", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0199", "mfr": "0x115F",
+        "values": { "0": "both", "1": "mmwave", "2": "pir" } },
+      { "id": "detection_range", "label": "Detection range", "type": "zones", "bits": 24,
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x019A", "mfr": "0x115F",
+        "description": "Zones the sensor watches; switch one off to ignore that part of the room" },
+      { "id": "motion_sensitivity", "label": "Motion sensitivity", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x010C", "mfr": "0x115F",
+        "values": { "0": "low", "1": "medium", "2": "high" } },
+      { "id": "absence_delay", "label": "Absence delay", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0197", "mfr": "0x115F",
+        "min": 1, "max": 300, "step": 1, "unit": "sec",
+        "description": "How long after the last presence before absence is reported" },
+      { "id": "pir_detection_interval", "label": "PIR detection interval", "type": "uint16",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x014F", "mfr": "0x115F",
+        "min": 2, "max": 300, "step": 1, "unit": "sec",
+        "description": "Time between PIR detections: longer saves battery, at some accuracy" },
+
+      { "id": "temp_and_humidity_sampling", "label": "Temp and humidity sampling", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0170", "mfr": "0x115F",
+        "values": { "0": "off", "1": "low", "2": "medium", "3": "high", "4": "custom" },
+        "description": "How often temperature and humidity are sampled; custom uses the period below" },
+      { "id": "temp_and_humidity_sampling_period", "label": "Temp and humidity sampling period", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0162", "mfr": "0x115F",
+        "scale": 1000, "min": 0.5, "max": 3600, "step": 0.5, "unit": "sec" },
+      { "id": "temp_reporting_mode", "label": "Temp reporting mode", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0165", "mfr": "0x115F",
+        "values": { "1": "threshold", "2": "reporting interval", "3": "threshold and interval" } },
+      { "id": "temperature_reporting_interval", "label": "Temperature reporting interval", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0163", "mfr": "0x115F",
+        "scale": 1000, "min": 600, "max": 3600, "step": 600, "unit": "sec" },
+      { "id": "temp_reporting_threshold", "label": "Temp reporting threshold", "type": "uint16",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0164", "mfr": "0x115F",
+        "scale": 100, "min": 0.2, "max": 3, "step": 0.1, "unit": "°C" },
+      { "id": "humidity_report_mode", "label": "Humidity report mode", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x016C", "mfr": "0x115F",
+        "values": { "1": "threshold", "2": "reporting interval", "3": "threshold and interval" } },
+      { "id": "humidity_reporting_interval", "label": "Humidity reporting interval", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x016A", "mfr": "0x115F",
+        "scale": 1000, "min": 600, "max": 3600, "step": 600, "unit": "sec" },
+      { "id": "humidity_threshold", "label": "Humidity threshold", "type": "uint16",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x016B", "mfr": "0x115F",
+        "scale": 100, "min": 2, "max": 15, "step": 0.5, "unit": "%",
+        "description": "How far humidity must move before it is reported" },
+
+      { "id": "light_sampling", "label": "Light sampling", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0192", "mfr": "0x115F",
+        "values": { "0": "off", "1": "low", "2": "medium", "3": "high", "4": "custom" },
+        "description": "How often light is sampled; higher uses more battery" },
+      { "id": "light_sampling_period", "label": "Light sampling period", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0193", "mfr": "0x115F",
+        "scale": 1000, "min": 0.5, "max": 3600, "step": 0.5, "unit": "sec" },
+      { "id": "light_report_mode", "label": "Light report mode", "type": "uint8",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0196", "mfr": "0x115F",
+        "values": { "1": "threshold", "2": "reporting interval", "3": "threshold and interval" } },
+      { "id": "light_reporting_interval", "label": "Light reporting interval", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0194", "mfr": "0x115F",
+        "scale": 1000, "min": 20, "max": 3600, "step": 20, "unit": "sec" },
+      { "id": "light_reporting_threshold", "label": "Light reporting threshold", "type": "uint16",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0195", "mfr": "0x115F",
+        "scale": 100, "min": 3, "max": 20, "step": 0.5, "unit": "%" },
+
+      { "id": "led_disabled_night", "label": "LED off at night", "type": "bool",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x0203", "mfr": "0x115F" },
+      { "id": "schedule", "label": "LED night schedule", "type": "uint32",
+        "ep": 1, "cluster": "0xFCC0", "attr": "0x023E", "mfr": "0x115F",
+        "description": "Start and end times packed in one number; not decoded yet, so change it with care" }
+    ]
   },
   "meta": { "author": "zmm", "source": "zmm" }
 }
