@@ -74,6 +74,19 @@ class _Fcc0:
         return [[NS(status=0x87 if self.refuse else 0)]]
 
 
+class _Asleep(_Fcc0):
+    """A cluster on a sleeping device: writes go nowhere until `awake`."""
+
+    def __init__(self):
+        super().__init__()
+        self.awake = False
+
+    async def write_attributes_raw(self, attrs, manufacturer_code=None):
+        if not self.awake:
+            raise asyncio.TimeoutError()
+        return await super().write_attributes_raw(attrs, manufacturer_code)
+
+
 def _real_library(c: Checker) -> None:
     """The write goes through zigpy itself: its parameter names and its answer."""
     import inspect
@@ -153,6 +166,60 @@ def run() -> Checker:
         res = asyncio.run(zmm_settings.apply(dev, {"multi_click_2": 2}))
         c.check("a refused write is reported, and the state left alone",
                 res == {"multi_click_2": False} and "multi_click_2" not in dev.state, (res, dev.state))
+
+        c.section("a save says which settings the device did not take")
+        from device.handlers import DeviceHandlerManagerMixin
+        dev.handlers, dev.service = {}, NS(device_settings={})
+        outcome = asyncio.run(DeviceHandlerManagerMixin.configure(
+            dev, {"updates": {"multi_click_2": 1, "multi_click_3": 2}}))
+        c.check("the refused one is named, the accepted one is not",
+                outcome == {"failed": ["multi_click_2"], "queued": []}, outcome)
+
+        c.section("a sleeping device's settings wait until it wakes")
+        nap = _Asleep()
+        sleeper = NS(ieee="aa:bb:cc:00:00:00:00:03", state={}, handlers={},
+                     service=NS(device_settings={}), _is_battery_powered=lambda: True,
+                     zigpy_dev=NS(endpoints={0: None, 1: NS(in_clusters={0xFCC0: nap})}))
+        device_facts.forget(sleeper.ieee)
+        record(sleeper.ieee, [Fact(1, "attr:0xFCC0/0x0203@0x115F", "answered",
+                                   _j({"type": "0x10/bool", "acl": "RW", "value": 1}))])
+        outcome = asyncio.run(DeviceHandlerManagerMixin.configure(sleeper, {"updates": {"button_leds": 1}}))
+        outcome = asyncio.run(DeviceHandlerManagerMixin.configure(sleeper, {"updates": {"button_leds": 0}}))
+        c.check("a write it was not there for is queued, not failed",
+                outcome == {"failed": [], "queued": ["button_leds"]}, outcome)
+        c.check("the newest value is the one that waits", zmm_settings.pending(sleeper) == {"button_leds": 0})
+        opt = {o["name"]: o for o in zmm_settings.options(sleeper)}["button_leds"]
+        c.check("the form keeps what was asked for, and says it is waiting",
+                opt["current_value"] == 0 and opt["pending"] and opt["description"].startswith("Waiting"), opt)
+        asyncio.run(zmm_settings._flush(sleeper))
+        c.check("heard from while still asleep, it keeps waiting", zmm_settings.pending(sleeper) == {"button_leds": 0})
+
+        async def wakes():
+            nap.awake = True
+            zmm_settings.on_heard(sleeper)
+            zmm_settings.on_heard(sleeper)          # a second frame does not send twice
+            await asyncio.sleep(0.05)
+        asyncio.run(wakes())
+        c.check("when it wakes it is sent, once", nap.writes == [(0x0203, 0x10, False, 0x115F)], nap.writes)
+        c.check("and nothing waits any more", zmm_settings.pending(sleeper) == {})
+        c.check("its new value is shown", sleeper.state.get("button_leds") == 0, sleeper.state)
+        nap.awake, nap.refuse = False, True
+        asyncio.run(DeviceHandlerManagerMixin.configure(sleeper, {"updates": {"button_leds": 1}}))
+        nap.awake = True
+        asyncio.run(zmm_settings._flush(sleeper))
+        c.check("one it refuses on waking is dropped, not retried for ever", zmm_settings.pending(sleeper) == {})
+        mains_cl = _Asleep()
+        mains = NS(ieee="aa:bb:cc:00:00:00:00:04", state={}, handlers={}, service=NS(device_settings={}),
+                   _is_battery_powered=lambda: False,
+                   zigpy_dev=NS(endpoints={0: None, 1: NS(in_clusters={0xFCC0: mains_cl})}))
+        device_facts.forget(mains.ieee)
+        record(mains.ieee, [Fact(1, "attr:0xFCC0/0x0203@0x115F", "answered",
+                                 _j({"type": "0x10/bool", "acl": "RW", "value": 1}))])
+        outcome = asyncio.run(DeviceHandlerManagerMixin.configure(mains, {"updates": {"button_leds": 0}}))
+        c.check("a mains device that does not answer has failed; it is not asleep",
+                outcome == {"failed": ["button_leds"], "queued": []}, outcome)
+        device_facts.forget(sleeper.ieee)
+        device_facts.forget(mains.ieee)
 
         c.section("a sleepy device: reports are the only evidence it gives")
         global ENTRY

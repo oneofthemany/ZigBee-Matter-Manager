@@ -127,13 +127,21 @@ class DeviceHandlerManagerMixin:
             self.sanitise_state()
 
     async def configure(self, config=None):
+        """Apply `config['updates']` (returning {"failed": [...], "queued": [...]}
+        setting names, for the caller to report; queued ones wait for a sleeping
+        device to wake), or with no config, configure every handler."""
         logger.info(f"[{self.ieee}] Configuring device...")
         if config and config.get('updates'):
             updates = config['updates']
+            failed, queued = [], []
             try:
                 from modules import zmm_settings
-                await zmm_settings.apply(self, updates)
-                await zmm_settings.apply_raw(self, updates)
+                done = {**await zmm_settings.apply(self, updates),
+                        **await zmm_settings.apply_raw(self, updates)}
+                failed = sorted(name for name, ok in done.items() if not ok)
+                waiting = zmm_settings.pending(self)
+                queued = [n for n in failed if n in waiting]
+                failed = [n for n in failed if n not in waiting]
             except Exception as e:
                 logger.warning(f"[{self.ieee}] ZMM settings failed: {e}")
             # Each handler is also stored under a bare cluster-id alias.
@@ -143,7 +151,7 @@ class DeviceHandlerManagerMixin:
                     except Exception as e: logger.warning(f"[{self.ieee}] Config failed for {handler.__class__.__name__}: {e}")
             if 'qos' in config:
                 self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
-            return
+            return {"failed": failed, "queued": queued}
 
         stats = {'configured': 0, 'skipped_not_configurable': 0, 'skipped_controller': 0, 'failed': 0}
 

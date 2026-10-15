@@ -449,7 +449,22 @@ export async function saveConfig(e) {
         });
 
         const data = await res.json();
-        if (data.success) {
+        const failed = data.failed || [], queued = data.queued || [];
+        if (data.success && (failed.length || queued.length)) {
+            // Only what the device answered is set. A sleeping device's settings
+            // wait for it to wake; anything it refused keeps its old value.
+            const label = n => e.target.elements[n]?.closest('.col-md-6')?.querySelector('label')?.textContent.trim() || n;
+            if (queued.length) {
+                window.toast.info(`Will be set when the device next wakes: ${queued.map(label).join(', ')}.`
+                    + ' It is asleep now; pressing its button wakes it sooner.');
+            }
+            if (failed.length) {
+                window.toast.warning(`Not set: ${failed.map(label).join(', ')}. The device did not take it.`);
+            }
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+            if (window.loadDevices) window.loadDevices();
+        } else if (data.success) {
             btn.innerHTML = '<i class="fas fa-check"></i> Done';
             btn.classList.replace('btn-primary', 'btn-success');
             if (window.loadDevices) window.loadDevices();

@@ -1010,10 +1010,13 @@ class ZigbeeService(
         except Exception:
             pass
 
-        # 2b. UPDATE LAST SEEN for all known devices
+        # 2b. UPDATE LAST SEEN for all known devices. Having just sent this,
+        # a sleeping device is awake for a moment: send any setting it missed.
         try:
             if ieee in self.devices:
                 self.devices[ieee].update_last_seen()
+                from modules import zmm_settings
+                zmm_settings.on_heard(self.devices[ieee])
         except Exception:
             pass
 
@@ -1283,14 +1286,17 @@ class ZigbeeService(
     async def configure_device(self, ieee, config=None):
         if ieee in self.devices:
             try:
-                await self.devices[ieee].configure(config)
+                outcome = await self.devices[ieee].configure(config)
+                outcome = outcome if isinstance(outcome, dict) else {}
+                failed, queued = outcome.get("failed") or [], outcome.get("queued") or []
                 if config:
                     existing = self.device_settings.get(ieee, {})
                     existing.update({k: v for k, v in config.items() if v is not None and k != 'ieee'})
                     if existing:
                         self.device_settings[ieee] = existing
                         self._save_json("./data/device_settings.json", self.device_settings)
-                return {"success": True}
+                # A setting the device did not take is not saved: say which.
+                return {"success": True, "failed": failed, "queued": queued}
             except NcpFailure as e:
                 logger.error(f"[{ieee}] NCP Failure during configuration: {e}")
                 if hasattr(self, 'resilience'):

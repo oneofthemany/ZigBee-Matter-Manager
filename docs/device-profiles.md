@@ -335,6 +335,14 @@ that device.
   `device.supports_setting(name)` says whether it can. A report of the
   attribute is filed under the setting's id, and a write moves the raw value
   with it, so only a later report of that attribute replaces what was written.
+- **Sleepy devices.** A battery device listens only just after it sends
+  something, so a write while it sleeps times out. That write is not failed
+  but held (`zmm_settings._PENDING`): a newer value for the same setting
+  replaces it, and the next frame heard from the device sends what waits,
+  while it is awake. A refusal then drops it; a write that times out again
+  waits for the next wake. The Configuration form shows the waiting value and
+  says so, and a save lists queued settings apart from refused ones. The queue
+  is in memory, so a restart drops it.
 - **Zones.** A setting of type `zones` with `bits: N` (1 to 48) is an octet
   string whose last N bits are on/off zones: zone *i* is bit *i* of the
   trailing bytes read big-endian. It is shown and saved as that mask; a write

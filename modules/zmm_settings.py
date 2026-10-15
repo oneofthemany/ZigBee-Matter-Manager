@@ -21,6 +21,81 @@ logger = logging.getLogger("modules.zmm_settings")
 ZONES = "zones"         # modules.device_profiles.ZONES
 OCTSTR = 0x41
 
+# Settings a sleeping device was not there to take, {ieee: {name: value as shown}},
+# sent the next time it is heard from (docs/device-profiles.md §4, "Sleepy devices").
+# In memory: a restart drops them, and the log says what was waiting.
+_PENDING: Dict[str, Dict[str, Any]] = {}
+_FLUSHING: set = set()
+
+
+def _undelivered(e: Exception) -> bool:
+    """Whether a write failed for want of the device, not because it said no."""
+    if isinstance(e, TimeoutError):
+        return True
+    try:
+        from zigpy.exceptions import DeliveryError
+        return isinstance(e, DeliveryError)
+    except ImportError:
+        return False
+
+
+def _sleepy(device) -> bool:
+    try:
+        return bool(device._is_battery_powered())
+    except Exception:
+        return False
+
+
+def pending(device) -> Dict[str, Any]:
+    """Settings waiting for this device to wake: {name: value}."""
+    return dict(_PENDING.get(str(device.ieee)) or {})
+
+
+def _settle(device, name: str, outcome: str, shown: Any = None) -> None:
+    """Record a write's outcome against the queue: `sent` or `refused` clear
+    it, `undelivered` holds the value for a sleeping device."""
+    ieee = str(device.ieee)
+    if outcome == "undelivered" and _sleepy(device):
+        _PENDING.setdefault(ieee, {})[name] = shown
+        logger.info(f"[{ieee}] {name} = {shown} waits for the device to wake")
+        return
+    queue = _PENDING.get(ieee)
+    if queue and name in queue:
+        queue.pop(name)
+        if not queue:
+            _PENDING.pop(ieee, None)
+
+
+def on_heard(device) -> None:
+    """The device just sent something, so it is awake for a moment: send what
+    it missed. Called for every frame; does nothing unless something waits."""
+    ieee = str(device.ieee)
+    if not _PENDING.get(ieee) or ieee in _FLUSHING:
+        return
+    import asyncio
+    _FLUSHING.add(ieee)
+    try:
+        asyncio.get_running_loop().create_task(_flush(device))
+    except RuntimeError:
+        _FLUSHING.discard(ieee)
+
+
+async def _flush(device) -> None:
+    ieee = str(device.ieee)
+    try:
+        wanted = pending(device)
+        logger.info(f"[{ieee}] Awake: sending {len(wanted)} waiting setting(s): {sorted(wanted)}")
+        entry = {k: v for k, v in wanted.items() if not str(k).startswith(RAW_PREFIX)}
+        raw = {k: v for k, v in wanted.items() if str(k).startswith(RAW_PREFIX)}
+        if entry:
+            await apply(device, entry)
+        if raw:
+            await apply_raw(device, raw)
+    except Exception as e:
+        logger.warning(f"[{ieee}] Sending waiting settings failed: {type(e).__name__}: {e}")
+    finally:
+        _FLUSHING.discard(ieee)
+
 
 def _entry_settings(device) -> List[Dict[str, Any]]:
     from modules.device_profiles import profile_for_device
@@ -103,10 +178,16 @@ def options(device) -> List[Dict[str, Any]]:
         if current is None:
             listed = listed if listed is not None else _listed(device)
             current = _from_raw(st, (_shown(listed, ep, st) or {}).get("value"))
+        waiting = pending(device)
+        description = st["description"]
+        if name in waiting:
+            # What was asked for, so the form keeps it rather than the old value.
+            current = waiting[name]
+            description = "Waiting for the device to wake to set this. " + description
         # `entry`: the device's own definition offers it, so the UI need not
         # second-guess it with a maker test.
-        opt: Dict[str, Any] = {"name": name, "label": label, "description": st["description"],
-                               "entry": True,
+        opt: Dict[str, Any] = {"name": name, "label": label, "description": description.strip(),
+                               "entry": True, "pending": name in waiting,
                                "attribute_id": int(st["attr"], 16), "current_value": current}
         for k in ("min", "max", "step", "unit"):
             if st.get(k) is not None:
@@ -164,10 +245,12 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             # Positional: zigpy names this parameter `manufacturer_code`.
             rsp = await cluster.write_attributes_raw([attr], mfr)
             ok = _write_ok(rsp)
+            outcome = "sent" if ok else "refused"
         except Exception as e:
             logger.warning(f"[{device.ieee}] ZMM setting {name} write failed: {type(e).__name__}: {e}")
-            ok = False
+            ok, outcome = False, "undelivered" if _undelivered(e) else "refused"
         results[name] = ok
+        _settle(device, name, outcome, updates[name])
         if ok:
             # The raw key too: the profile recomputes the setting from it, and a
             # stale one would put the old value back on the next report.
@@ -175,7 +258,7 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
                 device.state[key] = value
             device.state[name] = _from_raw(st, value)
             logger.info(f"[{device.ieee}] ZMM setting {name} = {device.state[name]}")
-        else:
+        elif outcome == "refused":
             logger.warning(f"[{device.ieee}] ZMM setting {name} refused by the device")
     return results
 
@@ -361,12 +444,16 @@ def raw_options(device, covered) -> List[Dict[str, Any]]:
         current = device.state.get(key) if key else a["value"]
         if isinstance(current, bool):
             current = int(current)
+        waiting = pending(device)
+        if name in waiting:
+            current = waiting[name]
         opt: Dict[str, Any] = {
-            "name": name, "entry": True,
+            "name": name, "entry": True, "pending": name in waiting,
             "label": f"{called} (0x{a['cluster']:04X}/0x{a['attr']:04X})" if called
             else f"0x{a['cluster']:04X}/0x{a['attr']:04X}",
             "group": "unnamed", "attribute_id": a["attr"], "current_value": current,
-            "description": f"{a['type']}; not named yet, so what it does is not known",
+            "description": ("Waiting for the device to wake to set this. " if name in waiting else "")
+            + f"{a['type']}; not named yet, so what it does is not known",
         }
         if a["type"] == "bool":
             opt.update(type="select", options=[{"value": 0, "label": "Off"}, {"value": 1, "label": "On"}])
@@ -405,16 +492,18 @@ async def apply_raw(device, updates: Dict[str, Any]) -> Dict[str, bool]:
             attr.attrid = a["attr"]
             attr.value = typed_value(SETTING_TYPES[a["type"]], value)
             ok = cluster is not None and _write_ok(await cluster.write_attributes_raw([attr], a["mfr"]))
+            outcome = "sent" if ok else "refused"
         except Exception as e:
             logger.warning(f"[{device.ieee}] {name} write failed: {type(e).__name__}: {e}")
-            ok = False
+            ok, outcome = False, "undelivered" if _undelivered(e) else "refused"
         results[name] = ok
+        _settle(device, name, outcome, shown)
         if ok:
             key = _raw_state_key(device, a["cluster"], a["attr"])
             if key:
                 device.state[key] = value
             logger.info(f"[{device.ieee}] {name} = {value}")
-        else:
+        elif outcome == "refused":
             logger.warning(f"[{device.ieee}] {name} refused by the device")
     return results
 
