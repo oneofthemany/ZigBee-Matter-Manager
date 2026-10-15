@@ -146,6 +146,21 @@ function shownValue(found, a) {
     return spec.scale && spec.scale !== 1 && Number.isFinite(n) ? String(+(n / spec.scale).toFixed(3)) : null;
 }
 
+/** Why the device's value cannot be right for a number setting as described, or null. */
+function rangeWarning(found, a) {
+    const { as, spec } = found;
+    if (as !== 'setting' || !spec || kindOf(found, a) !== 'number') return null;
+    const raw = Number(a.value);
+    if (a.value === null || a.value === '' || !Number.isFinite(raw)) return null;
+    const shown = +(raw / (spec.scale || 1)).toFixed(3);
+    const lo = spec.min ?? -Infinity, hi = spec.max ?? Infinity;
+    if (shown >= lo && shown <= hi) return null;
+    const unit = spec.unit ? ` ${spec.unit}` : '';
+    return `The device holds ${raw}${spec.scale ? `, which divided by ${spec.scale} is ${shown}${unit}` : ''}: `
+        + `outside ${spec.min ?? '…'} to ${spec.max ?? '…'}. Check Divide by, Min and Max, `
+        + 'or whether it is a number at all (a mode is One of a list).';
+}
+
 function field(label, f, key, value, type = 'text', extra = '') {
     return `<div class="col-6 col-md-3"><label class="form-label x-small mb-0">${label}</label>
         <input class="form-control form-control-sm" type="${type}" ${type === 'number' ? 'step="any"' : ''}
@@ -181,6 +196,9 @@ function detailsHtml(entry, a) {
                 + field('Step', 'step', key, spec.step, 'number', 'min="0"');
         }
     }
+    const warn = rangeWarning(found, a);
+    if (warn) html += `<div class="col-12"><div class="alert alert-warning py-1 px-2 mb-0 small">
+        <i class="fas fa-exclamation-triangle me-1"></i>${esc(warn)}</div></div>`;
     if (as === 'reading') html += field('Home Assistant class', 'device_class', key, spec.device_class, 'text',
                                          'placeholder="temperature, occupancy…"');
     if (as === 'setting') html += `<div class="col-12">${field('Description', 'description', key, spec.description)
@@ -254,7 +272,8 @@ function attrRows(entry, device) {
             <label class="btn btn-outline-secondary btn-sm" for="qe-open-${esc(key)}">Details</label>` : '';
         return `<tr>
         <td><code>${esc(a.attr)}</code></td>
-        <td class="text-nowrap">${esc(a.value)}${pretty !== null ? ` <span class="text-muted">→ ${esc(pretty)}</span>` : ''}</td>
+        <td class="text-nowrap">${esc(a.value)}${pretty !== null ? ` <span class="text-muted">→ ${esc(pretty)}</span>` : ''}${
+            rangeWarning(found, a) ? ' <span class="badge bg-warning text-dark" title="outside its Min and Max: open Details">check</span>' : ''}</td>
         <td>${access}</td>
         <td><input class="form-control form-control-sm" style="min-width:8rem" data-qe="attr-name"
             data-key="${esc(key)}" value="${esc(found.name)}" placeholder="unnamed"></td>

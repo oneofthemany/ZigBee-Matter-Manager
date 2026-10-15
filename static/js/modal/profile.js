@@ -548,13 +548,16 @@ async function _saveAssemble(ieee, container) {
     const actions = [];
     actRows.forEach(row => {
         const idInput = row.querySelector('.pd-act-id'); if (!idInput) return;
+        // From the action it shows: its writes, maker code and types have no column here.
         actions.push({
+            ...(_draft.actions?.[+idInput.dataset.i] || {}),
             id:      idInput.value.trim(),
             label:   row.querySelector('.pd-act-label').value.trim(),
             ep:      parseInt(row.querySelector('.pd-act-ep').value) || 1,
             cluster: row.querySelector('.pd-act-cluster').value.trim(),
             command: row.querySelector('.pd-act-cmd').value.trim(),
         });
+        if (!actions.at(-1).command) delete actions.at(-1).command;    // a writes action has none
     });
     _draft.actions = actions;
 
@@ -563,13 +566,20 @@ async function _saveAssemble(ieee, container) {
     const reporting = [];
     repRows.forEach(row => {
         const ep = row.querySelector('.pd-rep-ep'); if (!ep) return;
+        // 0 is a value (report at once); only an empty box takes the default.
+        const num = (sel, parse, fallback) => {
+            const n = parse(row.querySelector(sel).value);
+            return Number.isFinite(n) ? n : fallback;
+        };
+        // From the row it shows: a maker's code and type have no column here.
         reporting.push({
+            ...(_draft.reporting?.[+ep.dataset.i] || {}),
             ep:      parseInt(ep.value) || 1,
             cluster: row.querySelector('.pd-rep-cluster').value.trim(),
             attr:    row.querySelector('.pd-rep-attr').value.trim(),
-            min:     parseInt(row.querySelector('.pd-rep-min').value) || 30,
-            max:     parseInt(row.querySelector('.pd-rep-max').value) || 600,
-            delta:   parseFloat(row.querySelector('.pd-rep-delta').value) || 1,
+            min:     num('.pd-rep-min', parseInt, 30),
+            max:     num('.pd-rep-max', parseInt, 600),
+            delta:   num('.pd-rep-delta', parseFloat, 1),
         });
     });
     _draft.reporting = reporting;

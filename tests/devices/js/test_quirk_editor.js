@@ -119,6 +119,29 @@ console.log('attributes');
   check('a bad name is refused', applyField(e, el('attr-name', { key: K('0x0142') }, 'Bad Name'), dev) !== null);
 }
 
+console.log('a value its description cannot hold');
+{
+  global.CSS = { escape: x => x };
+  // A mode (1 = low) described as a period in milliseconds: 1 / 1000 is far below its min of 500.
+  const dev = { ...device, attributes: [
+    { ep: 1, cluster: '0xFCC0', attr: '0x0170', mfr: '0x115F', type: 'uint8', value: 1, reported: true, writable: true },
+    { ep: 1, cluster: '0xFCC0', attr: '0x0163', mfr: '0x115F', type: 'uint32', value: 3600000, reported: true, writable: true }] };
+  const e = { id: 'x', match: { model: 'x' }, endpoints: {}, zmm: { settings: [
+    { id: 'sampling', label: 'Sampling', type: 'uint8', ep: 1, cluster: '0xFCC0', attr: '0x0170', mfr: '0x115F',
+      values: {}, scale: 1000, min: 500, max: 3600, unit: 'sec' },
+    { id: 'interval', label: 'Interval', type: 'uint32', ep: 1, cluster: '0xFCC0', attr: '0x0163', mfr: '0x115F',
+      values: {}, scale: 1000, min: 600, max: 3600, unit: 'sec' }] } };
+  const K = attr => `1|0xFCC0|${attr}`;
+  let html = editorHtml(e, dev);
+  check('the list marks a setting whose value is outside its own range', (html.match(/>check</g) || []).length === 1);
+  applyField(e, el('attr-open', { key: K('0x0170') }, '', true), dev);
+  html = editorHtml(e, dev);
+  check('and its details say why', html.includes('The device holds 1, which divided by 1000 is 0.001 sec: outside 500 to 3600'));
+  applyField(e, el('attr-f', { key: K('0x0170'), f: 'kind' }, 'choice'), dev);
+  html = editorHtml(e, dev);
+  check('described as one of a list, it is fine', !html.includes('>check<') && !html.includes('The device holds'));
+}
+
 console.log('zones');
 {
   global.CSS = { escape: x => x };
