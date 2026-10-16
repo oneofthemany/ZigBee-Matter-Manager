@@ -220,6 +220,30 @@ def transform_state_with_profile(device, state: Dict[str, Any],
     return out
 
 
+def derived_changes(device, changed: Dict[str, Any]) -> Dict[str, Any]:
+    """Friendly keys a live update adds beside its raw ones: each whose value
+    moved, and a binary reading this update reports even unmoved. A report of
+    one is an event, as a raw `occupancy` is: a clear after a restart's reset
+    to False still reaches the log and the engine."""
+    state = getattr(device, "state", None) or {}
+    merged = transform_state_with_profile(device, {**state, **changed}, changed=changed)
+    reported = transform_state_with_profile(device, dict(changed), changed=changed)
+    events = _binary_names(device)
+    return {k: v for k, v in merged.items()
+            if k not in changed and (state.get(k) != v or (k in events and k in reported))}
+
+
+def _binary_names(device) -> set:
+    profile = resolve_profile_for_device(device) or {}
+    maps = [a for ep in (profile.get("endpoints") or {}).values()
+            for cl in (ep.get("clusters") or {}).values()
+            for a in (cl.get("attributes") or {}).values()]
+    maps += list((get_profile_store().get_ieee_mappings(str(getattr(device, "ieee", ""))) or {}).values())
+    maps += list((profile.get("state_mappings") or {}).values())
+    return {m["name"] for m in maps if isinstance(m, dict) and m.get("name")
+            and m.get("device_class") in BINARY_CLASSES}
+
+
 # Home Assistant binary_sensor classes: a reading of one is true or false.
 BINARY_CLASSES = frozenset({"occupancy", "motion", "presence", "door", "window", "opening",
                             "garage_door", "moisture", "smoke", "gas", "vibration", "tamper",

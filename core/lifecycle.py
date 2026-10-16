@@ -340,7 +340,7 @@ class DeviceLifecycleMixin:
                              qos: Optional[int] = None, endpoint_id: Optional[int] = None):
         """Called by ZigManDevice when state changes."""
         try:
-            from modules.device_profiles_apply import transform_state_with_profile
+            from modules.device_profiles_apply import derived_changes
             from modules.device_profiles import get_profile_store
             # Run the transform when raw cluster keys are present (profile
             # attribute mappings) OR when the device has any learned IEEE
@@ -349,13 +349,7 @@ class DeviceLifecycleMixin:
                     any(k.startswith(("cluster_", "attr_", "opple_0x")) for k in changed_data)
                     or get_profile_store().has_ieee_mappings(zha_device.ieee)
                     or getattr(zha_device, "_profile_live_transform", False)):
-                merged = {**zha_device.state, **changed_data}
-                transformed = transform_state_with_profile(zha_device, merged, changed=changed_data)
-                # Include any derived key whose value actually changed — not
-                # just brand-new keys — so a mapped value keeps updating live
-                # instead of freezing after its first appearance.
-                extras = {k: v for k, v in transformed.items()
-                          if k not in changed_data and zha_device.state.get(k) != v}
+                extras = derived_changes(zha_device, changed_data)
                 if extras:
                     changed_data = {**changed_data, **extras}
                     # Keep state authoritative so the next diff is correct.
