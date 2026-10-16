@@ -154,6 +154,15 @@ def run() -> Checker:
     h.attribute_updated(0x00F7, _f7((0x9B, "i", 1)))
     c.check("an integer indicator mode still decodes", dev.state.get("indicator_mode") == 1,
             dev.state)
+    c.section("a 0xFFF2 frame is a message, never a state key")
+    h, _, dev = _handler()
+    dev.state["opple_0xfff2"] = "aa"
+    dev.service = NS(state_cache={dev.ieee: {"opple_0xfff2": "aa"}}, _cache_dirty=False)
+    h.attribute_updated(0xFFF2, bytes.fromhex(
+        "aa751384b5950741000f0c230101030e0a2308000c640b2005"))
+    c.check("the frame lands in neither state nor the cache, and an old key is cleared",
+            "opple_0xfff2" not in dev.state and not dev.service.state_cache[dev.ieee], dev.state)
+
     c.section("a button's value is never re-reported on a timer")
     c.check("no periodic reports (max interval 0): a re-report would read as a press",
             MultistateInputHandler.REPORT_CONFIG == [("present_value", 0, 0, 1)])

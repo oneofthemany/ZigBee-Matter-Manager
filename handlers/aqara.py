@@ -318,6 +318,9 @@ class AqaraManufacturerCluster(ClusterHandler):
     ATTR_TEMP_DISPLAY_UNIT = 0xFF01     # uint8 - 0=Celsius, 1=Fahrenheit
     ATTR_MEASUREMENT_INTERVAL = 0x00EF  # uint16 - Measurement interval seconds
 
+    # Lumi framed-message channel
+    ATTR_LUMI_FRAME = 0xFFF2
+
     # Type Enforcement Map
     ATTR_TYPES = {
         # Boolean Attributes
@@ -567,6 +570,15 @@ class AqaraManufacturerCluster(ClusterHandler):
             else:
                 logger.debug(f"[{self.device.ieee}] Aqara 0x{attrid:04X} non-bytes value: {type(value).__name__}")
                 updates[f"opple_0x{attrid:04x}"] = value
+
+        elif attrid == self.ATTR_LUMI_FRAME:
+            # A message, not a state: keeping its bytes would publish and log
+            # an ever-changing hex string on every frame.
+            frame = bytes(value) if isinstance(value, (bytes, bytearray)) else b""
+            ok = len(frame) >= 6 and frame[0] == 0xAA and (512 - sum(frame[:5])) & 0xFF == frame[5]
+            logger.debug(f"[{self.device.ieee}] Lumi 0xFFF2 frame"
+                         f"{'' if ok else ' (malformed)'}: {frame.hex() or value!r}")
+            self._forget_state({f"opple_0x{attrid:04x}"})
 
         else:
             # Unknown attribute - log for debugging (but don't log 0x00DF/0x00F7 here)
