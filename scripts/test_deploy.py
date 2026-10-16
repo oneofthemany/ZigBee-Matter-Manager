@@ -8,13 +8,16 @@ docs/upgrades.md §Boot Guard.
     ZMM_TOKEN=<admin API token> scripts/test_deploy.py <git-ref> [--url URL] [--yes]
 
 Sends every file changed between <git-ref> and the working tree, except
-tests/ and VERSION. A file deleted since <git-ref> is reported, not deleted:
-the flow only writes. Standard library only, so it runs from any checkout.
+tests/ and VERSION, and except files the hub already has as they are here. A
+file deleted since <git-ref> is reported, not deleted: the flow only writes.
+Binary files (images) go base64, and only to a hub whose flow says it takes
+them. Standard library only, so it runs from any checkout.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import ssl
@@ -22,6 +25,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -44,6 +48,15 @@ def changed(ref: str):
                                capture_output=True, text=True, check=True).stdout.split()
     keep += [p for p in untracked if not p.startswith(SKIP) and p not in keep]
     return sorted(keep), deleted
+
+
+def entry(path: str) -> dict:
+    """The file as the deploy flow takes it: text as itself, anything else base64."""
+    raw = (REPO / path).read_bytes()
+    try:
+        return {"path": path, "content": raw.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {"path": path, "content_b64": base64.b64encode(raw).decode("ascii")}
 
 
 class Api:
@@ -108,7 +121,32 @@ def main() -> int:
         print(f"A test batch is already pending ({st.get('count')} file(s)); confirm or roll it back first.")
         return 1
 
-    batch = [{"path": f, "content": (REPO / f).read_text(encoding="utf-8")} for f in files]
+    batch = [entry(f) for f in files]
+
+    # A hub already holding a file as it is here needn't have it again, so a
+    # re-run sends only what is left rather than restarting for nothing.
+    same = []
+    for e in batch:
+        if "content" in e:
+            code, cur = api.call("GET", "/api/editor/file?path=" + urllib.parse.quote(e["path"]))
+            if code == 200 and cur.get("success") and cur.get("content") == e["content"]:
+                same.append(e["path"])
+    batch = [e for e in batch if e["path"] not in same]
+    if same:
+        print(f"Already on the hub, not sent: {len(same)} file(s).")
+
+    held = []
+    if not st.get("binary"):
+        held = [e["path"] for e in batch if "content_b64" in e]
+        batch = [e for e in batch if "content_b64" not in e]
+    if not batch:
+        if held:
+            print("Only binary files are left, and this hub's deploy flow can't take them:",
+                  ", ".join(held), "— they need a release, or a hub running a newer flow.")
+            return 1
+        print("The hub already has every file.")
+        return 0
+
     code, r = api.call("POST", "/api/editor/test-deploy", {"files": batch}, timeout=120)
     if not r.get("success"):
         print("Not deployed:", r.get("error") or f"HTTP {code}")
@@ -149,7 +187,12 @@ def main() -> int:
             return 1
     code, c = api.call("POST", "/api/editor/test-confirm")
     print(c.get("message") or ("Confirmed." if c.get("success") else f"Confirm failed: HTTP {code}"))
-    return 0 if c.get("success", code == 200) else 1
+    ok = c.get("success", code == 200)
+    if ok and held:
+        # Sent as text, an older flow would write the base64 into the file.
+        print(f"Held back {len(held)} binary file(s) this hub's flow couldn't take:", ", ".join(held))
+        print("If this batch brought the newer flow, run the same command again to send them.")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

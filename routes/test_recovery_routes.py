@@ -23,6 +23,8 @@ def register_test_recovery_routes(app: FastAPI, get_manager):
         Payload shapes accepted:
           • {"files": [{"path": "...", "content": "..."}, ...]}   (batch)
           • {"path": "...", "content": "..."}                      (legacy single)
+
+        A binary file carries "content_b64" in place of "content".
         """
         files = data.get("files")
         if files is None:
@@ -40,10 +42,10 @@ def register_test_recovery_routes(app: FastAPI, get_manager):
 
         # Validate each entry
         for i, f in enumerate(files):
-            if not isinstance(f, dict) or "path" not in f or "content" not in f:
+            if not isinstance(f, dict) or "path" not in f or not ("content" in f or "content_b64" in f):
                 return {
                     "success": False,
-                    "error": f"files[{i}] must be {{path, content}}",
+                    "error": f"files[{i}] must be {{path, content}} or {{path, content_b64}}",
                 }
 
         return await get_trm().deploy_test_batch(files)
@@ -117,8 +119,11 @@ def register_test_recovery_routes(app: FastAPI, get_manager):
     async def test_status():
         """Get current test deployment status."""
         pending = get_trm().get_pending()
+        # Tells scripts/test_deploy.py it may send content_b64: an older hub
+        # would write the base64 text into the file.
+        caps = {"binary": True}
         if not pending:
-            return {"pending": False}
+            return {"pending": False, **caps}
 
         import time
         elapsed = time.time() - pending.get("deployed_at", 0)
@@ -126,6 +131,7 @@ def register_test_recovery_routes(app: FastAPI, get_manager):
         files = pending.get("files", [])
 
         return {
+            **caps,
             "pending": True,
             "files": [f.get("path") for f in files],
             "count": len(files),

@@ -7,6 +7,8 @@ files. Pending state persists to disk so it survives restarts and is consumed by
 boot_guard.py on a failed boot. See docs/upgrades.md.
 """
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -99,7 +101,8 @@ class TestRecoveryManager:
         """
         Deploy a batch of file changes for testing.
 
-        files: [{"path": "...", "content": "..."}, ...]
+        files: [{"path": "...", "content": "..."}, ...]; a binary file (an
+        image) carries "content_b64" in place of "content".
 
         Backs up every existing file, writes every file, records a single
         pending batch. If any write fails, all writes already performed
@@ -127,17 +130,25 @@ class TestRecoveryManager:
         for entry in files:
             path = entry.get("path")
             content = entry.get("content")
-            if not path or content is None:
-                return {"success": False, "error": f"Invalid file entry: {entry}"}
+            data = None
+            if content is None and isinstance(entry.get("content_b64"), str):
+                try:
+                    data = base64.b64decode(entry["content_b64"], validate=True)
+                except (binascii.Error, ValueError):
+                    return {"success": False, "error": f"{path}: content_b64 is not base64. Nothing was deployed."}
+            if not path or (content is None and data is None):
+                return {"success": False, "error": f"Invalid file entry: {path or entry}"}
             full = (PROJECT_ROOT / path).resolve()
             if not str(full).startswith(str(PROJECT_ROOT.resolve())):
                 return {"success": False, "error": f"Path outside project: {path}"}
-            resolved.append({"path": path, "content": content, "full": full})
+            resolved.append({"path": path, "content": content, "data": data, "full": full})
+        # The text checks below read source; a binary file has none to check.
+        texts = [r for r in resolved if r["content"] is not None]
 
         # Pre-flight: a syntax error guarantees a boot crash, so reject it before
         # touching disk rather than through a restart->crash->rollback cycle.
         # Runtime errors still fall through to restart+rollback.
-        for r in resolved:
+        for r in texts:
             if r["full"].suffix.lower() == ".py":
                 try:
                     compile(r["content"], r["path"], "exec")
@@ -153,7 +164,7 @@ class TestRecoveryManager:
         # Mojibake guard (same rule as /api/editor/save): U+FFFD never occurs
         # in legitimate source — the test path must not be the loophole that
         # bakes corrupted text into a deploy.
-        for r in resolved:
+        for r in texts:
             if "�" in r["content"]:
                 lines = [i + 1 for i, line in enumerate(r["content"].splitlines())
                          if "�" in line]
@@ -175,7 +186,7 @@ class TestRecoveryManager:
             from routes.editor_routes import _validate_json, _validate_yaml
             parsers = {".json": _validate_json, ".yaml": _validate_yaml,
                        ".yml": _validate_yaml}
-            for r in resolved:
+            for r in texts:
                 fn = parsers.get(r["full"].suffix.lower())
                 if not fn:
                     continue
@@ -239,7 +250,10 @@ class TestRecoveryManager:
         for r, b in zip(resolved, backups_created):
             try:
                 r["full"].parent.mkdir(parents=True, exist_ok=True)
-                r["full"].write_text(r["content"], encoding="utf-8")
+                if r["data"] is not None:
+                    r["full"].write_bytes(r["data"])
+                else:
+                    r["full"].write_text(r["content"], encoding="utf-8")
                 written.append(b)
             except Exception as e:
                 logger.error(f"Batch write failed for {r['path']}: {e} — undoing partial batch")
