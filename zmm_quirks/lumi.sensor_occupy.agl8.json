@@ -28,8 +28,8 @@
     }
   },
   "reporting": [
-    { "ep": 1, "cluster": "0xFCC0", "attr": "0x0142", "min": 0, "max": 3600, "delta": 1, "mfr": "0x115F", "type": "uint8" },
-    { "ep": 1, "cluster": "0xFCC0", "attr": "0x014D", "min": 0, "max": 3600, "delta": 1, "mfr": "0x115F", "type": "uint8" }
+    { "ep": 1, "cluster": "0xFCC0", "attr": "0x0142", "min": 0, "max": 300, "delta": 1, "mfr": "0x115F", "type": "uint8" },
+    { "ep": 1, "cluster": "0xFCC0", "attr": "0x014D", "min": 0, "max": 300, "delta": 1, "mfr": "0x115F", "type": "uint8" }
   ],
   "zmm": {
     "struct_tags": {
