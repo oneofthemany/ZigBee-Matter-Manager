@@ -309,16 +309,18 @@
 
 
     window.initMessagesUI = function () {
-        loadThreads();
+        // onChange runs it now when auth has resolved, and again on each change.
+        if (window.zmmAuth && window.zmmAuth.onChange) {
+            window.zmmAuth.onChange(function () { state.people = null; loadThreads(); });
+        } else {
+            loadThreads();
+        }
         if (state.timer) clearInterval(state.timer);
         // Push covers new messages while hidden; the listener below refreshes on return.
         state.timer = setInterval(function () { if (!document.hidden) loadThreads(); }, POLL_MS);
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'visible') loadThreads();
         });
-        if (window.zmmAuth && window.zmmAuth.onChange) {
-            window.zmmAuth.onChange(function () { state.people = null; loadThreads(); });
-        }
         // Arrived via a tapped push notification (sw.js opens '/#messages').
         if (window.location.hash === '#messages') {
             history.replaceState(null, '', window.location.pathname);

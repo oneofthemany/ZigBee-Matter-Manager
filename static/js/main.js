@@ -9,7 +9,8 @@ import { state } from './state.js';
 import './manager-link.js';      // data-zmm-manager links
 import { updateLastSeenTimes, whileVisible } from './utils.js';
 import { initWS } from './websocket.js';
-import { fetchAllDevices, filterByStatus } from './devices.js';
+import { fetchAllDevices, filterByStatus, renderLastDevices } from './devices.js';
+import { initTabRouting } from './tab-routing.js';
 import { initGroups } from './groups.js';
 import { initMQTTExplorer, handleMQTTMessage, startMQTTStats, stopMQTTStats } from './mqtt-explorer.js';
 import { initEditor, getEditorInstance } from './editor.js';
@@ -394,6 +395,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state._dashboardInited) return;
         state._dashboardInited = true;
 
+        // First, so it heads the browser's six-connection queue: the module
+        // inits below each fire their own requests.
+        renderLastDevices();
+        fetchAllDevices();
+
         // WebSocket
         if (!state.socket) initWS();
 
@@ -423,7 +429,6 @@ document.addEventListener('DOMContentLoaded', () => {
         initPacketFlow();
 
         // Initial data fetches
-        fetchAllDevices();
         loadInterviewStatusPending();
         if (typeof checkPairingStatus === 'function') checkPairingStatus();
         checkMatterStatus();
@@ -551,39 +556,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // script — so it still renders when a test deploy breaks this module
         // graph. Do not re-add it here.
 
-        initTabRouting();
+        initTabRouting({ onReturn: fetchAllDevices });
 
         log.log("Zigbee Matter Manager Frontend Initialised");
-    }
-
-    /**
-     * The URL hash names the innermost open page tab (#heating, #settingsSpectrum),
-     * so reload, Back and bookmarks land where the user was. Hashes that aren't a
-     * page tab (e.g. #messages) are left to their owners.
-     */
-    function initTabRouting() {
-        const triggerFor = id => document.querySelector(
-            `[data-bs-toggle="tab"][data-bs-target="#${CSS.escape(id)}"]:not(.modal *)`);
-        let applying = false;
-
-        function applyHash() {
-            const id = decodeURIComponent(location.hash.slice(1)) || 'devices';
-            const pane = document.getElementById(id);
-            if (!pane?.classList.contains('tab-pane') || !triggerFor(id)) return;
-            const chain = [];
-            for (let p = pane; p; p = p.parentElement.closest('.tab-pane')) chain.unshift(p.id);
-            applying = true;
-            // click(), not Tab.show(): some tabs (Settings) load on click.
-            try { chain.forEach(pid => triggerFor(pid)?.click()); } finally { applying = false; }
-        }
-
-        document.addEventListener('shown.bs.tab', e => {
-            const id = e.target.dataset.bsTarget?.slice(1);
-            if (applying || !id || e.target.closest('.modal') || location.hash === `#${id}`) return;
-            history.pushState(null, '', `#${id}`);
-        });
-        window.addEventListener('popstate', applyHash);
-        applyHash();
     }
 
     // Gate the dashboard on authentication. zmmAuth.onChange fires

@@ -42,6 +42,35 @@ function hasOTACluster(d) {
     );
 }
 
+/** sessionStorage key of the last /api/devices payload; auth.js clears it on logout. */
+export const LAST_DEVICES_KEY = 'zmm.lastDevices';
+
+/**
+ * Draw the table from the last payload this tab fetched, so a reload shows the
+ * devices at once rather than after the round trip; fetchAllDevices then
+ * replaces it, and skips the re-render if nothing changed. Per tab, not
+ * localStorage, so it goes with the tab.
+ * @returns {boolean} whether anything was drawn
+ */
+export function renderLastDevices() {
+    let raw = null;
+    try { raw = sessionStorage.getItem(LAST_DEVICES_KEY); } catch (e) { return false; }
+    if (!raw || state.devices?.length) return false;
+    try {
+        const devices = JSON.parse(raw);
+        if (!Array.isArray(devices)) return false;
+        state.devices = devices;
+        cacheDevices(devices);
+        _lastDevicesKey = raw;
+        renderDeviceTable();
+        populateRouterList();
+        return true;
+    } catch (e) {
+        log.debug('last device list unusable:', e);
+        return false;
+    }
+}
+
 // In-flight /api/devices request, so overlapping callers share one fetch and
 // one render. On a cold load main.js's init and the websocket's onopen both
 // call this within a few hundred ms of each other, which rebuilt the whole
@@ -78,6 +107,7 @@ export async function fetchAllDevices(force = false) {
             cacheDevices(devices);
 
             const key = JSON.stringify(devices);
+            try { sessionStorage.setItem(LAST_DEVICES_KEY, key); } catch (e) { /* quota / blocked */ }
             if (force || key !== _lastDevicesKey) {
                 _lastDevicesKey = key;
                 renderDeviceTable();

@@ -635,25 +635,61 @@ function cellHtml(cell) {
 
 // frame
 
+// Hidden cells are only fetched while editing visibility — the rest of the
+// time the backend leaves them out entirely.
+function frameUrl() {
+    return current.type === 'saved'
+        ? `/api/frames/${encodeURIComponent(current.id)}${editVisibility ? '?hidden=1' : ''}`
+        : `/api/frames/auto?split=${encodeURIComponent(current.split)}${editVisibility ? '&hidden=1' : ''}`;
+}
+
+function adoptFrame(data) {
+    frame = data;
+    split = data.split || split;
+    // Keep the open tab across a refresh if it still exists, so a websocket
+    // reload doesn't bounce you back to the first tab mid-tap.
+    const tabs = frame.tabs || [];
+    activeTab = tabs.some(t => t.id === activeTab) ? activeTab : (tabs[0]?.id ?? null);
+    renderFrame();
+}
+
+/** localStorage key of the last frame response; auth.js clears it on logout. */
+export const LAST_FRAME_KEY = 'zmm.frames.lastFrame';
+// Only the standalone page opts in: the dashboard has no use for the copy.
+let rememberFrame = false;
+
+/**
+ * Draw the last frame this browser loaded for the current selection, before
+ * the request for it returns, and keep it for next time from here on.
+ * @returns {boolean} whether anything was drawn
+ */
+export function showLastFrame() {
+    rememberFrame = true;
+    try {
+        const last = JSON.parse(localStorage.getItem(LAST_FRAME_KEY) || 'null');
+        if (!last || last.url !== frameUrl() || !last.data?.success) return false;
+        adoptFrame(last.data);
+        return true;
+    } catch (e) {
+        log.debug('last frame unusable:', e);
+        return false;
+    }
+}
+
+/** @returns {Promise<boolean|undefined>} whether a frame was drawn; undefined if one was already loading */
 export async function loadFrame() {
     if (loading) return;
     loading = true;
     try {
-        // Hidden cells are only fetched while editing visibility — the rest of
-        // the time the backend leaves them out entirely.
-        const url = current.type === 'saved'
-            ? `/api/frames/${encodeURIComponent(current.id)}${editVisibility ? '?hidden=1' : ''}`
-            : `/api/frames/auto?split=${encodeURIComponent(current.split)}${editVisibility ? '&hidden=1' : ''}`;
+        const url = frameUrl();
         const res = await fetch(url);
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'failed to build frame');
-        frame = data;
-        split = data.split || split;
-        // Keep the open tab across a refresh if it still exists, so a websocket
-        // reload doesn't bounce you back to the first tab mid-tap.
-        const tabs = frame.tabs || [];
-        activeTab = tabs.some(t => t.id === activeTab) ? activeTab : (tabs[0]?.id ?? null);
-        renderFrame();
+        if (rememberFrame && !editVisibility) {
+            try { localStorage.setItem(LAST_FRAME_KEY, JSON.stringify({ url, data })); } catch (e) { /* quota / blocked */ }
+        }
+        adoptFrame(data);
+        return true;
     } catch (e) {
         log.warn('failed to load frame:', e.message);
         const grid = document.getElementById('framesGrid');
@@ -663,6 +699,7 @@ export async function loadFrame() {
                 <div>Could not build the frame: ${esc(e.message)}</div>
             </div>`;
         }
+        return false;
     } finally {
         loading = false;
     }

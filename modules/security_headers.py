@@ -26,6 +26,15 @@ logger = logging.getLogger("modules.security_headers")
 #: is rate-limited and size-capped below.
 CSP_REPORT_PATH = "/api/csp/report"
 
+#: Reporting API group. Browsers that know it batch violations into a delayed
+#: POST instead of one per violation, which on HTTP/1.1 queued page-load
+#: requests behind ~100 reports; report-uri stays for those that don't.
+CSP_REPORT_GROUP = "csp"
+
+#: Body caps: one legacy report, and one Reporting API batch.
+_REPORT_MAX = 8192
+_BATCH_MAX = 65536
+
 #: Directives safe to enforce against the SPA as it stands.
 _ENFORCED: Tuple[Tuple[str, str], ...] = (
     ("frame-ancestors", "'self'"),
@@ -54,7 +63,7 @@ def _policy(directives: Tuple[Tuple[str, str], ...],
             report_uri: Optional[str] = None) -> str:
     out = "; ".join(f"{k} {v}" for k, v in directives)
     if report_uri:
-        out += f"; report-uri {report_uri}"
+        out += f"; report-uri {report_uri}; report-to {CSP_REPORT_GROUP}"
     return out
 
 
@@ -100,6 +109,7 @@ class SecurityHeadersMiddleware:
         h.setdefault("X-Frame-Options", "SAMEORIGIN")
         h.setdefault("Content-Security-Policy", self._enforced)
         h.setdefault("Content-Security-Policy-Report-Only", self._target)
+        h.setdefault("Reporting-Endpoints", f'{CSP_REPORT_GROUP}="{CSP_REPORT_PATH}"')
         return response
 
 
@@ -121,20 +131,27 @@ def register_csp_report_route(app, limiter: Optional[_ReportLimiter] = None):
     async def csp_report(request: Request):
         # Cap the body: this endpoint is unauthenticated by necessity.
         raw = await request.body()
-        if len(raw) > 8192:
-            return _ack()
-        if not lim.allow():
+        batch = request.headers.get("content-type", "").startswith("application/reports+json")
+        if len(raw) > (_BATCH_MAX if batch else _REPORT_MAX):
             return _ack()
         try:
-            report = (json.loads(raw) or {}).get("csp-report", {})
-            logger.warning(
-                "[csp] %s blocked %s on %s",
-                report.get("violated-directive") or "?",
-                report.get("blocked-uri") or "?",
-                report.get("document-uri") or "?",
-            )
-        except (ValueError, AttributeError):
+            parsed = json.loads(raw)
+            if batch:
+                # Reporting API: a list of {type, body} in camelCase.
+                reports = [(b.get("effectiveDirective"), b.get("blockedURL"), b.get("documentURL"))
+                           for b in (r.get("body") or {} for r in parsed
+                                     if isinstance(r, dict) and r.get("type") == "csp-violation")]
+            else:
+                r = (parsed or {}).get("csp-report", {})
+                reports = [(r.get("violated-directive"), r.get("blocked-uri"), r.get("document-uri"))]
+        except (ValueError, AttributeError, TypeError):
             logger.debug("[csp] unparseable report (%d bytes)", len(raw))
+            return _ack()
+        for directive, blocked, document in reports:
+            if not lim.allow():
+                break
+            logger.warning("[csp] %s blocked %s on %s",
+                           directive or "?", blocked or "?", document or "?")
         return _ack()
 
     return csp_report

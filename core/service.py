@@ -2119,69 +2119,72 @@ class ZigbeeService(
 
     def get_device_list(self):
         """Get list of all devices with their current state - JSON-safe."""
-        res = []
-        for ieee, zdev in self.devices.items():
-            try:
-                d = zdev.zigpy_dev
-                caps = sorted(list(zdev.capabilities.get_capabilities())) if hasattr(zdev, 'capabilities') else []
+        from modules.zigbee_cache import facts_snapshot
+        # Each device's settings re-read its facts; one table read serves them all.
+        with facts_snapshot():
+            res = []
+            for ieee, zdev in self.devices.items():
+                try:
+                    d = zdev.zigpy_dev
+                    caps = sorted(list(zdev.capabilities.get_capabilities())) if hasattr(zdev, 'capabilities') else []
 
-                # Build endpoint info
-                endpoints = []
-                for ep_id, ep in d.endpoints.items():
-                    if ep_id == 0:
-                        continue
+                    # Build endpoint info
+                    endpoints = []
+                    for ep_id, ep in d.endpoints.items():
+                        if ep_id == 0:
+                            continue
 
-                    component_type = None
-                    handler_key = (ep_id, 0x0006)
-                    if handler_key in zdev.handlers:
-                        h = zdev.handlers[handler_key]
-                        if hasattr(h, 'get_component_type'):
-                            component_type = h.get_component_type()
+                        component_type = None
+                        handler_key = (ep_id, 0x0006)
+                        if handler_key in zdev.handlers:
+                            h = zdev.handlers[handler_key]
+                            if hasattr(h, 'get_component_type'):
+                                component_type = h.get_component_type()
 
-                    function = device_endpoint_function(zdev, ep)
-                    endpoints.append({
-                        "id": ep_id,
-                        # What the EP is for: light, switch, thermostat, cover,
-                        # lock, or null. component_type is the light/switch half.
-                        "function": function.kind if function else None,
-                        "device_type": hex(ep.device_type) if ep.device_type else "0x0000",
-                        "profile_id": hex(ep.profile_id) if ep.profile_id else "0x0000",
-                        "profile": hex(ep.profile_id) if ep.profile_id else "0x0000",
-                        "inputs": [{"id": c.cluster_id, "name": c.name} for c in ep.in_clusters.values()],
-                        "outputs": [{"id": c.cluster_id, "name": c.name} for c in ep.out_clusters.values()],
-                        "component_type": component_type
+                        function = device_endpoint_function(zdev, ep)
+                        endpoints.append({
+                            "id": ep_id,
+                            # What the EP is for: light, switch, thermostat, cover,
+                            # lock, or null. component_type is the light/switch half.
+                            "function": function.kind if function else None,
+                            "device_type": hex(ep.device_type) if ep.device_type else "0x0000",
+                            "profile_id": hex(ep.profile_id) if ep.profile_id else "0x0000",
+                            "profile": hex(ep.profile_id) if ep.profile_id else "0x0000",
+                            "inputs": [{"id": c.cluster_id, "name": c.name} for c in ep.in_clusters.values()],
+                            "outputs": [{"id": c.cluster_id, "name": c.name} for c in ep.out_clusters.values()],
+                            "component_type": component_type
+                        })
+
+                    res.append({
+                        "ieee": ieee,
+                        "nwk": hex(d.nwk),
+                        # What the device is, decided once (modules/device_class.py).
+                        "device_class": device_class.describe(zdev),
+                        "friendly_name": self.friendly_names.get(ieee, ieee),
+                        "model": str(d.model) if d.model else "Unknown",
+                        "manufacturer": str(d.manufacturer) if d.manufacturer else "Unknown",
+                        "lqi": getattr(d, 'lqi', 0) or 0,
+                        "rssi": getattr(d, 'rssi', None),
+                        "last_seen_ts": zdev.last_seen,
+                        "state": zdev.state,
+                        "type": zdev.get_role(),
+                        "quirk": quirk_name_of(d),
+                        "capabilities": endpoints,
+                        "capability_list": caps,
+                        "settings": self.device_settings.get(ieee, {}),
+                        "available": zdev.is_available(),
+                        "config_schema": zdev.get_device_config_schema() if hasattr(zdev, 'get_device_config_schema') else [],
+                        # Raw keys its entry names: shown under their name, not twice.
+                        "named_raw_keys": _named_raw_keys(zdev),
+                        # Which valve controls the Control tab may draw: asked of
+                        # the device, never inferred from who made it.
+                        "valve_settings": [n for n in VALVE_CONTROL_SETTINGS
+                                           if hasattr(zdev, 'supports_setting') and zdev.supports_setting(n)],
+                        "polling_interval": self.polling_scheduler._intervals.get(ieee, 0)
                     })
 
-                res.append({
-                    "ieee": ieee,
-                    "nwk": hex(d.nwk),
-                    # What the device is, decided once (modules/device_class.py).
-                    "device_class": device_class.describe(zdev),
-                    "friendly_name": self.friendly_names.get(ieee, ieee),
-                    "model": str(d.model) if d.model else "Unknown",
-                    "manufacturer": str(d.manufacturer) if d.manufacturer else "Unknown",
-                    "lqi": getattr(d, 'lqi', 0) or 0,
-                    "rssi": getattr(d, 'rssi', None),
-                    "last_seen_ts": zdev.last_seen,
-                    "state": zdev.state,
-                    "type": zdev.get_role(),
-                    "quirk": quirk_name_of(d),
-                    "capabilities": endpoints,
-                    "capability_list": caps,
-                    "settings": self.device_settings.get(ieee, {}),
-                    "available": zdev.is_available(),
-                    "config_schema": zdev.get_device_config_schema() if hasattr(zdev, 'get_device_config_schema') else [],
-                    # Raw keys its entry names: shown under their name, not twice.
-                    "named_raw_keys": _named_raw_keys(zdev),
-                    # Which valve controls the Control tab may draw: asked of
-                    # the device, never inferred from who made it.
-                    "valve_settings": [n for n in VALVE_CONTROL_SETTINGS
-                                       if hasattr(zdev, 'supports_setting') and zdev.supports_setting(n)],
-                    "polling_interval": self.polling_scheduler._intervals.get(ieee, 0)
-                })
-
-            except Exception as e:
-                logger.error(f"[{ieee}] Failed to build device info: {e}")
+                except Exception as e:
+                    logger.error(f"[{ieee}] Failed to build device info: {e}")
 
         return prepare_for_json(res)
 

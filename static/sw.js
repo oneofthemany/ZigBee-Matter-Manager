@@ -1,7 +1,7 @@
 /* ZigBee Matter Manager — Service Worker (PWA) */
 
-// The /sw.js route appends the app version, so each release gets a new name and
-// `activate` purges the old cache; bump this base only to purge mid-release.
+// The /sw.js route appends the app version and a fingerprint of static/, so any
+// changed file gets a new name and `activate` purges the old cache.
 var CACHE_NAME = 'zbm-v12';
 
 // App shell files to cache on install.
@@ -48,7 +48,7 @@ var APP_SHELL = [
     '/static/css/upgrade.css',
     '/static/css/wiki.css',
 
-    '/static/images/zigbee-manager-logo.png',
+    '/static/images/zigbee-manager-logo-192.png',
     '/static/js/presence.js',
     '/static/js/presence-settings.js'
 ];
@@ -108,12 +108,14 @@ self.addEventListener('fetch', function (event) {
         return;
     }
 
-    // Static assets: cache-first with network update
+    // Static assets: cache-first, network only on a miss. No background refresh:
+    // CACHE_NAME carries a fingerprint of static/, so a changed file arrives as
+    // a new worker with an empty cache, and a page load costs no asset requests.
     if (url.pathname.startsWith('/static/')) {
         event.respondWith(
             caches.match(event.request).then(function (cached) {
-                var fetchPromise = fetch(event.request).then(function (response) {
-                    // Update cache with fresh version
+                if (cached) return cached;
+                return fetch(event.request).then(function (response) {
                     if (response.ok) {
                         var clone = response.clone();
                         caches.open(CACHE_NAME).then(function (cache) {
@@ -121,11 +123,7 @@ self.addEventListener('fetch', function (event) {
                         });
                     }
                     return response;
-                }).catch(function () {
-                    // Network failed, cached version already returned
                 });
-
-                return cached || fetchPromise;
             })
         );
         return;
@@ -146,7 +144,7 @@ self.addEventListener('fetch', function (event) {
 
 // Push notification handling
 self.addEventListener('push', function (event) {
-    var data = { title: 'ZigBee Manager', body: 'Device update', icon: '/static/images/zigbee-manager-logo.png' };
+    var data = { title: 'ZigBee Manager', body: 'Device update', icon: '/static/images/zigbee-manager-logo-192.png' };
 
     try {
         if (event.data) {
@@ -161,8 +159,8 @@ self.addEventListener('push', function (event) {
     event.waitUntil(
         self.registration.showNotification(data.title || 'ZigBee Manager', {
             body: data.body || '',
-            icon: data.icon || '/static/images/zigbee-manager-logo.png',
-            badge: '/static/images/zigbee-manager-logo.png',
+            icon: data.icon || '/static/images/zigbee-manager-logo-192.png',
+            badge: '/static/images/zigbee-manager-logo-192.png',
             tag: data.tag || 'zbm-notification',
             // Tags collapse a burst into one notification — but replacing a
             // tagged notification is SILENT unless renotify is set, which

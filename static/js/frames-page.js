@@ -10,6 +10,7 @@
 import { state } from './state.js';
 import {
     initFrames, loadFrame, loadSavedFrames, framesHandleDeviceUpdate, setFrameTab,
+    renderFrame, showLastFrame,
     openFrameBuilder, saveFrame, deleteCurrentFrame, frameCommand, frameSetpoint,
     frameColor, frameSliderInput, frameGroupCommand, frameGroupColor,
     frameSetHidden, frameSetGroupMembersHidden, frameToggleVisibilityEdit,
@@ -35,13 +36,35 @@ let reconnectDelay = 1000;
 
 // devices
 
+/** localStorage key of the last /api/devices payload; auth.js clears it on logout. */
+const LAST_DEVICES_KEY = 'zmm.frames.lastDevices';
+
+function adoptDevices(devices) {
+    state.devices = devices;
+    state.deviceCache = Object.fromEntries(devices.map(d => [d.ieee, d]));
+}
+
 async function loadDevices() {
     const res = await fetch('/api/devices');
     const devices = await res.json();
     if (!Array.isArray(devices)) throw new Error('unexpected /api/devices response');
-    state.devices = devices;
-    state.deviceCache = Object.fromEntries(devices.map(d => [d.ieee, d]));
+    adoptDevices(devices);
+    try { localStorage.setItem(LAST_DEVICES_KEY, JSON.stringify(devices)); } catch (e) { /* quota / blocked */ }
     return devices;
+}
+
+/**
+ * Draw the last devices and frame this browser saw, before the hub answers.
+ * localStorage, not sessionStorage: launching the app starts a new session,
+ * and launch is when it's slow. Tiles take no taps while stale (frames-page.css):
+ * a toggle decided on old state goes the wrong way.
+ */
+function showLast() {
+    try {
+        const devices = JSON.parse(localStorage.getItem(LAST_DEVICES_KEY) || 'null');
+        if (Array.isArray(devices)) adoptDevices(devices);
+    } catch (e) { /* unusable; the live load replaces it */ }
+    if (showLastFrame()) document.body.classList.add('frames-stale');
 }
 
 // commands
@@ -129,10 +152,14 @@ function initWS() {
 
 
 async function start() {
-    try {
-        await loadDevices();
-    } catch (e) {
-        log.error('failed to load devices:', e.message);
+    initFrames();
+    showLast();
+    // In parallel: each is a round trip, and the frame doesn't need the devices
+    // to arrive first — the cells read them when drawn.
+    const [devices, , drawn] = await Promise.allSettled([loadDevices(), loadSavedFrames(), loadFrame()]);
+    document.body.classList.remove('frames-stale');
+    if (devices.status === 'rejected') {
+        log.error('failed to load devices:', devices.reason?.message);
         const grid = document.getElementById('framesGrid');
         if (grid) {
             grid.innerHTML = `<div class="frame-empty">
@@ -142,10 +169,8 @@ async function start() {
         }
         return;
     }
-
-    initFrames();
-    await loadSavedFrames();
-    await loadFrame();
+    // The frame may have landed before the devices did.
+    if (drawn.value) renderFrame();
     initWS();
     // Header presence badge — same gating as the manager (main.js).
     if (window.initPresenceBadge) window.initPresenceBadge();

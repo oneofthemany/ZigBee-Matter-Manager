@@ -8,6 +8,7 @@ Needs FastAPI, so run_all skips it on a bare host (AGENTS.md §The dev box).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from harness import Checker
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from modules.security_headers import (
+    CSP_REPORT_GROUP,
     CSP_REPORT_PATH,
     SecurityHeadersMiddleware,
     _ReportLimiter,
@@ -119,6 +121,33 @@ def run() -> Checker:
     c.check("and no content-length is declared",
             "content-length" not in {k.lower() for k in r.headers},
             dict(r.headers))
+
+    c.section("violations are batched where the browser can")
+    c.check("report-only names the Reporting API group",
+            f"report-to {CSP_REPORT_GROUP}" in report, report)
+    c.check("and the group points at the sink",
+            h.get("reporting-endpoints") == f'{CSP_REPORT_GROUP}="{CSP_REPORT_PATH}"',
+            h.get("reporting-endpoints"))
+    lim = _ReportLimiter(burst=2, window=60.0)
+    batched = _client(limiter=lim)
+    violation = {"type": "csp-violation", "body": {
+        "effectiveDirective": "style-src-attr", "blockedURL": "inline",
+        "documentURL": "https://hub/"}}
+    big = json.dumps([violation] * 100).encode()
+    r = batched.post(CSP_REPORT_PATH, content=big,
+                     headers={"content-type": "application/reports+json"})
+    c.check("a batch larger than one legacy report is accepted",
+            r.status_code == 204 and r.content == b"" and len(big) > 8192, (r.status_code, len(big)))
+    c.check("each violation in it counts against the log limit", not lim.allow())
+    c.check("other report types in a batch are ignored, not errors",
+            batched.post(CSP_REPORT_PATH, content=json.dumps([{"type": "deprecation", "body": {}}]),
+                         headers={"content-type": "application/reports+json"}).status_code == 204)
+    c.check("a batch that isn't a list does not 500",
+            batched.post(CSP_REPORT_PATH, content=b"7",
+                         headers={"content-type": "application/reports+json"}).status_code == 204)
+    c.check("an oversized batch is dropped too",
+            batched.post(CSP_REPORT_PATH, content=b"[" + b" " * 70000 + b"]",
+                         headers={"content-type": "application/reports+json"}).status_code == 204)
 
     c.section("the constant and the decorator agree")
     # The route is a literal so the scanner sees it; this pins the pair.

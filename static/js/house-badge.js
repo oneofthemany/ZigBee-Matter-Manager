@@ -245,7 +245,9 @@
 
     window.initHouseBadge = function () {
         if (s.timer) return;
-        refresh();
+        // onChange runs it now when auth has resolved, and again on each change.
+        if (window.zmmAuth && window.zmmAuth.onChange) window.zmmAuth.onChange(function () { refresh(); });
+        else refresh();
         s.timer = setInterval(function () { if (!document.hidden) refresh(); }, POLL_MS);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
         window.addEventListener('zmm-alarm-state', function (ev) {
@@ -255,6 +257,5 @@
         window.addEventListener('zmm-worker-updated', function (ev) {
             if (s.mode && s.mode.configured && ev.detail && ev.detail.id === s.mode.worker) refresh();
         });
-        if (window.zmmAuth && window.zmmAuth.onChange) window.zmmAuth.onChange(function () { refresh(); });
     };
 })();

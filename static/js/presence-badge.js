@@ -278,7 +278,9 @@
 
     window.initPresenceBadge = function () {
         if (state.timer) return;          // once per page, not per tab click
-        tick();
+        // onChange runs it now when auth has resolved, and again on each change.
+        if (window.zmmAuth && window.zmmAuth.onChange) window.zmmAuth.onChange(function () { tick(); });
+        else tick();
         state.timer = setInterval(function () {
             // Polling a hidden tab wakes the hub for nothing.
             if (!document.hidden) tick();
@@ -286,8 +288,5 @@
         document.addEventListener('visibilitychange', function () {
             if (!document.hidden) tick();
         });
-        if (window.zmmAuth && window.zmmAuth.onChange) {
-            window.zmmAuth.onChange(function () { tick(); });
-        }
     };
 })();

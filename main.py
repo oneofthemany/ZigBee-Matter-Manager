@@ -1372,17 +1372,23 @@ async def read_frames():
 
 @app.get("/sw.js")
 async def service_worker():
-    """Serve service worker from root scope, its CACHE_NAME suffixed with the app version."""
+    """Serve service worker from root scope, its CACHE_NAME suffixed with the app
+    version and a fingerprint of static/."""
     import re
     from fastapi.responses import Response
-    from routes.system_routes import _APP_VERSION
-    with open('static/sw.js') as f:
-        body = f.read()
-    # A new version changes the worker's bytes, so the browser installs it and
-    # `activate` purges the old release's cache without a hand-bumped name.
-    if _APP_VERSION:
+    from routes.system_routes import _APP_VERSION, static_fingerprint
+
+    def _read():
+        with open('static/sw.js') as f:
+            return f.read(), static_fingerprint()
+    body, fingerprint = await asyncio.to_thread(_read)
+    # Any change under static/ — a release, a test deploy, an editor save —
+    # changes the worker's bytes, so the browser installs it and `activate`
+    # purges the old cache. That is what lets sw.js serve /static cache-first.
+    suffix = "-".join(p for p in (_APP_VERSION, fingerprint) if p)
+    if suffix:
         body = re.sub(r"(var CACHE_NAME = '[^']*)';",
-                      lambda m: f"{m.group(1)}-{_APP_VERSION}';", body, count=1)
+                      lambda m: f"{m.group(1)}-{suffix}';", body, count=1)
     return Response(
         body,
         media_type='application/javascript',

@@ -394,8 +394,8 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
                 navigator.serviceWorker.ready.then(function (reg) {
                     reg.showNotification(title, {
                         body: body,
-                        icon: '/static/images/zigbee-manager-logo.png',
-                        badge: '/static/images/zigbee-manager-logo.png',
+                        icon: '/static/images/zigbee-manager-logo-192.png',
+                        badge: '/static/images/zigbee-manager-logo-192.png',
                         tag: tag || 'zbm-' + Date.now(),
                         // Replacing a tagged notification is silent unless
                         // renotify is set — the same defect that made every
@@ -413,7 +413,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
                 try {
                     new Notification(title, {
                         body: body,
-                        icon: '/static/images/zigbee-manager-logo.png',
+                        icon: '/static/images/zigbee-manager-logo-192.png',
                         tag: tag || 'zbm-' + Date.now()
                     });
                 } catch (e) {

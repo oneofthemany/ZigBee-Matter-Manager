@@ -29,6 +29,22 @@ def _read_app_version():
 _APP_VERSION = _read_app_version()
 
 
+def static_fingerprint(root: str = "static") -> str:
+    """Short hash of every file's path, mtime and size under `root`."""
+    import hashlib
+    h = hashlib.sha1()
+    for d, dirs, files in os.walk(root):
+        dirs.sort()
+        for name in sorted(files):
+            p = os.path.join(d, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            h.update(f"{p}:{st.st_mtime_ns}:{st.st_size};".encode())
+    return h.hexdigest()[:10]
+
+
 def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, get_manager):
     """Register system management routes."""
 

@@ -170,3 +170,13 @@ body.frames-page {
         padding-right: max(1rem, env(safe-area-inset-right));
     }
 }
+
+/* Drawn from the last visit until the hub answers (frames-page.js showLast):
+   taps wait, since a toggle decided on old state goes the wrong way. */
+.frames-stale #framesGrid {
+    pointer-events: none;
+    opacity: 0.7;
+}
+#framesGrid {
+    transition: opacity 0.2s;
+}

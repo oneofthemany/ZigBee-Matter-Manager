@@ -13,6 +13,8 @@ import os
 import time
 import traceback
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("modules.zigbee_cache")
@@ -672,14 +674,45 @@ def _upsert_facts(cur, ieee: str, rows: List[tuple], seen_at) -> int:
     return len(changed)
 
 
+_FACT_COLS = ("endpoint_id", "subject", "source", "value", "first_seen", "last_seen")
+# {ieee: rows} while a facts_snapshot() is open; None outside one.
+_facts_snapshot: ContextVar[Optional[Dict[str, List[Dict[str, Any]]]]] = \
+    ContextVar("facts_snapshot", default=None)
+
+
+@contextmanager
+def facts_snapshot():
+    """Serve get_facts from one read of the whole table for the block's length.
+
+    For building a view of every device synchronously: each device's settings
+    ask for its facts several times, and every DuckDB query costs a millisecond
+    or more on the event loop. Rows are shared, so callers must not mutate them.
+    """
+    token = _facts_snapshot.set({})
+    try:
+        yield
+    finally:
+        _facts_snapshot.reset(token)
+
+
 def get_facts(ieee) -> List[Dict[str, Any]]:
     _init_schema()
+    snap = _facts_snapshot.get()
+    if snap is not None:
+        if not snap:
+            snap[None] = []                     # loaded marker: an empty table stays loaded
+            cur = _safe_execute(
+                "SELECT ieee, endpoint_id, subject, source, value, first_seen, last_seen "
+                "FROM device_facts ORDER BY ieee, endpoint_id, subject, source",
+                context="read device_facts (all)")
+            for r in (cur.fetchall() if cur else []):
+                snap.setdefault(r[0], []).append(dict(zip(_FACT_COLS, r[1:])))
+        return snap.get(str(ieee), [])
     cur = _safe_execute(
         "SELECT endpoint_id, subject, source, value, first_seen, last_seen "
         "FROM device_facts WHERE ieee = ? ORDER BY endpoint_id, subject, source",
         [str(ieee)], context="read device_facts")
-    cols = ("endpoint_id", "subject", "source", "value", "first_seen", "last_seen")
-    return [dict(zip(cols, r)) for r in (cur.fetchall() if cur else [])]
+    return [dict(zip(_FACT_COLS, r)) for r in (cur.fetchall() if cur else [])]
 
 
 def keep_only_attributes(ieee, endpoint_id: int, cluster_id: int, attr_ids) -> None:

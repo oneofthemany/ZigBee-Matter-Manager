@@ -150,6 +150,12 @@
         } catch (e) {}
         state.principal = null;
         state.mfaChallenge = null;
+        // The copies of the last devices and frame, drawn on reload or launch.
+        try { sessionStorage.removeItem('zmm.lastDevices'); } catch (e) {}
+        try {
+            localStorage.removeItem('zmm.frames.lastDevices');
+            localStorage.removeItem('zmm.frames.lastFrame');
+        } catch (e) {}
         notify();
         showLoginModal();
     }
