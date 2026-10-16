@@ -417,3 +417,56 @@
         animation: none;
     }
 }
+
+/* Maintenance action panel (Settings tab): verdict, advice, live log */
+
+.zmm-op-checks {
+    list-style: none;
+    padding: 0;
+    margin: 0.25rem 0 0;
+    font-size: 0.8rem;
+}
+
+.zmm-op-checks li {
+    display: flex;
+    gap: 0.4rem;
+    align-items: baseline;
+    overflow-wrap: anywhere;
+}
+
+.zmm-op-checks .ok       { color: #198754; }
+.zmm-op-checks .declined { color: #0d6efd; }
+.zmm-op-checks .failed   { color: #dc3545; }
+
+.zmm-op-log {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.zmm-op-log ol {
+    list-style: none;
+    margin: 0.25rem 0 0;
+    padding: 0.4rem 0.5rem;
+    max-height: 40vh;
+    overflow-y: auto;
+    background: var(--bg-surface-sunken);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-family: var(--bs-font-monospace, monospace);
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+
+.zmm-op-log li {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+}
+
+.zmm-op-log li time    { color: var(--text-secondary); margin-right: 0.4rem; }
+.zmm-op-log li.WARNING { color: #b8860b; }
+.zmm-op-log li.ERROR,
+.zmm-op-log li.CRITICAL { color: #dc3545; }
+
+/* The join card is a small toast: a shorter log */
+.zmm-op-log--compact ol { max-height: 25vh; }

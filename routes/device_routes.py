@@ -166,31 +166,30 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
 
     @app.post("/api/device/reconfigure")
     async def reconfigure_device_endpoint(request: DeviceRequest):
-        """Reconfigure device with optional aggressive LQI reporting."""
+        """Reconfigure, observed: the answer is what the device said to each
+        step, not that the request was sent (docs/device-ops.md)."""
+        from modules import device_ops
+        from modules.device_profiles_apply import apply_profile
         logger.info(f"[{request.ieee}] Starting reconfiguration...")
-        try:
-            zigbee_service = get_zigbee_service()
-            if request.ieee not in zigbee_service.devices:
-                return {"success": False, "error": "Device not found"}
+        zigbee_service = get_zigbee_service()
+        if request.ieee not in zigbee_service.devices:
+            return {"success": False, "error": "Device not found"}
+        device = zigbee_service.devices[request.ieee]
+        action = {True: "aggressive_lqi", False: "restore_baseline"}.get(request.aggressive, "reconfigure")
 
-            device = zigbee_service.devices[request.ieee]
-            role = device.get_role()
-
-            # 1. Always run standard config
-            await zigbee_service.configure_device(request.ieee)
-
-            # 2. Handle aggressive/baseline LQI reporting
-            if request.aggressive is True and role == "Router":
+        async def work():
+            done = await zigbee_service.configure_device(request.ieee)
+            if not done.get("success"):
+                return done
+            # As pairing does: the entry's reporting rows, maker clusters included.
+            await apply_profile(device)
+            if request.aggressive is True and device.get_role() == "Router":
                 await configure_zone_device_reporting(zigbee_service, [request.ieee])
-                return {"success": True, "message": "Reconfigured with aggressive LQI reporting"}
             elif request.aggressive is False:
                 await remove_aggressive_reporting(zigbee_service, request.ieee)
-                return {"success": True, "message": "Restored baseline reporting"}
+            return done
 
-            return {"success": True, "message": "Reconfigured"}
-        except Exception as e:
-            logger.error(f"[{request.ieee}] Reconfiguration failed: {e}")
-            return {"success": False, "error": str(e)}
+        return await device_ops.run(request.ieee, action, work, zigbee_service._emit_sync)
 
     @app.post("/api/device/interview")
     async def interview_device(request: DeviceRequest):
@@ -248,8 +247,13 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
 
     @app.post("/api/device/poll")
     async def poll_device(request: DeviceRequest):
-        """Poll device for current attribute values."""
-        return await get_zigbee_service().poll_device(request.ieee, seq=request.seq)
+        """Poll device for current attribute values, observed (docs/device-ops.md)."""
+        from modules import device_ops
+        svc = get_zigbee_service()
+        if request.ieee not in svc.devices:
+            return {"success": False, "error": "Device not found"}
+        return await device_ops.run(request.ieee, "poll",
+                                    lambda: svc.poll_device(request.ieee, seq=request.seq), svc._emit_sync)
 
     # Commands & Attributes
 

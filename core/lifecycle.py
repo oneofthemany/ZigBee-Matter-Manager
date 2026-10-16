@@ -235,23 +235,33 @@ class DeviceLifecycleMixin:
         try:
             zdev = self.devices[ieee]
 
-            self._emit_sync("join_progress", {"ieee": ieee, "stage": "configuring"})
-            await zdev.configure()
-            logger.info(f"[{ieee}] Device configured successfully")
+            async def setup():
+                self._emit_sync("join_progress", {"ieee": ieee, "stage": "configuring"})
+                await zdev.configure()
 
-            # After handler configure so per-handler reporting wins conflicts, before
-            # MQTT announce so the capability set reaches discovery, and before poll()
-            # so friendly keys are in the first snapshot. Idempotent.
-            try:
-                from modules.device_profiles_apply import apply_profile
-                await apply_profile(zdev)
-            except Exception as _e:
-                logger.debug(f"[{ieee}] apply_profile skipped: {_e}")
+                # After handler configure so per-handler reporting wins conflicts, before
+                # MQTT announce so the capability set reaches discovery, and before poll()
+                # so friendly keys are in the first snapshot. Idempotent.
+                try:
+                    from modules.device_profiles_apply import apply_profile
+                    await apply_profile(zdev)
+                except Exception as _e:
+                    logger.warning(f"[{ieee}] apply_profile failed: {_e}")
 
-            self._emit_sync("join_progress", {"ieee": ieee, "stage": "polling"})
+                self._emit_sync("join_progress", {"ieee": ieee, "stage": "polling"})
+                await zdev.poll()
 
-            await zdev.poll()
-            self._emit_sync("join_progress", {"ieee": ieee, "stage": "ready"})
+            # Observed like a Maintenance action: "ready" carries what the
+            # device actually took (docs/device-ops.md).
+            from modules import device_ops
+            report = await device_ops.run(ieee, "join", setup, self._emit_sync)
+            if report["error"]:
+                raise RuntimeError(report["error"])
+            logger.info(f"[{ieee}] Device set up: {report['verdict']} "
+                        f"({report['passed']} confirmed, {report['failed']} not taken)")
+            self._emit_sync("join_progress", {"ieee": ieee, "stage": "ready",
+                                              **{k: report[k] for k in ("verdict", "passed", "declined",
+                                                                        "failed", "steps", "advice")}})
 
             if self.mqtt:
                 await self.announce_device(ieee)

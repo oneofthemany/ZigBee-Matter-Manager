@@ -7,6 +7,7 @@ import asyncio
 from typing import Dict, Any
 
 from handlers.base import HANDLER_REGISTRY, ClusterHandler
+from modules import device_ops
 
 # fire and populate the HANDLER_REGISTRY. Without them, no devices will work!
 from handlers.security import *
@@ -177,11 +178,15 @@ class DeviceHandlerManagerMixin:
                     continue
 
             try:
-                await h.configure()
-                stats['configured'] += 1
+                # A handler answers False when the device did not take it.
+                if await h.configure() is False:
+                    stats['failed'] += 1
+                else:
+                    stats['configured'] += 1
             except Exception as e:
                 stats['failed'] += 1
                 logger.warning(f"[{self.ieee}] Config failed EP{ep_id}:0x{cluster_id:04x}: {e}")
+                device_ops.step(f"Configure EP{ep_id} 0x{cluster_id:04X}", False, device_ops.reason_of(e))
 
         logger.info(f"[{self.ieee}] Config: {stats['configured']} configured, "
                     f"{stats['skipped_controller']} skipped (controller EP), "
@@ -217,7 +222,9 @@ class DeviceHandlerManagerMixin:
                 if res: results.update(res)
             except Exception as e:
                 success = False
-                logger.debug(f"[{self.ieee}] Handler poll failed: {e}")
+                what = f"Read 0x{getattr(h, 'cluster_id', 0):04X}"
+                logger.warning(f"[{self.ieee}] {what} failed: {device_ops.reason_of(e)}")
+                device_ops.step(what, False, device_ops.reason_of(e))
 
         if results:
             poll_data = {k: v for k, v in results.items() if not (k.endswith('_raw') or k.startswith('attr_'))}

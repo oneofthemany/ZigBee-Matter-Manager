@@ -13,6 +13,7 @@ import asyncio
 import logging
 from typing import Iterable, Any, Dict, List, Optional, Tuple
 
+from modules import device_ops
 from modules.device_profiles import (
     get_profile_store, CAPABILITY_TO_HA, _to_int,
 )
@@ -395,9 +396,13 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
                 results.append({**r, "ok": False, "error": "type unknown: run Find everything first"})
                 continue
             try:
-                await cluster.bind()
+                async with asyncio.timeout(8.0):
+                    bound = await cluster.bind()
+                device_ops.step_status(f"Bind 0x{cid:04X}", next(iter(bound or []), 0))
             except Exception as e:
-                logger.debug(f"[{device.ieee}] bind failed for 0x{cid:04X}: {e}")
+                # Without the bind a maker's cluster sends no reports at all.
+                logger.warning(f"[{device.ieee}] Bind 0x{cid:04X} failed: {device_ops.reason_of(e)}")
+                device_ops.step(f"Bind 0x{cid:04X}", False, device_ops.reason_of(e))
             from zigpy.zcl.helpers import ReportingConfig
             async with asyncio.timeout(8.0):
                 rsp = await cluster.configure_reporting_multiple({attr_def: ReportingConfig(
@@ -406,18 +411,22 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
                     reportable_change=r.get("delta", 1))})
             refused = [rec for rec in (rsp or []) if int(getattr(rec, "status", 0)) != 0]
             if refused:
-                results.append({**r, "ok": False, "error": f"refused: {refused[0].status}"})
+                results.append({**r, "ok": False, "error": f"refused: {refused[0].status}",
+                                "reason": device_ops.reason_of(refused[0].status)})
                 continue
             ok += 1
             results.append({**r, "ok": True})
         except asyncio.TimeoutError:
-            results.append({**r, "ok": False, "error": "timeout"})
+            results.append({**r, "ok": False, "error": "timeout", "reason": "timeout"})
         except Exception as e:
             results.append({**r, "ok": False, "error": f"{type(e).__name__}: {e}"})
 
     logger.info(f"[{device.ieee}] Reporting applied: {ok}/{len(rows)} OK")
     # A save applies this in the background: the log is the only place a reason shows.
     for res in results:
+        device_ops.step(f"Reporting {res.get('cluster')}/{res.get('attr')}", bool(res.get("ok")),
+                        res.get("reason") or res.get("error"),
+                        cluster=_to_int(res.get("cluster")), attr=_to_int(res.get("attr")))
         if not res.get("ok"):
             logger.warning(f"[{device.ieee}] Reporting {res.get('cluster')}/{res.get('attr')} "
                            f"not set: {res.get('error') or 'no reason given'}")

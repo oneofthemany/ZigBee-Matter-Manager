@@ -18,6 +18,11 @@ const STAGES = [
     { key: 'ready',        label: 'Ready',         icon: 'fa-check-circle' },
 ];
 
+import { opStepRow } from './modal/device-settings.js';
+
+// Stages whose outcome comes from setup itself, not from identification
+const SETUP_STAGES = new Set(['configuring', 'polling', 'ready']);
+
 // Special non-progress states
 const PROBLEM_STATES = new Set(['stalled', 'failed', 'error']);
 
@@ -89,6 +94,11 @@ function _createCard(ieee, friendlyName) {
                 ${_renderStages('joined', null)}
             </div>
             <div data-join-note class="text-muted mt-2" style="min-height:1.2em; font-size:0.77rem"></div>
+            <div data-join-report></div>
+            <details class="zmm-op-log zmm-op-log--compact">
+                <summary class="text-muted">Live log <span data-join-count></span></summary>
+                <ol data-join-lines aria-live="polite"></ol>
+            </details>
         </div>
     `;
 
@@ -265,14 +275,32 @@ export function onJoinProgress(payload) {
     tracker.stage = stage;
 
     if (stage === 'configuring') {
+        clearTimeout(tracker.autoDismissTimer);
         _updateCard(ieee, 'configuring', null, 'Binding clusters & setting up reporting…');
 
     } else if (stage === 'polling') {
         _updateCard(ieee, 'polling', null, 'Reading current attribute values…');
 
     } else if (stage === 'ready') {
-        _updateCard(ieee, 'ready', null, 'Device is fully set up and reporting.');
-        _scheduleDismiss(ieee, 8_000);
+        const verdict = payload.verdict || 'ok';
+        if (verdict === 'ok' && payload.declined) {
+            _updateCard(ieee, 'ready', null,
+                `Set up. ${payload.declined} setup step(s) declined, but the device reports those readings on its own.`);
+            _renderJoinReport(ieee, payload);
+            _scheduleDismiss(ieee, 20_000);
+        } else if (verdict === 'ok') {
+            _updateCard(ieee, 'ready', null, payload.passed
+                ? `Set up: all ${payload.passed} steps confirmed by the device.`
+                : 'Device is fully set up and reporting.');
+            _scheduleDismiss(ieee, 8_000);
+        } else {
+            // Joined, but the device did not take everything: say what, and stay.
+            const note = verdict === 'unchecked'
+                ? 'Joined, but nothing in setup reported an answer.'
+                : `Joined, but ${payload.failed} of ${(payload.steps || []).length} setup steps were not taken.`;
+            _updateCard(ieee, 'ready', 'stalled', note);
+            _renderJoinReport(ieee, payload);
+        }
 
     } else if (stage === 'error') {
         _updateCard(ieee, tracker.stage, 'error', error || 'Configuration failed.');
@@ -280,6 +308,33 @@ export function onJoinProgress(payload) {
     }
 }
 
+
+function _renderJoinReport(ieee, rep) {
+    const card = _trackers.get(ieee)?.cardEl;
+    const slot = card?.querySelector('[data-join-report]');
+    if (!slot) return;
+    const advice = (rep.advice || []).map(a => `<li>${_esc(a.text)}</li>`).join('');
+    const failed = (rep.steps || []).filter(st => st.outcome && st.outcome !== 'ok').map(opStepRow).join('');
+    slot.innerHTML = `
+        ${advice ? `<ul class="mb-1 ps-3" style="font-size:0.77rem">${advice}</ul>` : ''}
+        ${failed ? `<ul class="zmm-op-checks">${failed}</ul>` : ''}`;
+}
+
+/** device_op events during pairing: the device's own lines, streamed. */
+export function onJoinOp(evt) {
+    if (!evt || evt.action !== 'join' || evt.phase !== 'line') return;
+    const card = _trackers.get(evt.ieee)?.cardEl;
+    const list = card?.querySelector('[data-join-lines]');
+    if (!list) return;
+    const li = document.createElement('li');
+    li.className = evt.line.level || 'INFO';
+    li.innerHTML = `<time>${new Date(evt.line.ts * 1000).toLocaleTimeString()}</time>${_esc(evt.line.message)}`;
+    const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 8;
+    list.appendChild(li);
+    if (atEnd) list.scrollTop = list.scrollHeight;
+    const count = card.querySelector('[data-join-count]');
+    if (count) count.textContent = `(${list.children.length})`;
+}
 
 /**
  * Scan current device list and dismiss cards for devices that are now identified.
@@ -295,10 +350,14 @@ export function dismissKnownDevices(devices) {
         const knownModel = dev.model && dev.model !== 'Unknown';
         const hasCaps    = Array.isArray(dev.capability_list) && dev.capability_list.length > 0;
 
-        if ((knownMfr && knownModel) || hasCaps) {
-            _updateCard(dev.ieee, 'ready', null,
-                `${dev.manufacturer || ''} ${dev.model || ''}`.trim() || 'Device identified.');
-            _scheduleDismiss(dev.ieee, 4_000);
+        // Identified is not set up: the card waits for setup's own verdict,
+        // with a long fallback for a device that never reports one.
+        const tracker = _trackers.get(dev.ieee);
+        if (((knownMfr && knownModel) || hasCaps) && !SETUP_STAGES.has(tracker.stage)) {
+            const name = `${dev.manufacturer || ''} ${dev.model || ''}`.trim();
+            const note = tracker.cardEl?.querySelector('[data-join-note]');
+            if (note) note.textContent = `${name || 'Device'} identified — setting up…`;
+            _scheduleDismiss(dev.ieee, 120_000);
         }
     }
 }

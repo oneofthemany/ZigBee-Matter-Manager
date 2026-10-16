@@ -13,9 +13,9 @@ import { handleOTAProgress } from './modal/ota.js';
 import { hideTestRecoveryBanner } from './editor.js'
 import { applyInterviewStatusUpdate } from './device-modal.js';
 import { handleSignalUpdate } from './modal/signals.js';
-import { applyPollResult } from './modal/device-settings.js';
+import { applyPollResult, applyDeviceOp } from './modal/device-settings.js';
 import { updateInterviewBadge } from './interview-status-badge.js';
-import { onDeviceJoined, onInterviewStatusUpdate, onJoinProgress } from './join-progress.js';
+import { onDeviceJoined, onInterviewStatusUpdate, onJoinProgress, onJoinOp } from './join-progress.js';
 
 const log = zmmLog('websocket');
 
@@ -220,6 +220,11 @@ export function initWS() {
 
                 case "signal_inspector_update":
                     try { handleSignalUpdate(msg.payload || msg.data); } catch(e) {}
+                    break;
+
+                case "device_op":
+                    try { applyDeviceOp(msg.payload || msg.data); } catch(e) {}
+                    try { onJoinOp(msg.payload || msg.data); } catch(e) {}
                     break;
 
                 case "poll_result":

@@ -20,6 +20,7 @@ except ImportError:
     CLUSTER_NAMES = {}
 
 
+from modules import device_ops
 from modules.packet_stats import packet_stats
 
 logger = logging.getLogger("handlers.base")
@@ -365,6 +366,7 @@ class ClusterHandler:
             async with asyncio.timeout(5.0):
                 result = await self.cluster.bind()
             logger.info(f"[{self.device.ieee}] ✅ Bound {cluster_name}, result: {result}")
+            device_ops.step_status(f"Bind {cluster_name}", next(iter(result or []), 0))
 
             # Configure reporting if defined — batched so sleepy devices complete in one wake
             report_config = [r for r in self.REPORT_CONFIG if self.attribute_supported(r[0])]
@@ -381,6 +383,10 @@ class ClusterHandler:
                         f"[{self.device.ieee}] ✅ Batched reporting config for {cluster_name}: "
                         f"{len(records)} attrs, result={result}"
                     )
+                    for rec in result or []:
+                        device_ops.step_status(f"Reporting {cluster_name}/{getattr(rec, 'attrid', '')}",
+                                               getattr(rec, "status", 0),
+                                               cluster=self.cluster_id, attr=getattr(rec, "attrid", None))
                 except AttributeError:
                     # Older zigpy without configure_reporting_multiple — fall back to per-attr
                     logger.debug(
@@ -405,31 +411,48 @@ class ClusterHandler:
                                     f"[{self.device.ieee}] Reporting for {attr_name} refused: "
                                     f"{status!r}"
                                 )
+                                device_ops.step(f"Reporting {cluster_name}/{attr_name}", False,
+                                                device_ops.reason_of(status),
+                                                cluster=self.cluster_id, attr=self._attr_id(attr_name))
                                 continue
+                            device_ops.step(f"Reporting {cluster_name}/{attr_name}", True)
                             logger.info(
                                 f"[{self.device.ieee}] ✅ Configured reporting for {attr_name}: "
                                 f"min={min_int}s, max={max_int}s, change={change}"
                             )
                         except Exception as e:
-                            logger.debug(
-                                f"[{self.device.ieee}] reporting {attr_name} failed: {e}"
+                            logger.warning(
+                                f"[{self.device.ieee}] Reporting {attr_name} on {cluster_name} failed: "
+                                f"{device_ops.reason_of(e)}"
                             )
+                            device_ops.step(f"Reporting {cluster_name}/{attr_name}", False,
+                                            device_ops.reason_of(e),
+                                            cluster=self.cluster_id, attr=self._attr_id(attr_name))
                 except Exception as e:
                     logger.warning(
                         f"[{self.device.ieee}] ⚠️ Batched reporting on {cluster_name} failed: {e}"
                     )
+                    device_ops.step(f"Reporting {cluster_name}", False, device_ops.reason_of(e))
 
             return True
         except asyncio.TimeoutError:
             logger.warning(f"[{self.device.ieee}] ⏳ Configuration timed out for {cluster_name}")
+            device_ops.step(f"Bind {cluster_name}", False, "timeout")
             return False
         except Exception as e:
             logger.warning(
                 f"[{self.device.ieee}] ❌ Configuration failed for {cluster_name}: {e}"
             )
+            device_ops.step(f"Bind {cluster_name}", False, device_ops.reason_of(e))
             # traceback.print_exc() # Less spam
             return False
 
+
+    def _attr_id(self, attr_name):
+        try:
+            return int(self.cluster.find_attribute(attr_name).id)
+        except Exception:
+            return None
 
     async def _report_with_flipped_sign(self, attr_name, min_int, max_int, change):
         """Resend a reporting config with the integer type's signedness
@@ -493,10 +516,12 @@ class ClusterHandler:
                 f"[{self.device.ieee}] Batched read on {cluster_name} failed: "
                 f"{type(e).__name__}: {e}"
             )
+            device_ops.step(f"Read {cluster_name}", False, device_ops.reason_of(e))
             return results
 
         if not result:
             return results
+        device_ops.step(f"Read {cluster_name}", True)
 
         success = result[0] if len(result) > 0 else {}
         failure = result[1] if len(result) > 1 else {}

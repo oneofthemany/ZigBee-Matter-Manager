@@ -11,12 +11,16 @@ dictionary lookup.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Tuple
+import time
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger("modules.device_observer")
 
 # (ieee, ep, cluster, attr, mfr) -> nonzero seen this run
 _seen: Dict[Tuple, bool] = {}
+# (ieee, cluster, attr) -> when it last reported, this run: what a device
+# does, beside what it answers to a setup request (docs/device-ops.md).
+_last: Dict[Tuple, float] = {}
 
 REPORT_ATTRIBUTES = 0x0A
 
@@ -33,13 +37,16 @@ def observe(ieee: str, profile: int, cluster: int, src_ep: int, message: bytes) 
     """Record transitions in this frame's reports. Returns facts written."""
     if not profile or not message or not _is_report(message):
         return 0
+    from modules.zcl_decode import parse_zcl
+    frame = parse_zcl(bytes(message))
+    now = time.time()
+    for rec in frame.get("records") or []:
+        _last[(ieee, cluster, int(rec["attr"], 16))] = now
+
     import modules.zigbee_cache as zigbee_cache
     if zigbee_cache._db is None:
         return 0
     from modules.device_facts import Fact, _j, attr_subject, is_nonzero, record
-    from modules.zcl_decode import parse_zcl
-
-    frame = parse_zcl(bytes(message))
     mfr = int(frame["manufacturer"], 16) if frame.get("manufacturer") else None
     facts = []
     for rec in frame.get("records") or []:
@@ -62,6 +69,13 @@ def observe(ieee: str, profile: int, cluster: int, src_ep: int, message: bytes) 
         return 0
 
 
+def last_report(ieee: str, cluster: int, attr: int) -> Optional[float]:
+    """When the device last reported (cluster, attr) since start, or None."""
+    return _last.get((str(ieee), int(cluster), int(attr)))
+
+
 def forget(ieee: str) -> None:
     for key in [k for k in _seen if k[0] == ieee]:
         del _seen[key]
+    for key in [k for k in _last if k[0] == ieee]:
+        del _last[key]

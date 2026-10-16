@@ -29,11 +29,96 @@ const log = zmmLog('modal-device-settings');
  * [data-settings-ieee] root and writes html into it.
  */
 function _setActionResult(ieee, html) {
-    const root = document.querySelector(`[data-settings-ieee="${cssEscape(ieee)}"]`);
-    if (!root) return;
-    let panel = root.querySelector('[data-settings-section="action-result"]');
+    const panel = _resultPanel(ieee);
     if (!panel) return;
-    panel.innerHTML = html;
+    const summary = panel.querySelector('[data-op-summary]');
+    (summary || panel).innerHTML = html;
+}
+
+function _resultPanel(ieee) {
+    const root = document.querySelector(`[data-settings-ieee="${cssEscape(ieee)}"]`);
+    return root ? root.querySelector('[data-settings-section="action-result"]') : null;
+}
+
+// Observed maintenance actions (docs/device-ops.md): a spinner while the
+// device's own log lines stream in, then what each step actually answered.
+
+function _startOp(ieee, label) {
+    const panel = _resultPanel(ieee);
+    if (!panel) return;
+    panel.innerHTML = `
+        <div data-op-summary>${_actionSpinner(`${label}…`)}</div>
+        <div data-op-extra></div>
+        <details class="zmm-op-log" open>
+            <summary class="text-muted">Live log <span data-op-count></span></summary>
+            <ol data-op-lines aria-live="polite"></ol>
+        </details>`;
+}
+
+/** Called by websocket.js on device_op events. */
+export function applyDeviceOp(evt) {
+    if (!evt || evt.phase !== 'line' || !evt.line) return;
+    const panel = _resultPanel(evt.ieee);
+    const list = panel && panel.querySelector('[data-op-lines]');
+    if (!list) return;
+    const { ts, level, message } = evt.line;
+    const li = document.createElement('li');
+    li.className = level || 'INFO';
+    li.innerHTML = `<time>${new Date(ts * 1000).toLocaleTimeString()}</time>${_escape(message)}`;
+    const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 8;
+    list.appendChild(li);
+    if (atEnd) list.scrollTop = list.scrollHeight;
+    const count = panel.querySelector('[data-op-count]');
+    if (count) count.textContent = `(${list.children.length})`;
+}
+
+const _VERDICT = {
+    ok:        { cls: 'success',   icon: 'fa-check-circle' },
+    partial:   { cls: 'warning',   icon: 'fa-exclamation-triangle' },
+    failed:    { cls: 'danger',    icon: 'fa-times-circle' },
+    unchecked: { cls: 'secondary', icon: 'fa-question-circle' },
+};
+
+function _renderReport(label, rep) {
+    const v = _VERDICT[rep.verdict] || _VERDICT.unchecked;
+    const steps = rep.steps || [];
+    const total = steps.length;
+    const declined = rep.declined || 0;
+    const headline = {
+        ok:        declined
+                       ? `${label}: done — ${declined} declined, but reporting on ${declined === 1 ? 'its' : 'their'} own`
+                       : `${label}: all ${total} step${total === 1 ? '' : 's'} confirmed by the device`,
+        partial:   `${label}: ${rep.failed} of ${total} not taken by the device`,
+        failed:    `${label} did not work`,
+        unchecked: `${label} ran, but nothing in it reported an answer`,
+    }[rep.verdict] || label;
+    const advice = (rep.advice || []).map(a => `<li>${_escape(a.text)}</li>`).join('');
+    const notable = steps.filter(st => st.outcome && st.outcome !== 'ok');
+    return `
+        <div class="alert alert-${v.cls} py-2 mb-0 small">
+            <div class="d-flex align-items-start gap-2">
+                <i class="fas ${v.icon} mt-1"></i>
+                <div class="flex-grow-1" style="min-width:0">
+                    <strong>${_escape(headline)}</strong>
+                    ${rep.error ? `<div>${_escape(rep.error)}</div>` : ''}
+                    ${advice ? `<ul class="mb-1 ps-3">${advice}</ul>` : ''}
+                    ${notable.length ? `<ul class="zmm-op-checks">${notable.map(opStepRow).join('')}</ul>` : ''}
+                    ${total ? `<details class="mt-1"><summary class="text-muted">All steps (${total}) · ${rep.seconds}s</summary>
+                        <ul class="zmm-op-checks">${steps.map(opStepRow).join('')}</ul></details>` : ''}
+                </div>
+            </div>
+        </div>`;
+}
+
+/** One step of an observed action, as a list row (shared with the join card). */
+export function opStepRow(st) {
+    const outcome = st.outcome || (st.ok ? 'ok' : 'failed');
+    const icon = { ok: 'fa-check', declined: 'fa-info-circle', failed: 'fa-times' }[outcome];
+    const why = outcome === 'ok' ? ''
+        : outcome === 'declined'
+            ? ` — declined (${_escape(st.reason || '')}), but it reports this on its own (${_escape(st.reports_anyway)})`
+            : ` — ${_escape(st.reason || 'no answer')}`;
+    return `<li><span class="${outcome}"><i class="fas ${icon}"></i></span><span>${_escape(st.what)}${why}</span></li>`;
 }
 
 function _actionSpinner(label) {
@@ -119,8 +204,10 @@ export function applyPollResult(payload) {
             }
         }
 
-        _setActionResult(ieee, _actionSuccess('Poll complete', message) + detail);
-    } else {
+        const extra = _resultPanel(ieee)?.querySelector('[data-op-extra]');
+        if (extra) extra.innerHTML = detail;
+        else _setActionResult(ieee, _actionSuccess('Poll complete', message) + detail);
+    } else if (!_resultPanel(ieee)?.querySelector('[data-op-extra]')) {
         _setActionResult(ieee, _actionError('Poll', message));
     }
 }
@@ -549,48 +636,32 @@ window._settingsPoll = async function(ieee) {
     // Increment sequence so any in-flight response from a previous poll is ignored
     const seq = (_pollSeq.get(ieee) ?? 0) + 1;
     _pollSeq.set(ieee, seq);
-
-    _setActionResult(ieee, _actionSpinner('Polling device…'));
-    addLogEntry({ timestamp: getTimestamp(), level: 'INFO', message: 'Poll sent.' });
-    try {
-        const res = await fetch('/api/device/poll', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ieee, seq }),
-        });
-        const data = await res.json();
-        if (!data.success) {
-            _setActionResult(ieee, _actionError('Poll', data.error));
-        }
-        // On success: leave spinner — applyPollResult() from WS event replaces it
-    } catch (e) {
-        _setActionResult(ieee, _actionError('Poll', e.message));
-    }
+    await _runOp(ieee, 'Poll', '/api/device/poll', { ieee, seq });
 };
 
 window._settingsReconfigure = async function(ieee, aggressive) {
     const labels = { undefined: 'Reconfigure', true: 'Aggressive LQI', false: 'Restore Baseline' };
     const label = labels[String(aggressive)] ?? 'Reconfigure';
-    _setActionResult(ieee, _actionSpinner(`${label}…`));
+    const body = { ieee };
+    if (aggressive !== undefined) body.aggressive = aggressive;
+    await _runOp(ieee, label, '/api/device/reconfigure', body);
+};
+
+async function _runOp(ieee, label, url, body) {
+    _startOp(ieee, label);
     addLogEntry({ timestamp: getTimestamp(), level: 'INFO', message: `${label} sent.` });
     try {
-        const body = { ieee };
-        if (aggressive !== undefined) body.aggressive = aggressive;
-        const res = await fetch('/api/device/reconfigure', {
+        const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
         const data = await res.json();
-        if (data.success) {
-            _setActionResult(ieee, _actionSuccess(label, data.message));
-        } else {
-            _setActionResult(ieee, _actionError(label, data.error));
-        }
+        _setActionResult(ieee, data.verdict ? _renderReport(label, data) : _actionError(label, data.error));
     } catch (e) {
         _setActionResult(ieee, _actionError(label, e.message));
     }
-};
+}
 
 // Full probe — read-only walk of every EP/cluster/attribute + listen window
 
