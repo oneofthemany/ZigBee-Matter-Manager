@@ -121,6 +121,9 @@ def _flow(c: Checker, entries: list) -> None:
             c.check("rolling back removes a new image and restores a replaced one",
                     rb.get("success") and not (root / "static" / "images" / "logo.png").exists()
                     and (root / "static" / "images" / "old.png").read_bytes() == b"\x89PNG old", rb)
+            torn = await m.deploy_test_batch([{"path": "static/torn.js", "content": "let a = '\ufffd';\n"}])
+            c.check("text holding U+FFFD is still refused",
+                    not torn.get("success") and not (root / "static" / "torn.js").exists(), torn)
             bad = await m.deploy_test_batch([{"path": "static/x.png", "content_b64": "not base64!"}])
             c.check("content that isn't base64 is refused, with nothing written",
                     not bad.get("success") and not (root / "static" / "x.png").exists(), bad)
@@ -134,6 +137,22 @@ def _flow(c: Checker, entries: list) -> None:
 
 def run() -> Checker:
     c = Checker("deploy binary files")
+
+    c.section("the flow can carry the app's own source")
+    # The U+FFFD guard refuses any file spelling the character literally —
+    # including the guard's own, which then could never be deployed.
+    tracked = subprocess.run(["git", "-C", str(REPO), "ls-files"], capture_output=True,
+                             text=True, check=True).stdout.split()
+    refused = []
+    for f in tracked:
+        if f.startswith(script.SKIP) or not (REPO / f).is_file():
+            continue
+        try:
+            if "\ufffd" in (REPO / f).read_bytes().decode("utf-8"):
+                refused.append(f)
+        except UnicodeDecodeError:
+            pass                                    # binary: sent as base64
+    c.check("no deployable text file holds a literal U+FFFD", not refused, refused)
     hub_text = {"static/same.js": "hub has this\n", "static/app.js": "old\n"}
 
     c.section("to a hub whose flow is text-only")

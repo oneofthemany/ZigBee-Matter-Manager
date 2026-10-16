@@ -163,11 +163,12 @@ class TestRecoveryManager:
 
         # Mojibake guard (same rule as /api/editor/save): U+FFFD never occurs
         # in legitimate source — the test path must not be the loophole that
-        # bakes corrupted text into a deploy.
+        # bakes corrupted text into a deploy. Written as an escape, or this
+        # file would refuse itself.
         for r in texts:
-            if "�" in r["content"]:
+            if "\ufffd" in r["content"]:
                 lines = [i + 1 for i, line in enumerate(r["content"].splitlines())
-                         if "�" in line]
+                         if "\ufffd" in line]
                 return {
                     "success": False,
                     "error": (
