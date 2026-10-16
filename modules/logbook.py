@@ -61,6 +61,31 @@ _LIVE = {"FIRING": "fired", "SUCCESS": "", "CMD_FAIL": "", "EXCEPTION": "", "TAR
          "CHAIN_LIMIT": "", "VALUE_ERROR": ""}
 
 
+# Keys whose repeat is itself news: a second press, a retrigger.
+_EVENT_KEYS = {"action", "occupancy", "motion", "presence", "vibration", "on_with_timed_off"}
+# A key that restates its partner in another form (level 0-254 is brightness %).
+_ALIASES = {"on": "state", "level": "brightness"}
+
+
+def loggable_changes(last: Dict[str, Any], changed: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of a device update worth a log line: values that differ from
+    the last ones logged (`last`, updated in place), event keys always, and
+    no alias whose partner is in the line. State and MQTT still get it all."""
+    out = {}
+    for k, v in changed.items():
+        if k in _SKIP_KEYS:
+            continue
+        if k in _EVENT_KEYS or k not in last or last[k] != v:
+            out[k] = v
+        last[k] = v
+    for k in list(out):
+        base, sep, ep = k.rpartition("_")
+        base, suffix = (base, sep + ep) if sep and ep.isdigit() else (k, "")
+        if base in _ALIASES and _ALIASES[base] + suffix in out:
+            del out[k]
+    return out
+
+
 def _val(v: Any) -> str:
     try:
         return v if isinstance(v, str) else json.dumps(v, default=str)
@@ -211,11 +236,11 @@ class Logbook:
             return
         if chain_id:
             self._store_chain(chain_id)
-        for k in keys:
-            self._emit({"level": "INFO", "category": "attribute_update", "ieee": ieee,
-                        "device_name": name, "attribute": k, "value": changed[k],
-                        "message": f"[{ieee}] ({name}) {k}={_val(changed[k])}",
-                        "chain_id": chain_id})
+        self._emit({"level": "INFO", "category": "attribute_update", "ieee": ieee,
+                    "device_name": name, "attribute": ",".join(keys),
+                    "value": changed[keys[0]] if len(keys) == 1 else {k: changed[k] for k in keys},
+                    "message": f"[{ieee}] ({name}) " + ", ".join(f"{k}={_val(changed[k])}" for k in keys),
+                    "chain_id": chain_id})
 
     def on_trace(self, entry: Dict[str, Any]) -> None:
         """Trace listener: store the entry against its chain; remember what a
@@ -360,7 +385,8 @@ class Logbook:
                            "ORDER BY abs(ts - ?) LIMIT 5",
                            [ev["ieee"], ev["ts"] - LINK_WINDOW_S, ev["ts"] + LINK_WINDOW_S, ev["ts"]])
             for c in near:
-                if not ev["attribute"] or ev["attribute"] in (_load(c["changed"]) or {}):
+                # A line names every key of its update, comma-joined.
+                if not ev["attribute"] or set(ev["attribute"].split(",")) & set(_load(c["changed"]) or {}):
                     chain_id = c["id"]
                     break
         chain = self._chain_summary(chain_id) if chain_id else None

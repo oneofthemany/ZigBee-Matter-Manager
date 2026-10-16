@@ -18,6 +18,14 @@ or didn't fire, what they did, and what that changed in turn.
 
 - **Lines.** Every `log` event broadcast to the browser passes through
   `broadcast_event`, where the logbook gives it an `event_id` and stores it.
+  A device update is one line however many keys it changed: the message lists
+  them `k=v, k=v`, and `attribute` holds the keys comma-joined. The line
+  carries only values that differ from the ones last logged for that device
+  (a light re-sends its whole state with every change), with `action`,
+  `occupancy` and the other event keys kept on repeat, and leaves out an alias
+  beside its partner: `on` beside `state`, `level` beside `brightness`, the
+  same per endpoint (`on_1` beside `state_1`). State, MQTT and the engine
+  still get every key; an update with nothing new logs no line.
   Zigbee attribute updates, joins and leaves were already log lines; the
   logbook adds lines for rule firings and command results, and for changes on
   devices the Zigbee path doesn't cover — workers (so house mode), the alarm,

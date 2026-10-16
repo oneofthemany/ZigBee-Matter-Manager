@@ -86,10 +86,12 @@ def run() -> Checker:
 
             async def zigbee_update(ieee, **changed):
                 devices[ieee].state.update(changed)
-                k, v = next(iter(changed.items()))
+                # One line per update, as core/lifecycle.py writes it.
+                pairs = ", ".join(f"{k}={v}" for k, v in changed.items())
                 line = lb.record_log({"level": "INFO", "category": "attribute_update", "ieee": ieee,
-                                      "device_name": devices[ieee].friendly_name, "attribute": k, "value": v,
-                                      "message": f"[{ieee}] ({devices[ieee].friendly_name}) {k}={v}"})
+                                      "device_name": devices[ieee].friendly_name,
+                                      "attribute": ",".join(changed), "value": changed,
+                                      "message": f"[{ieee}] ({devices[ieee].friendly_name}) {pairs}"})
                 await engine.evaluate(ieee, changed)
                 await asyncio.sleep(0.05)
                 return line
@@ -137,6 +139,15 @@ def run() -> Checker:
                         and t2["cause"]["chain"]["trigger_name"] == "Hall PIR", t2["cause"])
                 c.check("a name with markup is stored as text, for the page to escape",
                         "<b>" in t2["event"]["device_name"])
+
+                c.section("an update that changed several keys")
+                both = await zigbee_update("0xpir", battery=90, occupancy=False)
+                c.check("is one line naming each key", both["attribute"] == "battery,occupancy"
+                        and "battery=90, occupancy=False" in both["message"], both)
+                t5 = await lb.trace(both["event_id"])
+                c.check("and still finds the evaluation it started",
+                        t5["chain"] and t5["chain"]["changed"] == {"battery": 90, "occupancy": False},
+                        t5["chain"])
 
                 c.section("a person's command")
                 await asyncio.sleep(0.01)

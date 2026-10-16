@@ -334,6 +334,7 @@ class DeviceLifecycleMixin:
 
         if ieee in getattr(self, '_pending_device_updates', {}):
             del self._pending_device_updates[ieee]
+        getattr(self, '_last_logged', {}).pop(ieee, None)
 
     def handle_device_update(self, zha_device, changed_data, full_state=None,
                              qos: Optional[int] = None, endpoint_id: Optional[int] = None):
@@ -499,19 +500,23 @@ class DeviceLifecycleMixin:
                                   ieee=ieee, qos=mqtt_qos, retain=True)
             )
 
-        # Log changed attributes
+        # One line per update, of what actually changed (docs/logbook.md)
+        from modules.logbook import loggable_changes
         friendly_name = getattr(self, 'friendly_names', {}).get(ieee, "Unknown")
-        for k, v in changed_data.items():
-            if k != 'last_seen':
-                ep_str = f"[EP{endpoint_id}]" if endpoint_id is not None else ""
-                msg = f"[{ieee}] ({friendly_name}) {ep_str} {k}={v}"
-                log_payload = {
-                    "level": "INFO", "message": msg, "ieee": ieee,
-                    "device_name": friendly_name, "category": "attribute_update",
-                    "attribute": k, "value": v, "endpoint_id": endpoint_id
-                }
-                safe_log_payload = prepare_for_json(log_payload)
-                self._emit_sync("log", safe_log_payload)
+        if not hasattr(self, '_last_logged'):
+            self._last_logged = {}
+        logged = loggable_changes(self._last_logged.setdefault(ieee, {}), changed_data)
+        if logged:
+            ep_str = f"[EP{endpoint_id}]" if endpoint_id is not None else ""
+            pairs = ", ".join(f"{k}={v}" for k, v in logged.items())
+            log_payload = {
+                "level": "INFO", "message": f"[{ieee}] ({friendly_name}) {ep_str} {pairs}",
+                "ieee": ieee, "device_name": friendly_name, "category": "attribute_update",
+                "attribute": ",".join(logged),
+                "value": next(iter(logged.values())) if len(logged) == 1 else logged,
+                "endpoint_id": endpoint_id
+            }
+            self._emit_sync("log", prepare_for_json(log_payload))
 
         # Schedule debounced cache save
         if hasattr(self, '_schedule_save'):
