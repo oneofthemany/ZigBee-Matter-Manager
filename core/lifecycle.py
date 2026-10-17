@@ -93,7 +93,11 @@ class DeviceLifecycleMixin:
             dev = self.devices[ieee]
             zigpy_dev = dev.zigpy_dev
 
-            endpoint_count = len([ep for ep in zigpy_dev.endpoints.keys() if ep != 0])
+            # An endpoint is listed before its Simple Descriptor lands; only one
+            # with clusters can be given handlers.
+            endpoint_count = len([ep for ep_id, ep in zigpy_dev.endpoints.items()
+                                  if ep_id != 0 and (getattr(ep, "in_clusters", None)
+                                                     or getattr(ep, "out_clusters", None))])
             handler_count = len(dev.handlers)
 
             # Success path: endpoints discovered and handlers not yet built
@@ -165,7 +169,10 @@ class DeviceLifecycleMixin:
         # sees endpoints, without waiting for zigpy to confirm the interview. When
         # it wins, this guard stops a second handler rebuild and re-broadcast,
         # which made the device list flash and join progress jump backward.
-        just_inited = (time.time() - self._full_init_ts.get(ieee, 0)) < 10
+        # Only a run that built handlers counts: one that found no clusters yet
+        # must not stop this, the call that brings them, from building them.
+        just_inited = ((time.time() - self._full_init_ts.get(ieee, 0)) < 10
+                       and ieee in self.devices and bool(self.devices[ieee].handlers))
 
         if ieee in self.devices:
             # Refresh in place — preserves listeners/state across re-inits
@@ -236,15 +243,17 @@ class DeviceLifecycleMixin:
             zdev = self.devices[ieee]
 
             async def setup():
+                from modules.device_profiles_apply import apply_entry_reporting, apply_profile
                 self._emit_sync("join_progress", {"ieee": ieee, "stage": "configuring"})
+                # The entry's rows first, so they get the reporting table's slots;
+                # handler configure after, so it still wins a conflict.
+                await apply_entry_reporting(zdev)
                 await zdev.configure()
 
-                # After handler configure so per-handler reporting wins conflicts, before
-                # MQTT announce so the capability set reaches discovery, and before poll()
-                # so friendly keys are in the first snapshot. Idempotent.
+                # Before MQTT announce so the capability set reaches discovery, and
+                # before poll() so friendly keys are in the first snapshot. Idempotent.
                 try:
-                    from modules.device_profiles_apply import apply_profile
-                    await apply_profile(zdev)
+                    await apply_profile(zdev, push_reporting=False)
                 except Exception as _e:
                     logger.warning(f"[{ieee}] apply_profile failed: {_e}")
 

@@ -573,6 +573,23 @@ async def run_action(device, action_id: str, args: Optional[List[Any]] = None) -
         return {"success": False, "error": str(e)}
 
 
+async def apply_entry_reporting(device) -> Optional[Dict[str, Any]]:
+    """The entry's reporting rows and reads, alone. Setup sends these before the
+    handlers' generic reporting: a small device's reporting table fills with
+    whatever comes first, and the entry's rows are what this model needs
+    (docs/device-ops.md). None when no entry asks for any."""
+    profile = resolve_profile_for_device(device)
+    if not profile or not (profile.get("reporting") or profile.get("reads")):
+        return None
+    try:
+        out = await apply_reporting(device, profile)
+        await apply_reads(device, profile)
+        return out
+    except Exception as e:
+        logger.warning(f"[{getattr(device, 'ieee', '')}] entry reporting failed: {e}")
+        return None
+
+
 # Top-level apply
 
 async def apply_profile(

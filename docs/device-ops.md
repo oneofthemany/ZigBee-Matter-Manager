@@ -33,9 +33,21 @@ has reported that attribute since start. If it has, the step is **declined**,
 not failed: the device would not store the setup, but sends the reading
 anyway, and nothing needs fixing.
 
-This is the Aqara FP300 case: its firmware answers `INSUFFICIENT_SPACE` to any
-reporting setup on 0x0142/0x014D, freshly paired or not, yet reports both once
-the cluster is bound.
+An Aqara FP300 whose table is full answers `INSUFFICIENT_SPACE` to setup on
+0x0142/0x014D, yet reports both once the cluster is bound.
+
+## The entry's reporting goes first
+
+A small device keeps only a few reporting configurations, and takes them
+first come, first served. Setup (join and Reconfigure) therefore sends the
+entry's rows (`apply_entry_reporting`) before the handlers' generic
+reporting. Handler configure still runs after, so it still wins a conflict on
+the same attribute.
+
+The FP300 shows why. With five generic configurations sent first (present
+value, illuminance, humidity, temperature, battery, all of which it reports
+unasked), it refused 0x0142/0x014D with `INSUFFICIENT_SPACE`. Sent to a fresh
+device on their own, the same two rows were accepted.
 
 ## Verdict
 

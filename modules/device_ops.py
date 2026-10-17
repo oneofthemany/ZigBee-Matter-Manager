@@ -27,8 +27,9 @@ _current: contextvars.ContextVar[Optional["DeviceOp"]] = contextvars.ContextVar(
 MEANING = {
     "timeout": "No answer: the device is probably asleep. Wake it (press its button) and run this "
                "again while it is awake.",
-    "INSUFFICIENT_SPACE": "The device would not store this reporting setup. Some firmware answers this "
-                          "to any setup it does not keep, not only when its table is full.",
+    "INSUFFICIENT_SPACE": "The device would not store this reporting setup: its reporting table is full, "
+                          "often of the hub's own generic setup sent before it. Setup now sends the entry's "
+                          "rows first; if this persists, the device keeps fewer than are being asked for.",
     "INVALID_VALUE": "The device would not take the interval or change asked for: try other values "
                      "in the device's entry.",
     "INVALID_DATA_TYPE": "The device expects another data type for this attribute than the entry gives.",
