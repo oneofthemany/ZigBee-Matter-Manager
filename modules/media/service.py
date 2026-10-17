@@ -182,7 +182,10 @@ class MediaService:
         if self.cast is not None and sync_cfg.get("enabled", False):
             try:
                 from modules.media.cast_sync import OpenZone
-                self.cast_sync = OpenZone(self.cast, sync_cfg)
+                from modules.media.zone_loop import ZoneLoop
+                # On its own loop, so a stall elsewhere in the app cannot
+                # starve the speakers (open-zone.md §A.1).
+                self.cast_sync = ZoneLoop(OpenZone(self.cast, sync_cfg))
                 # Lets a zone ask each device's own ecosystem what hardware it
                 # is, so model-keyed trims cover more than Cast.
                 self.cast_sync.set_provider_resolver(
@@ -561,7 +564,7 @@ class MediaService:
             return                      # double every device poll and save
         self._task = asyncio.create_task(self._run())
         if self.cast_sync is not None:
-            self.cast_sync.start()      # brings up the plain-HTTP sync listener
+            self.cast_sync.start()      # engine thread + plain-HTTP sync listener
         self.device_http.start()        # plain-HTTP device-audio listener
         logger.info(f"Media service started (poll={self.poll_interval}s)")
 

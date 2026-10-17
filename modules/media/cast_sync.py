@@ -254,6 +254,11 @@ async def _broadcast_spectrum(payload: dict) -> None:
         pass
 
 
+async def _acall(fn, *args):
+    """A sync callable as a coroutine, so it can be sent to another loop."""
+    return fn(*args)
+
+
 def _media_key(media: Optional[dict]) -> tuple:
     """Identity of a start request's media, for duplicate detection."""
     m = media or {}
@@ -495,6 +500,10 @@ class OpenZone:
         self._input_reader = None
         self._input_claimer = None
         self._input_learner = None
+        # The app's loop, when the engine runs on its own (zone_loop.py).
+        # None means one shared loop, which is what the tests run on.
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._spectrum_post = None      # last frame still in flight to the UI
         self.http_port = int(cfg.get("http_port", 8010))
         self.app_id = (cfg.get("app_id") or "").strip()
         self._trims_file = cfg.get("trims_file", "./data/cast_sync_trims.json")
@@ -632,6 +641,23 @@ class OpenZone:
         self._http_task = None
         if _sdb is not None:
             _sdb.close_all()
+
+    async def _on_main(self, coro):
+        """Await ``coro`` on the app's loop. The Cast connect lock, LinkPlay's
+        HTTP session, the source resolvers and the UI websockets are bound to
+        that loop (open-zone.md §A.1)."""
+        loop = self._main_loop
+        if loop is None or loop is asyncio.get_running_loop():
+            return await coro
+        return await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(coro, loop))
+
+    def _post_main(self, coro):
+        """Fire ``coro`` on the app's loop without waiting for it."""
+        loop = self._main_loop
+        if loop is None or loop is asyncio.get_running_loop():
+            return asyncio.ensure_future(coro)
+        return asyncio.run_coroutine_threadsafe(coro, loop)
 
     def set_eq_engine(self, engine) -> None:
         self._eq_engine = engine
@@ -989,8 +1015,8 @@ class OpenZone:
                 self._queue_pos = start if 0 <= start < len(self._queue) else 0
             elif kind != "track" and self._queue_resolver is not None:
                 try:
-                    self._queue = list(await self._queue_resolver(
-                        stype, kind, sid, owner))
+                    self._queue = list(await self._on_main(self._queue_resolver(
+                        stype, kind, sid, owner)))
                 except Exception as e:
                     return None, f"could not open {kind}: {e}"
                 if not self._queue:
@@ -1012,8 +1038,9 @@ class OpenZone:
                 item = self._queue[self._queue_pos]
                 # Mixed queues: an item's own media_type wins over the block's.
                 sub = item.get("source_id") or ""
-                url = (await self._url_resolver(item.get("media_type") or stype,
-                                                sub, item.get("owner") or owner)
+                url = (await self._on_main(self._url_resolver(
+                           item.get("media_type") or stype,
+                           sub, item.get("owner") or owner))
                        if sub else (item.get("url") or ""))
                 if not url:
                     return ""
@@ -1951,7 +1978,7 @@ class OpenZone:
         The start message is re-sent until the receiver's WS hello arrives —
         the page may still be loading when the first message goes out."""
         uuid_str = player_id.split(":", 1)[1]
-        cast = await self.cast._get_cast(uuid_str)
+        cast = await self._on_main(self.cast._get_cast(uuid_str))
         if not cast:
             logger.warning(f"Sync launch: {player_id} unreachable")
             return
@@ -2003,7 +2030,7 @@ class OpenZone:
         of other Cast apps, not of a physical input), "none" when the caller
         has just checked."""
         uuid_str = player_id.split(":", 1)[1]
-        cast = await self.cast._get_cast(uuid_str)
+        cast = await self._on_main(self.cast._get_cast(uuid_str))
         if not cast:
             # Resolution failed: the device is not on the network. This is the
             # only signal that separates absence from misalignment, and it is
@@ -2500,6 +2527,10 @@ class OpenZone:
                     continue
                 if not _ws_clients():
                     continue
+                # Frames queue on a stalled app loop; drop rather than pile up.
+                if self._spectrum_post is not None \
+                        and not self._spectrum_post.done():
+                    continue
                 lag = self._target_lag if self._target_lag is not None \
                     else getattr(src, "delay_s", 0.0)
                 n0 = int((time.monotonic() - self._epoch - lag) * RATE)
@@ -2518,7 +2549,7 @@ class OpenZone:
                 db = 20.0 * np.log10(np.maximum(out * (4.0 / n), 1e-7))
                 lvl = np.clip((db - SPECTRUM_FLOOR_DB)
                               / (0.0 - SPECTRUM_FLOOR_DB), 0.0, 1.0)
-                await _broadcast_spectrum({
+                self._spectrum_post = self._post_main(_broadcast_spectrum({
                     "group_id": self._active_group,
                     "session_id": self._session_id,
                     "bands": [int(v) for v in np.round(lvl * 255)],
@@ -2526,7 +2557,7 @@ class OpenZone:
                     "floor_db": SPECTRUM_FLOOR_DB,
                     "peak_db": round(float(db.max()), 1),
                     "eq": bool(getattr(src, "_eq", None) is not None),
-                })
+                }))
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -3456,7 +3487,7 @@ class OpenZone:
         if not host:
             return
         try:
-            took = await self._input_claimer(host)
+            took = await self._on_main(self._input_claimer(host))
         except Exception as e:
             logger.debug(f"Sync input claim failed for {player_id}: {e}")
             return
@@ -3488,7 +3519,7 @@ class OpenZone:
                 owner = input_owner
                 if owner is None:
                     try:
-                        owner = await resolve(host)
+                        owner = await self._on_main(resolve(host))
                     except Exception as e:
                         logger.debug(f"Sync input check failed for {st.name}: {e}")
                         owner = None
@@ -3579,7 +3610,7 @@ class OpenZone:
                 return
             uuid_str = st.player_id.split(":", 1)[1]
             try:
-                cast = await self.cast._get_cast(uuid_str)
+                cast = await self._on_main(self.cast._get_cast(uuid_str))
             except Exception as e:
                 logger.debug(f"Sync rejoin probe failed for {st.name}: {e}")
                 cast = None
@@ -3655,7 +3686,7 @@ class OpenZone:
             if not host:
                 return
             try:
-                got = await self._input_reader(host)
+                got = await self._on_main(self._input_reader(host))
             except Exception as e:
                 logger.debug(f"Sync input read failed for {st.name}: {e}")
                 return
@@ -3679,7 +3710,8 @@ class OpenZone:
                 # Learned rather than listed: the API document does not say
                 # which mode Cast is.
                 try:
-                    if self._input_learner(host, mode):
+                    if await self._on_main(
+                            _acall(self._input_learner, host, mode)):
                         owner = ""
                         st.input_owner = ""
                 except Exception as e:
