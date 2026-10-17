@@ -167,7 +167,7 @@ def run() -> Checker:
 
     # --- what the custom receiver is told ---------------------------------
     c.section("the receiver is told each item, timed to the seam")
-    from modules.media.cast_sync import OpenZone, LEAD_SECONDS
+    from modules.media.cast_sync import OpenZone
 
     class _Source:
         kind = "media"
@@ -192,7 +192,7 @@ def run() -> Checker:
     first = z._now_payload()
     c.check("the first item is what it names", first["title"] == "Track 1", first)
     c.check("stamped with when the item is heard, not decoded",
-            abs(first["at"] - (z._epoch + LEAD_SECONDS)) < 1e-6, first)
+            abs(first["at"] - (z._epoch + z._source.delay_s)) < 1e-6, first)
     c.check("its place in the set travels with it",
             (first["index"], first["count"]) == (0, 3), first)
 

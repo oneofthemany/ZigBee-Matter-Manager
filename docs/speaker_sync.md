@@ -18,10 +18,14 @@ hundreds of ms apart (session-dependent, not constant) and drifts a few ms per
 minute because each speaker consumes audio on its own DAC clock. A static
 per-speaker delay can't fix either problem at the standard API layer.
 
-The way out is a **custom Web Receiver**: a Chromium page running on each
-speaker in which we control the audio pipeline in JavaScript. That flips the
-problem — the receiver can share a clock with the server and schedule audio
-sample-accurately, the same architecture Snapcast uses.
+Two ways out, one engine. With the **default media receiver** every device
+pulls its own WAV, cut and corrected per device on the server, and the
+server's only sensor is the position the device reports (±10 ms). With a
+**custom Web Receiver** (`media.cast.sync.app_id`) the same per-device stream
+arrives over a WebSocket and the page reports which frame is leaving its DAC,
+a sensor good to well under a millisecond (open-zone.md §4.4a). Everything
+else — the delay line, the per-device resampler, the correction ladder — is
+the same code for both.
 
 ---
 
@@ -33,11 +37,11 @@ sample-accurately, the same architecture Snapcast uses.
                       │                                            │
    HTTPS :8000        │  OpenZone                                  │
    main app ──────────│   ├─ session control (routes)              │
-   (UI + API)         │   ├─ chunk producer (numpy test signal)    │
+   (UI + API)         │   ├─ delay line + per-device stream engine │
                       │   └─ plain-HTTP listener :8010 (uvicorn)   │
                       │        ├─ GET /cast/sync_receiver.html     │
-                      │        ├─ GET /health                      │
-                      │        └─ WS  /ws  (clock + audio + stats) │
+                      │        ├─ GET /sync/stream/<sid>.wav       │
+                      │        └─ WS  /ws  (clock, PCM, positions) │
                       └───────────────┬────────────────────────────┘
                           launch via  │   ws:// (same-origin)
                           pychromecast│   ┌──────────┴──────────┐
@@ -45,8 +49,8 @@ sample-accurately, the same architecture Snapcast uses.
                       ┌──────────────────────┐   ┌──────────────────────┐
                       │ Speaker A            │   │ Speaker B            │
                       │ sync_receiver.html   │   │ sync_receiver.html   │
-                      │  clock sync + Web    │   │  clock sync + Web    │
-                      │  Audio scheduling    │   │  Audio scheduling    │
+                      │  back-to-back blocks │   │  back-to-back blocks │
+                      │  + DAC position      │   │  + DAC position      │
                       └──────────────────────┘   └──────────────────────┘
 ```
 
@@ -67,28 +71,21 @@ NTP-style over the WebSocket: it sends `{type:"ping", t}` (its
 `performance.now()`), the server replies `{type:"pong", t, s}` (its clock),
 and the receiver computes `offset = (s + rtt/2) − t_arrival`. It pings in a
 burst at startup then every 4 s, keeps a 12-sample window, and trusts the
-median of the three lowest-RTT samples. On a quiet LAN this lands within a
-few ms.
+median of the three lowest-RTT samples. Playback never schedules against it:
+only the position reports and the now-playing screen use the server clock.
 
 ### Audio timeline
 
-- 44.1 kHz stereo s16le, 0.5 s chunks (`CHUNK_SECONDS`).
-- Chunk *i* must start playing at `epoch + LEAD(2 s) + i × 0.5 s` (server
-  clock). Chunks are produced and fanned out `AHEAD(1.5 s)` before their play
-  time; the last 6 are buffered so a late-joining speaker starts immediately.
-- Wire format: 8-byte big-endian float64 `play_at` + raw PCM
-  (`struct.pack(">d", play_at) + pcm`). ~706 kbps per speaker — trivial on a
-  LAN, no codec needed (and old Cast devices lack WebCodecs).
-- The timeline is addressed by absolute sample index, so what a receiver
-  renders depends only on *where* it reads, never on when it joined.
+- 44.1 kHz stereo s16le, cut in 0.2 s blocks (`STREAM_BLOCK_S`) per device.
+- The timeline is addressed by absolute sample index, so what a device is
+  served depends only on *where* its reader sits, never on when it joined.
 - The test signal is a pure function of that index (chord pad + a sharp 1 kHz
-  click every 2 s) and is therefore seekable anywhere, in either direction,
-  with no buffering. The clicks make even ~10 ms of misalignment audible as a
+  click every 2 s). The clicks make even ~10 ms of misalignment audible as a
   flam — that's the tuning "ruler".
 - Real media comes from an ffmpeg decoder writing into a ring buffer
   (`sync_source.py`). It is seekable only within what the ring holds, and it
   cannot be served ahead of its own arrival — so a media session runs the whole
-  group `source_delay_s` (default 2 s) behind the live edge, and the ring is
+  group `source_delay_s` (default 4 s) behind the live edge, and the ring is
   sized for the *spread* of device read positions rather than for the delay
   alone. See open-zone.md §4.1 for the sizing argument; get either wrong and
   the symptom is silence or per-block underruns, not subtle drift.
@@ -96,21 +93,22 @@ few ms.
   group gets identical equalised samples. Settings are keyed
   `syncgroup:<group_id>` in `data/media_eq.json`.
 
-### Receiver scheduling
+### The receiver's side
 
-For each chunk the receiver computes the local `performance.now()` target:
+Binary messages are `[u8 type=1][u64 LE frame][s16le PCM]`, where `frame` is
+the block's first frame on this load — the receiver's media time. The page
+plays blocks back to back in an `AudioContext` created at the stream's rate,
+and **never moves them**: drift and alignment are corrected on the server, in
+what it sends. A block that arrives too late to follow its predecessor is an
+underrun; playback restarts a short lead later, and the server sees the
+device fall behind like any other.
 
-```
-local_target = play_at − offset + trim_ms/1000 − outputLatency
-when         = ctx.currentTime + (local_target − perf_now)
-```
-
-and schedules an `AudioBufferSource.start(when)`. Chunks arriving after their
-play time are dropped and counted (`late`). The applied offset **slews** at
-most 1 ms per chunk toward the latest estimate so chunk boundaries stay
-sample-continuous while drift is corrected continuously; a jump > 50 ms snaps
-and counts a `resync`. `AudioContext.outputLatency` (or `baseLatency`) is
-compensated automatically when the device reports it.
+Every 250 ms the page reports `{type:"pos", frame, at}`: the frame leaving the
+DAC (`AudioContext.getOutputTimestamp()`) at server time `at`. A `start`
+message names a *load*; a new load drops everything the page holds and
+restarts its media time, which is the default receiver's LOAD. A `flush`
+names a frame from which to drop what is queued — the server re-sends from
+there, on a skip (open-zone.md §4.1b).
 
 ### Per-speaker trim
 
@@ -126,9 +124,9 @@ set on one device is also recorded against its model — `cast_type/model_name`,
 e.g. `cast/Nest Hub` — in `data/cast_sync_model_trims.json`. Any other device
 of that model with no trim of its own inherits it, so adding a second display
 to a group does not mean measuring the same 200-odd milliseconds again. An
-explicit per-device trim in `data/cast_sync_trims.json` always wins, and trims
-are pushed live over the WebSocket when changed so slider drags are audible
-immediately.
+explicit per-device trim in `data/cast_sync_trims.json` always wins, and a
+trim change moves that device's reader at once, so slider drags are audible
+immediately on either receiver.
 
 That inheritance rests on the trim measuring the hardware. Two units of one
 model trimmed more than `TRIM_MODEL_AGREE_MS` (25 ms) apart disprove it — in
@@ -189,13 +187,15 @@ app, where it is free.
 1. `CastPlayerProvider._get_cast()` connects to the device (pychromecast).
 2. The sync receiver app (`media.cast.sync.app_id`) is launched via the same
    `_ensure_app` used by the lyrics receiver.
-3. A `{type:"start", sid, trim_ms}` message goes out on the custom namespace
-   `urn:x-cast:zmm.sync`, **re-sent every 2 s for up to 30 s** — the page may
-   still be loading when the first message is sent, and CAF drops messages
-   with no registered listener.
-4. The receiver opens `ws://<page-origin>/ws`, sends `{type:"hello", sid}`,
-   gets `hello_ack` (format + trim) plus any still-future buffered chunks, and
-   starts playing. Stop = `quit_app` on every launched device.
+3. A `{type:"start", sid, load}` message goes out on the custom namespace
+   `urn:x-cast:zmm.sync`, **re-sent every 2 s for up to 20 s**
+   (`RECEIVER_CONNECT_MAX_S`) — the page may still be loading when the first
+   message is sent, and CAF drops messages with no registered listener. A
+   device that never answers is LOADed on the default receiver instead, on
+   its own; the rest of the zone keeps the custom one.
+4. The receiver opens `ws://<page-origin>/ws`, sends `{type:"hello", sid,
+   load}`, and the server starts that device's stream. Later loads (a reload,
+   a re-align) go over the open socket. Stop = `quit_app` on every device.
 
 The receiver sets `disableIdleTimeout: true` — no CAF media session is used,
 so without it the platform would kill the app as "idle" after a few minutes.
@@ -327,7 +327,7 @@ Full steps also in `static/cast/README.md`.
 | `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, now_playing:{title, artist, artwork_url, index, count}, source:{kind, buffered_s, underruns, restarts, finished, …}, resampler:{kind, backend, rust, kinds}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
 | `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url \| station_uuid \| source_id+media_type, kind?, title?, artist?, artwork_url?, loop?}}` — omit `media` for the test signal. `station_uuid` is resolved through the radio directory at start (and carries its logo through as `artwork_url`); `kind` is `track` (default) or `album\|playlist\|artist\|mix`, which expands into the session queue; a `media` block that resolves to no URL, or a URL starting with `-`, is rejected rather than passed to the decoder |
 | `/api/media/sync/stop` | POST | — |
-| `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, live-pushed) |
+| `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, applied live) |
 | `/api/media/sync/groups` | GET | `{groups:[{id, name, members:[…], active, play:{…}}]}` |
 | `/api/media/sync/groups` | POST | `{name, members:[…], id?}` (id = update; the zone's `play` block is preserved) |
 | `/api/media/sync/groups/config` | POST | `{id, key?, custom_url?, loop?, media?, duration_s?, crossfade_s?}` — what the zone plays when started without a source. Replaces the block wholesale |
@@ -429,8 +429,7 @@ Failure modes to watch:
 |---|---|
 | Speaker never leaves "launching…" | App ID wrong, serial not dev-registered (allow ~15 min + reboot), or :8010 unreachable from the speaker |
 | Steady echo that trim fixes, but value changes per session | Clock sync unstable — check `rtt_ms`/offset jitter in stats (Wi-Fi congestion) |
-| Rising `late` count | Producer starved or network stall; audio will gap |
-| Audible ticks every few seconds | Offset slew fighting a noisy clock estimate — see `resyncs` |
+| Rising `underruns` in a receiver's stats | Network stall or a starved engine loop; each one restarts that device a lead later and the ladder pulls it back |
 | One speaker consistently late by a fixed amount, and the stats say it is aligned | Output-pipeline latency, which the reported-position sensor cannot see (§6.1). Screened devices are typically worst. Fix with trim — by mic if you have one in the room, otherwise by ear. It is stored per device and re-applied every session |
 | Session opens with a few seconds of silence | Delay line primed short — check the "primed only Xs" warning and `source.underruns`; raise `source_delay_s` or `ring_capacity_s` |
 | Silence on one member only, others fine | That device's pre-compensation was clamped at launch — see the "clamped … forward" warning |
@@ -498,10 +497,10 @@ gave up anyway, or a sync session whose members must be re-launched.
 
 | File | Role |
 |---|---|
-| `modules/media/cast_sync.py` | Service: HTTP listener, producer, WS protocol, launch, groups/trims |
+| `modules/media/cast_sync.py` | Service: HTTP listener, per-device streams over HTTP or WS, launch, groups/trims |
 | `modules/media/sync_source.py` | Master timeline: generated signal, or ffmpeg + EQ into the ring-buffer delay line |
 | `modules/media/sync_resample.py` | Variable-ratio resampler backends (Rust windowed sinc, numpy windowed sinc, linear) |
-| `static/cast/sync_receiver.html` | CAF receiver: clock sync + Web Audio scheduling |
+| `static/cast/sync_receiver.html` | CAF receiver: back-to-back playback, DAC position reports, now-playing screen |
 | `routes/cast_sync_routes.py` | REST endpoints (main app) |
 | `static/js/speaker-sync.js` | Settings → Audio tab |
 | `static/js/media.js` | Group-builder sub-tabs (WiiM / Speaker sync), zone source picker |

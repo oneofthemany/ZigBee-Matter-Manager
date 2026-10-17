@@ -53,12 +53,16 @@ It's fully static: ZigBee Manager sends the artwork + LRC-timed lyrics inline as
 
 # OpenZone receiver (`sync_receiver.html`)
 
-**Echo-free multi-speaker playback without a Google-Home group.** ZMM streams
-timestamped PCM chunks over a WebSocket; the receiver estimates its offset to
-the ZMM server clock (NTP-style) and schedules each chunk sample-accurately
-with the Web Audio API. A per-speaker trim (±ms)
-compensates each device's fixed output latency — tune it once by ear against
-the 2-second click track, it stays valid.
+**Echo-free multi-speaker playback without a Google-Home group.** ZMM cuts
+each speaker its own corrected stream and sends it over a WebSocket; the page
+plays it back to back with the Web Audio API and reports which frame is
+leaving the DAC at what ZMM-clock time. That report is the sync engine's
+sensor, about a hundred times sharper than the position the default receiver
+reports, so the zone holds tighter and a skip is heard in about a second
+(docs/open-zone.md §4.4a). A per-speaker trim (±ms) still covers what no
+software can see — the speaker's own DSP and amplifier — set once by ear or
+by mic. A speaker that cannot run the page falls back to the default
+receiver on its own.
 
 It also draws the **now-playing screen**: cover, title, artist, progress and
 the track's place in the queue. This is the only way to get per-song metadata

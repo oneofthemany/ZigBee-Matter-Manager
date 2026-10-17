@@ -410,7 +410,8 @@ class MediaSource:
                  ffmpeg: str = "", loop_forever: bool = False,
                  title: str = "", url_provider=None,
                  crossfade_s: float = 0.0, reader_pos=None,
-                 next_provider=None, advance=None, item_duration=None):
+                 next_provider=None, advance=None, item_duration=None,
+                 before_splice=None):
         self.url = url
         self.title = title
         self._url_provider = url_provider
@@ -421,6 +422,9 @@ class MediaSource:
         self._next_provider = next_provider
         self._advance = advance
         self._item_duration = item_duration
+        # Called as a skip cuts in, before the furthest reader is read: lets
+        # the owner pull readers back first (open-zone.md §4.1b).
+        self._before_splice = before_splice
         self._dec: Optional[_Decoder] = None        # the item being written
         self._next: Optional[_Decoder] = None       # its successor, ahead
         self._next_rec: Optional[dict] = None
@@ -816,6 +820,11 @@ class MediaSource:
         self._xfade_arm = False
         if self._skip_title:
             self.title = self._skip_title
+        if self._before_splice is not None:
+            try:
+                self._before_splice()
+            except Exception as e:
+                logger.debug(f"Sync splice hook failed: {e}")
         end = self._ring.end
         at = end
         head = self._reader_head()

@@ -12,6 +12,7 @@ import struct
 import tempfile
 import time
 import uuid as uuid_mod
+from collections import deque
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -36,12 +37,12 @@ from modules.media.sync_source import (RATE, CHANNELS, GeneratedSource,
 
 logger = logging.getLogger("modules.media.cast_sync")
 
-CHUNK_SECONDS = 0.5
-CHUNK_FRAMES = int(RATE * CHUNK_SECONDS)
-LEAD_SECONDS = 2.0       # first chunk plays this long after session start
-AHEAD_SECONDS = 1.5      # send each chunk this early (receiver scheduling slack)
-BUFFER_CHUNKS = 6        # kept for late joiners
 SYNC_NAMESPACE = "urn:x-cast:zmm.sync"
+# Custom-receiver transport (open-zone.md §4.4a).
+RECEIVER_CONNECT_MAX_S = 20.0   # no hello by then: default receiver instead
+RECEIVER_FLUSH_LEAD_S = 0.25    # a skip cuts a receiver this far ahead of its DAC
+RECEIVER_HIST_S = 4.0           # reader history kept per receiver, for a flush
+WS_PCM = 1                      # binary message type: [u8 type][u64 frame][s16le]
 
 DEFAULT_APP_ID = "CC1AD845"      # built-in default media receiver (no registration)
 STREAM_BLOCK_S = 0.2             # stream-mode PCM block size
@@ -275,14 +276,9 @@ def _encode_s16(pcm: np.ndarray) -> bytes:
     return (np.clip(pcm, -0.98, 0.98) * 32767).astype("<i2").tobytes()
 
 
-def _gen_samples(n0: int, frames: int) -> bytes:
-    """Unity-ratio PCM straight off the integer grid (WS/chunk mode)."""
-    return _encode_s16(_GENERATED.read(n0, frames))
-
-
-def _chunk_pcm(source, index: int) -> bytes:
-    """WS-mode framing: fixed CHUNK_FRAMES chunk ``index`` of the timeline."""
-    return _encode_s16(source.read(index * CHUNK_FRAMES, CHUNK_FRAMES))
+# Yielded by _pcm_stream where a receiver must drop what it holds from
+# ``st.served`` on (_apply_flush); never reaches an HTTP fetch.
+_FLUSH = object()
 
 
 def _wav_header() -> bytes:
@@ -436,6 +432,21 @@ class _Stream:
         self.fit_lost_at: float = 0.0
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
         self.resampler = None
+        # Transport: "http" is the default receiver pulling a WAV, "ws" the
+        # custom receiver fed over its socket (open-zone.md §4.4a).
+        self.transport: str = "http"
+        self.http_fallback = False   # custom receiver never connected here
+        self.ws = None
+        self.ws_task = None
+        self.ws_load = 0             # last start sent; a new one drops its buffer
+        self.ws_hello_load = -1      # last start the receiver answered
+        self.ws_report: Optional[dict] = None   # {"frame", "at", "state", "recv"}
+        self.served = 0              # frames served on this load = media time
+        # (served, pos, shift, moved_s, slew_s) at each block's start, so a
+        # flush can rewind the reader to exactly where a cut frame was cut from.
+        self.hist: deque = deque()
+        self.flush_to: Optional[int] = None    # frame a skip cuts the receiver at
+        self.flush_pos: Optional[float] = None  # ...and the reader position there
 
 
 def _lock_label(lock: dict) -> str:
@@ -568,7 +579,6 @@ class OpenZone:
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
-        self._producer: Optional[asyncio.Task] = None
         # Last now-playing pushed to the custom receivers, as (queue position,
         # timeline origin). The origin is in the key because an item can repeat
         # at the same position — a one-track loop is the same row starting
@@ -581,7 +591,6 @@ class OpenZone:
         self.running = False
         self._session_lock = asyncio.Lock()
         self._epoch: float = 0.0
-        self._buffer: List[bytes] = []                 # last N framed chunks
         self._receivers: Dict[str, _Receiver] = {}     # sid -> _Receiver
         self._pending: Dict[str, dict] = {}            # sid -> {player_id, name}
         self._controllers: Dict[str, object] = {}      # cast uuid -> controller
@@ -1109,6 +1118,7 @@ class OpenZone:
                           crossfade_s=self._session_crossfade_s,
                           reader_pos=self._reader_head,
                           next_provider=next_item if queued else None,
+                          before_splice=self._flush_receivers,
                           advance=advance if queued else None,
                           item_duration=item_duration if queued else None)
         try:
@@ -1134,7 +1144,8 @@ class OpenZone:
     def _reader_head(self) -> Optional[int]:
         """Furthest-ahead device read position in timeline samples, for the
         source's rework budget (open-zone.md §4.1a). None = nothing reading."""
-        heads = [st.pos for st in self._streams.values() if st.pos is not None]
+        heads = [st.flush_pos if st.flush_to is not None else st.pos
+                 for st in self._streams.values() if st.pos is not None]
         return max(heads) if heads else None
 
     def _reader_ceiling(self, source) -> float:
@@ -1332,19 +1343,19 @@ class OpenZone:
             await self._stop_session_locked()
         self._active_group = group_id
         self._session_players = list(player_ids)
-        stream_mode = not self.app_id   # no registered receiver -> default receiver
+        # One engine either way; the custom receiver is a transport for it.
+        receiver = bool(self.app_id)
         self._session_id = uuid_mod.uuid4().hex[:8]
         self._duration_s = max(0, int(duration_s or 0))
         self._session_crossfade_s = (
             self._crossfade_s if crossfade_s is None
             else min(max(float(crossfade_s), 0.0), self._crossfade_max()))
 
-        if stream_mode:
-            # Needs discovery, so it cannot run at construction; once per
-            # process, before any trim is latched into a stream.
-            self._reconcile_model_trims()
+        # Needs discovery, so it cannot run at construction; once per
+        # process, before any trim is latched into a stream.
+        self._reconcile_model_trims()
 
-        if stream_mode and _sdb is not None:
+        if _sdb is not None:
             try:
                 db_model = await asyncio.to_thread(_sdb.query_device_model)
                 for pid, m in db_model.items():
@@ -1353,7 +1364,6 @@ class OpenZone:
                 logger.debug(f"Sync model DB load failed (using JSON model): {e}")
 
         self._epoch = time.monotonic()
-        self._buffer = []
         self._now_key = None
         self._receivers = {}
         self._streams = {}
@@ -1378,32 +1388,28 @@ class OpenZone:
         self._session_started_at = time.monotonic()
 
         model_target = None
-        if stream_mode:
-            model_lags = {pid: self._model.get(pid, {}).get("lag_s")
-                          for pid in player_ids}
-            if all(v is not None for v in model_lags.values()):
-                model_target = max(model_lags.values()) + STREAM_LAG_MARGIN_S
-            max_precomp = max((max(0.0, (model_target or 0.0) - (lag or 0.0))
-                               for lag in model_lags.values()), default=0.0)
-            # The probe's own readings from previous sessions size the lead the
-            # delay line must hold before content can start: they measure the
-            # same spread, without the target lag's common term. Only a seed —
-            # the pre-roll re-measures it before anything is seated against it.
-            probes = [self._model.get(pid, {}).get("probe_s")
-                      for pid in player_ids]
-            if probes and all(v is not None for v in probes):
-                max_precomp = max(max_precomp, max(probes) - min(probes))
-            # No blocking prime: devices are LOADed onto a silent lead and the
-            # delay line fills underneath them (_preroll_probe). The target lag
-            # is left unset deliberately — the monitor derives it from the lags
-            # the *measured* pre-comp produces, which is the derivation that
-            # converges; a model target fixes it to a previous session's
-            # numbers and makes every device chase a common offset.
-            self._preroll = True
-            self._preroll_target_s = self._source.delay_s + max_precomp
-        else:
-            await self._prime_source(0.0)
-            self._producer = asyncio.create_task(self._produce())
+        model_lags = {pid: self._model.get(pid, {}).get("lag_s")
+                      for pid in player_ids}
+        if all(v is not None for v in model_lags.values()):
+            model_target = max(model_lags.values()) + STREAM_LAG_MARGIN_S
+        max_precomp = max((max(0.0, (model_target or 0.0) - (lag or 0.0))
+                           for lag in model_lags.values()), default=0.0)
+        # The probe's own readings from previous sessions size the lead the
+        # delay line must hold before content can start: they measure the
+        # same spread, without the target lag's common term. Only a seed —
+        # the pre-roll re-measures it before anything is seated against it.
+        probes = [self._model.get(pid, {}).get("probe_s")
+                  for pid in player_ids]
+        if probes and all(v is not None for v in probes):
+            max_precomp = max(max_precomp, max(probes) - min(probes))
+        # No blocking prime: devices are LOADed onto a silent lead and the
+        # delay line fills underneath them (_preroll_probe). The target lag
+        # is left unset deliberately — the monitor derives it from the lags
+        # the *measured* pre-comp produces, which is the derivation that
+        # converges; a model target fixes it to a previous session's
+        # numbers and makes every device chase a common offset.
+        self._preroll = True
+        self._preroll_target_s = self._source.delay_s + max_precomp
 
         launched, errors = [], {}
         for pid in player_ids:
@@ -1411,47 +1417,45 @@ class OpenZone:
             name = self._player_name(pid)
             self._pending[sid] = {"player_id": pid, "name": name}
             try:
-                if stream_mode:
-                    st = _Stream(sid, pid, name)
-                    st.trim_ms = self.trim_ms(pid)   # latched for the session
-                    st.resampler = _rs.make(self._resampler_kind, RATE, CHANNELS)
-                    m = self._model.get(pid, {})
-                    # A fallback only: the pre-roll overwrites this with what
-                    # it measures, and reaches _end_preroll's else-branch — so
-                    # keeps this — only if no device reported at all.
-                    if model_target is not None and m.get("lag_s") is not None:
-                        st.precomp_s = max(0.0, model_target - m["lag_s"])
-                    st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
-                                      min(STREAM_RATE_MAX_PPM,
-                                          float(m.get("drift_ppm", 0.0))))
-                    st.rate_prior = st.rate_ppm
-                    self._streams[sid] = st
-                    # Starting a zone is a deliberate takeover of other Cast
-                    # apps, as casting to one speaker is — but not of a box
-                    # someone has switched to another input (_foreign_owner).
-                    task = asyncio.create_task(
-                        self._launch_stream(pid, sid, gate="input"))
-                else:
-                    task = asyncio.create_task(self._launch(pid, sid))
+                st = _Stream(sid, pid, name)
+                st.trim_ms = self.trim_ms(pid)   # latched for the session
+                st.resampler = _rs.make(self._resampler_kind, RATE, CHANNELS)
+                m = self._model.get(pid, {})
+                # A fallback only: the pre-roll overwrites this with what
+                # it measures, and reaches _end_preroll's else-branch — so
+                # keeps this — only if no device reported at all.
+                if model_target is not None and m.get("lag_s") is not None:
+                    st.precomp_s = max(0.0, model_target - m["lag_s"])
+                st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
+                                  min(STREAM_RATE_MAX_PPM,
+                                      float(m.get("drift_ppm", 0.0))))
+                st.rate_prior = st.rate_ppm
+                if receiver:
+                    st.transport = "ws"
+                self._streams[sid] = st
+                # Starting a zone is a deliberate takeover of other Cast
+                # apps, as casting to one speaker is — but not of a box
+                # someone has switched to another input (_foreign_owner).
+                task = asyncio.create_task(
+                    self._launch_stream(pid, sid, gate="input"))
                 self._launch_tasks.append(task)
                 launched.append({"player_id": pid, "name": name, "sid": sid})
             except Exception as e:
                 errors[pid] = str(e)
-        if stream_mode:
-            self._preroll_task = asyncio.create_task(self._preroll_probe())
-            self._monitor = asyncio.create_task(self._stream_monitor())
-            if self._live_art_models and len(self._queue) > 1:
-                self._art_task = asyncio.create_task(self._art_watch())
+        self._preroll_task = asyncio.create_task(self._preroll_probe())
+        self._monitor = asyncio.create_task(self._stream_monitor())
+        if self._live_art_models and len(self._queue) > 1:
+            self._art_task = asyncio.create_task(self._art_watch())
         self._spectrum = asyncio.create_task(self._spectrum_feed())
         if self._duration_s:
             self._auto_stop = asyncio.create_task(
                 self._auto_stop_after(self._duration_s))
         logger.info(f"Cast sync session started for {len(launched)} device(s) "
-                    f"({'default-receiver stream' if stream_mode else 'custom receiver'} mode"
+                    f"({'custom receiver' if receiver else 'default-receiver stream'} mode"
                     f", source={self._source.kind}"
                     f"{f', {self._duration_s}s window' if self._duration_s else ''})")
         return {"success": True, "launched": launched, "errors": errors,
-                "mode": "stream" if stream_mode else "receiver",
+                "mode": "receiver" if receiver else "stream",
                 "source": self._source.kind,
                 "duration_s": self._duration_s}
 
@@ -1489,9 +1493,6 @@ class OpenZone:
         for t in self._launch_tasks:
             t.cancel()
         self._launch_tasks = []
-        if self._producer:
-            self._producer.cancel()
-            self._producer = None
         if self._monitor:
             self._monitor.cancel()
             self._monitor = None
@@ -1509,6 +1510,8 @@ class OpenZone:
         if self._streams:    # persist what this session taught the model
             self._write_json(self._model_file, self._model)
         for st in self._streams.values():
+            if st.ws_task is not None:
+                st.ws_task.cancel()
             if st.resampler is not None:
                 try:
                     st.resampler.close()
@@ -1585,8 +1588,8 @@ class OpenZone:
                 "sid": sid,
                 "player_id": info["player_id"],
                 "name": info["name"],
-                "connected": (r is not None) or (s is not None and s.connected
-                                                 and s.parked_since is None),
+                "connected": (s is not None and s.connected
+                              and s.parked_since is None),
                 "parked": bool(s is not None and s.parked_since is not None
                                and not s.yield_kind),
                 "yielded": (s.yield_reason if s is not None
@@ -1597,7 +1600,9 @@ class OpenZone:
                           else None),
                 "trim_ms": (s.trim_ms if s is not None
                             else self.trim_ms(info["player_id"])),
-                "stats": (r.stats if r else (s.stats if s else {})),
+                "transport": s.transport if s is not None else "",
+                "stats": {**(s.stats if s else {}),
+                          **({"receiver": r.stats} if r and r.stats else {})},
             })
         elapsed = (time.monotonic() - self._epoch) if self.running else 0
         return {
@@ -1632,12 +1637,6 @@ class OpenZone:
         self._trims[player_id] = trim_ms
         self._write_json(self._trims_file, self._trims)
         self._learn_model_trim(player_id, trim_ms)
-        for r in self._receivers.values():
-            if r.player_id == player_id:
-                try:
-                    await r.ws.send_json({"type": "trim", "trim_ms": trim_ms})
-                except Exception as e:
-                    logger.debug(f"trim push failed for {player_id}: {e}")
         for s in self._streams.values():
             if s.player_id != player_id:
                 continue
@@ -1671,9 +1670,9 @@ class OpenZone:
 
     def _align_streams(self, reference_id: str, subject_id: str):
         """The two live streams, or an error dict."""
-        if not self.running or self.app_id:
+        if not self.running:
             return {"success": False,
-                    "error": "Alignment needs a running stream-mode session"}
+                    "error": "Alignment needs a running zone"}
         if self._calibrating:
             return {"success": False, "error": "Chirp calibration is running"}
         if self._target_lag is None:
@@ -1806,9 +1805,9 @@ class OpenZone:
         slot; one mic recording covers all slots, so every common-mode
         error (mic start latency, mic clock, shared path) cancels when the
         arrivals are differenced across devices."""
-        if not self.running or self.app_id:
+        if not self.running:
             return {"success": False,
-                    "error": "Calibration needs a running stream-mode session"}
+                    "error": "Calibration needs a running zone"}
         if self._calibrating:
             return {"success": False, "error": "Calibration already running"}
         if self._target_lag is None:
@@ -2015,39 +2014,6 @@ class OpenZone:
         info = (getattr(self.cast, "_infos", None) or {}).get(uuid_str)
         return getattr(info, "friendly_name", player_id) if info else player_id
 
-    async def _launch(self, player_id: str, sid: str):
-        """Launch the sync receiver app and hand it its session id + trim.
-        The start message is re-sent until the receiver's WS hello arrives —
-        the page may still be loading when the first message goes out."""
-        uuid_str = player_id.split(":", 1)[1]
-        cast = await self._on_main(self.cast._get_cast(uuid_str))
-        if not cast:
-            logger.warning(f"Sync launch: {player_id} unreachable")
-            return
-        ctrl = self._controllers.get(uuid_str)
-        if ctrl is None:
-            ctrl = _SyncMessageController()
-            await asyncio.to_thread(cast.register_handler, ctrl)
-            self._controllers[uuid_str] = ctrl
-        await asyncio.to_thread(self.cast._ensure_app, cast, self.app_id)
-        payload = {
-            "type": "start",
-            "sid": sid,
-            "trim_ms": self.trim_ms(player_id),
-        }
-        deadline = time.monotonic() + 30
-        while self.running and time.monotonic() < deadline:
-            if sid in self._receivers:
-                return                     # receiver connected — done
-            try:
-                await asyncio.to_thread(ctrl.push, payload)
-            except Exception as e:
-                logger.debug(f"Sync start message to {player_id} failed: {e}")
-            await asyncio.sleep(2)
-        if self.running and sid not in self._receivers:
-            logger.warning(f"Sync receiver on {player_id} never connected "
-                           f"(app_id registered? device serial enabled for dev?)")
-
     def _local_ip_for(self, host: str) -> str:
         """Our LAN IP as seen from ``host`` (the cast device) — the stream
         URL must be reachable from the device, not from localhost."""
@@ -2094,6 +2060,15 @@ class OpenZone:
                 return
         await self._claim_input(player_id)
         self._consume_handback(player_id)
+        if st is not None and st.transport == "ws":
+            if await self._start_receiver(cast, st):
+                return
+            # Per device, not per zone: a speaker that cannot run the custom
+            # receiver still plays, through the one every Cast device has.
+            st.transport, st.http_fallback = "http", True
+            logger.warning(f"Sync receiver on {st.name} never connected — "
+                           "playing it through the default receiver instead "
+                           "(App ID registered? serial enabled for dev?)")
         host = getattr(getattr(cast, "cast_info", None), "host", None) or \
             getattr(getattr(cast, "socket_client", None), "host", "")
         base = f"http://{self._local_ip_for(host)}:{self.http_port}"
@@ -2157,7 +2132,7 @@ class OpenZone:
         """The item a custom receiver should be showing, and from when.
 
         ``at`` is a server-clock instant, not a duration: the receiver already
-        estimates the server clock to schedule its audio, so a boundary sent
+        estimates the server clock for its position reports, so a boundary sent
         this way lands on its screen at the moment the seam reaches its
         speakers — not when the decoder crossed it, which is one delay line and
         one buffer earlier. Without an origin (the test signal, or before the
@@ -2165,13 +2140,9 @@ class OpenZone:
         with no item boundaries can mean.
         """
         np_ = self.now_playing()
-        origin = None
-        try:
-            origin = self._source.item_origin_s()
-        except Exception:
-            pass
-        at = (self._epoch + LEAD_SECONDS + origin) if origin is not None \
-            else time.monotonic()
+        at = self._heard_at()
+        if at is None:
+            at = time.monotonic()
         return {"type": "now", "at": at,
                 "title": np_.get("title", ""), "artist": np_.get("artist", ""),
                 "artwork": np_.get("artwork_url", ""),
@@ -2245,16 +2216,23 @@ class OpenZone:
         except asyncio.CancelledError:
             pass
 
-    def _until_heard(self) -> float:
-        """Seconds until the current item's first sample reaches the room."""
-        lag = self._target_lag or self._source.delay_s
+    def _heard_at(self) -> Optional[float]:
+        """Server-clock instant the current item's first sample reaches the
+        room: its timeline origin plus the group's lag. None without one."""
         try:
             origin = self._source.item_origin_s()
         except Exception:
             origin = None
         if origin is None:
-            return lag
-        return max(0.0, self._epoch + origin + lag - time.monotonic())
+            return None
+        return self._epoch + origin + (self._target_lag or self._source.delay_s)
+
+    def _until_heard(self) -> float:
+        """Seconds until the current item's first sample reaches the room."""
+        at = self._heard_at()
+        if at is None:
+            return self._target_lag or self._source.delay_s
+        return max(0.0, at - time.monotonic())
 
     @staticmethod
     async def _fetch_art(http, url: str) -> Optional[tuple]:
@@ -2804,6 +2782,8 @@ class OpenZone:
         the ``None`` meaning unreachable, stale or not started, or the 30 s
         silence sweep is the only backstop (`_sweep_interrupted`).
         """
+        if st.transport == "ws":
+            return self._ws_media_time(st)
         uuid_str = st.player_id.split(":", 1)[1]
         cast = self.cast._casts.get(uuid_str)
         if cast is None:
@@ -2903,7 +2883,8 @@ class OpenZone:
         adjusted_current_time extrapolates each report to read time, so the
         reads target the same quantity and the median suppresses ~√N of the
         per-read noise while discarding a single bogus status outright."""
-        n = (STREAM_STATUS_READS_ACQ if self._acquiring()
+        n = (1 if st.transport == "ws"         # one report, read N times
+             else STREAM_STATUS_READS_ACQ if self._acquiring()
              else STREAM_STATUS_READS)
         reads: List[float] = []
         for _ in range(n):
@@ -3512,10 +3493,12 @@ class OpenZone:
         try:
             cs = getattr(cast, "status", None)
             app = getattr(cs, "app_id", None) or ""
-            if app and app not in (self.app_id or DEFAULT_APP_ID,
-                                   BACKDROP_APP_ID):
+            # The custom receiver and the default one are both ours: a device
+            # that fell back from the first plays on the second.
+            if app and app not in (DEFAULT_APP_ID, BACKDROP_APP_ID) \
+                    and app != self.app_id:
                 return getattr(cs, "display_name", "") or f"Cast app {app}"
-            if not app or app == BACKDROP_APP_ID:
+            if not app or app in (BACKDROP_APP_ID, self.app_id):
                 return None
             ms = cast.media_controller.status
             cid = getattr(ms, "content_id", "") or ""
@@ -3944,7 +3927,7 @@ class OpenZone:
         figures, not natural startup latency, and would seed every future
         session's pre-compensation with this incident (§A.4).
         """
-        if not self.running or self.app_id:
+        if not self.running:
             return
         # A parked device is not re-LOADed with the group: it cannot receive
         # the LOAD, and including it would re-derive the target from a set the
@@ -4128,9 +4111,11 @@ class OpenZone:
             st.probe_task = asyncio.create_task(self._probe_reload(st))
         await self._launch_stream(st.player_id, st.sid, gate="none")
 
-    async def _pcm_stream(self, st: _Stream):
+    async def _pcm_stream(self, st: _Stream, header: bool = True):
         """Async generator: endless WAV cut from the shared timeline for one
-        device, paced to stay at most STREAM_AHEAD_S ahead of real time."""
+        device, paced to stay at most STREAM_AHEAD_S ahead of real time.
+        ``header=False`` for the receiver socket, which also gets ``_FLUSH``
+        where a skip cuts it (_apply_flush)."""
         st.gen += 1
         mine = st.gen
         st.connected = True
@@ -4139,7 +4124,8 @@ class OpenZone:
         logger.info(f"Sync stream opened: {st.name}"
                     f"{f' (fetch #{mine}, superseding #{mine - 1})' if mine > 1 else ''}")
         try:
-            yield _wav_header()
+            if header:
+                yield _wav_header()
             source = self._source
             delay = source.delay_s
             block = int(RATE * STREAM_BLOCK_S)
@@ -4171,6 +4157,7 @@ class OpenZone:
                         await asyncio.sleep(STREAM_BLOCK_S / 2)
                         continue
                     st.preroll_frames += block
+                    st.served += block
                     yield silence
                 if not (self.running and self._streams.get(st.sid) is st
                         and st.gen == mine):
@@ -4197,11 +4184,20 @@ class OpenZone:
                 self._seat_position(st, source)
             while (self.running and self._streams.get(st.sid) is st
                    and st.gen == mine):
+                if st.flush_to is not None:
+                    self._apply_flush(st)
+                    yield _FLUSH
+                    continue
                 ahead = ((st.pos - st.shift) / RATE + delay
                          - (time.monotonic() - self._epoch))
                 if ahead > STREAM_AHEAD_S:
                     await asyncio.sleep(STREAM_BLOCK_S / 2)
                     continue
+                if st.transport == "ws":
+                    st.hist.append((st.served, st.pos, st.shift, st.moved_s,
+                                    st.slew_s))
+                    while len(st.hist) > RECEIVER_HIST_S / STREAM_BLOCK_S:
+                        st.hist.popleft()
                 rm = 0.0
                 if st.slew_s:
                     # The rate a slew was issued at, not one re-chosen from
@@ -4217,8 +4213,8 @@ class OpenZone:
                 pos0 = st.pos
                 win = st.resampler.window(source, st.pos, block, adv, st.inject)
                 out, used = await asyncio.to_thread(st.resampler.render, win)
-                if st.pos != pos0:
-                    continue     # jump landed mid-render; drop, consume nothing
+                if st.pos != pos0 or st.flush_to is not None:
+                    continue     # jump or flush landed mid-render; drop it
                 st.slew_s -= rm
                 st.pos += used
                 st.shift += used - block
@@ -4229,6 +4225,7 @@ class OpenZone:
                 gain = self._join_gain(st, block)
                 if gain is not None:
                     out = out * gain[:, None]
+                st.served += block
                 yield _encode_s16(out)
         except asyncio.CancelledError:
             pass
@@ -4238,35 +4235,141 @@ class OpenZone:
             logger.info(f"Sync stream closed: {st.name}"
                         f"{'' if st.gen == mine else f' (superseded fetch #{mine})'}")
 
-    async def _produce(self):
-        """Generate chunks on the shared timeline and fan out to receivers.
-        Chunk i must start playing at epoch + LEAD + i*CHUNK_SECONDS (server
-        clock); we emit it AHEAD_SECONDS early."""
-        i = 0
+    # Custom-receiver transport (open-zone.md §4.4a)
+
+    async def _ws_feed(self, st: _Stream, ws) -> None:
+        """Serve one receiver load over its socket: the same generator an
+        HTTP fetch pulls, framed with the stream frame each block starts at,
+        which is the media time the receiver reports back against."""
+        gen = self._pcm_stream(st, header=False)
         try:
-            while self.running:
-                play_at = self._epoch + LEAD_SECONDS + i * CHUNK_SECONDS
-                wait = (play_at - AHEAD_SECONDS) - time.monotonic()
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                pcm = await asyncio.to_thread(_chunk_pcm, self._source, i)
-                frame = struct.pack(">d", play_at) + pcm
-                self._buffer.append(frame)
-                if len(self._buffer) > BUFFER_CHUNKS:
-                    self._buffer.pop(0)
-                for r in list(self._receivers.values()):
-                    try:
-                        await r.ws.send_bytes(frame)
-                    except Exception:
-                        self._receivers.pop(r.sid, None)
-                # Cheapest place to notice a seam: this loop already wakes once
-                # per chunk, and the screens are the only thing waiting on it.
+            async for block in gen:
+                if block is _FLUSH:
+                    await ws.send_json({"type": "flush", "frame": st.served})
+                    continue
+                frames = len(block) // (2 * CHANNELS)
+                await ws.send_bytes(struct.pack("<BQ", WS_PCM,
+                                                st.served - frames) + block)
+                # Cheapest place to notice a seam: this loop already wakes
+                # once per block, and the screens are what waits on it.
                 await self._push_now_if_changed()
-                i += 1
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Cast sync producer died: {e}")
+            logger.debug(f"Sync receiver feed for {st.name} ended: {e}")
+        finally:
+            await gen.aclose()
+
+    def _ws_media_time(self, st: _Stream) -> Optional[tuple]:
+        """``_read_media_time`` for a receiver: its last report of the frame
+        leaving its DAC, extrapolated to now. No network, so no median of
+        repeated reads either (_measure_lag)."""
+        now = time.monotonic()
+        uuid_str = st.player_id.split(":", 1)[1]
+        cast = (getattr(self.cast, "_casts", None) or {}).get(uuid_str)
+        if cast is not None and self.policy(st.player_id)["mode"] != "reclaim":
+            owner = self._cast_owner(cast)
+            if owner is not None:
+                self._yield_stream(st, "cast", owner)
+                return None
+        rep = st.ws_report
+        fresh = rep is not None and now - rep["recv"] <= STREAM_STATUS_MAX_AGE_S
+        if st.ws is None or not fresh or rep["state"] != "playing":
+            st.state = "IDLE" if st.ws is None else "BUFFERING"
+            if (st.state == "BUFFERING" and st.last_reload is not None
+                    and now - st.last_reload
+                    < st.latency_s + STREAM_RELOAD_BUFFER_GRACE_S):
+                return None       # our own restart filling
+            if st.interrupted_since is None:
+                st.interrupted_since = now
+            return None
+        st.state = "PLAYING"
+        if st.interrupted_since is not None:
+            st.interrupt_held = max(st.interrupt_held,
+                                    now - st.interrupted_since)
+            st.interrupted_since = None
+        ct = rep["frame"] / RATE + (now - rep["at"])
+        return (now, ct) if ct > 0 else None
+
+    def _flush_receivers(self) -> None:
+        """Before a skip splices the timeline: cut every receiver's queue
+        RECEIVER_FLUSH_LEAD_S ahead of what it is playing and rewind its
+        reader to the block it was cut at, so the splice can land behind
+        audio that was sent but will now never be heard (open-zone.md §4.1b).
+        The rewind is taken by the serve loop between blocks (_apply_flush);
+        until then ``_reader_head`` already counts the reader as rewound."""
+        now = time.monotonic()
+        for st in self._streams.values():
+            rep = st.ws_report
+            if (st.transport != "ws" or st.ws is None or rep is None
+                    or st.pos is None or not st.hist
+                    or now - rep["recv"] > STREAM_STATUS_MAX_AGE_S):
+                continue
+            playing = rep["frame"] + (now - rep["at"]) * RATE
+            cut = playing + RECEIVER_FLUSH_LEAD_S * RATE
+            entry = next((e for e in st.hist if e[0] >= cut), None)
+            if entry is None:
+                continue
+            st.flush_to, st.flush_pos = entry[0], entry[1]
+
+    @staticmethod
+    def _apply_flush(st: _Stream) -> None:
+        """Rewind the reader to the block at ``flush_to``: every deliberate
+        move since is undone with it, because none of it will be heard."""
+        frame, st.flush_to, st.flush_pos = st.flush_to, None, None
+        entry = None
+        for e in st.hist:
+            if e[0] == frame:
+                entry = e          # the latest: a dropped render re-records
+        if entry is None:
+            return
+        st.served, st.pos, st.shift, st.moved_s, st.slew_s = entry
+        while st.hist and st.hist[-1][0] >= frame:
+            st.hist.pop()
+
+    async def _push_start(self, cast, uuid_str: str, payload: dict) -> None:
+        """One start message to the custom receiver on this device."""
+        ctrl = self._controllers.get(uuid_str)
+        if ctrl is None:
+            ctrl = _SyncMessageController()
+            await asyncio.to_thread(cast.register_handler, ctrl)
+            self._controllers[uuid_str] = ctrl
+        await asyncio.to_thread(ctrl.push, payload)
+
+    async def _start_receiver(self, cast, st: _Stream) -> bool:
+        """Launch the custom receiver and start a fresh load on it. A new
+        load drops whatever the receiver holds and restarts its media time,
+        which is what a LOAD does on the default receiver. False if it never
+        answered."""
+        uuid_str = st.player_id.split(":", 1)[1]
+        # The old load stops serving now: anything it served from here on
+        # would advance a reader the new load is about to be seated against.
+        if st.ws_task is not None:
+            st.ws_task.cancel()
+        st.ws_load += 1
+        load = st.ws_load
+        payload = {"type": "start", "sid": st.sid, "load": load}
+        if st.ws is None:
+            await asyncio.to_thread(self.cast._ensure_app, cast, self.app_id)
+        deadline = time.monotonic() + RECEIVER_CONNECT_MAX_S
+        pushed = 0.0
+        while (self.running and self._streams.get(st.sid) is st
+               and time.monotonic() < deadline):
+            if st.ws_hello_load == load:
+                return True
+            if time.monotonic() - pushed >= 2.0:
+                pushed = time.monotonic()
+                try:
+                    # Over the open socket when there is one: no Cast round
+                    # trip, and the receiver keeps its connection.
+                    if st.ws is not None:
+                        await st.ws.send_json(payload)
+                    else:
+                        await self._push_start(cast, uuid_str, payload)
+                except Exception as e:
+                    logger.debug(f"Sync start message to {st.name} failed: {e}")
+            await asyncio.sleep(0.1)
+        return not self.running or self._streams.get(st.sid) is not st
 
     def _build_http_app(self):
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -4304,6 +4407,7 @@ class OpenZone:
         async def ws_endpoint(ws: WebSocket):
             await ws.accept()
             receiver: Optional[_Receiver] = None
+            st: Optional[_Stream] = None
             try:
                 while True:
                     msg = await ws.receive_json()
@@ -4311,33 +4415,46 @@ class OpenZone:
                     if mtype == "ping":
                         await ws.send_json({"type": "pong", "t": msg.get("t"),
                                             "s": time.monotonic()})
+                    elif mtype == "pos" and st is not None and st.ws is ws:
+                        st.ws_report = {
+                            "frame": int(msg.get("frame") or 0),
+                            "at": float(msg.get("at") or 0.0),
+                            "state": str(msg.get("state") or ""),
+                            "recv": time.monotonic()}
                     elif mtype == "hello":
                         sid = str(msg.get("sid") or "")
                         info = self._pending.get(sid)
-                        if not info:
+                        st = self._streams.get(sid)
+                        if not info or st is None or st.transport != "ws":
                             await ws.send_json({"type": "error",
                                                 "error": "unknown sid"})
+                            st = None
                             continue
                         receiver = _Receiver(sid, ws)
                         receiver.player_id = info["player_id"]
                         receiver.name = info["name"]
                         self._receivers[sid] = receiver
-                        logger.info(f"Sync receiver connected: {info['name']}")
-                        await ws.send_json({
-                            "type": "hello_ack",
-                            "rate": RATE, "channels": CHANNELS,
-                            "chunk_s": CHUNK_SECONDS,
-                            "trim_ms": self.trim_ms(info["player_id"]),
-                        })
+                        if st.ws_task is not None:
+                            st.ws_task.cancel()   # newest load wins (§A.5)
+                        st.ws, st.ws_report = ws, None
+                        st.hist.clear()
+                        st.served = 0
+                        st.flush_to = st.flush_pos = None
+                        # Frame 0 of this load is served from here, so it is
+                        # seated here; on a lead the seat waits for content.
+                        if (st.pos is not None and not self._preroll
+                                and not st.probing):
+                            self._seat_position(st, self._source)
+                        await ws.send_json({"type": "hello_ack", "rate": RATE,
+                                            "channels": CHANNELS})
                         # What to show, before any audio: a receiver that
                         # joins mid-session must not sit blank until the next
                         # seam, which on an album is three minutes away.
                         await self._push_now(receiver)
-                        now = time.monotonic()
-                        for frame in list(self._buffer):
-                            (play_at,) = struct.unpack(">d", frame[:8])
-                            if play_at > now + 0.2:
-                                await ws.send_bytes(frame)
+                        st.ws_hello_load = int(msg.get("load") or 0)
+                        st.ws_task = asyncio.create_task(self._ws_feed(st, ws))
+                        logger.info(f"Sync receiver connected: {info['name']} "
+                                    f"(load #{st.ws_hello_load})")
                     elif mtype == "stats" and receiver is not None:
                         receiver.stats = {k: v for k, v in msg.items()
                                           if k != "type"}
@@ -4346,9 +4463,18 @@ class OpenZone:
             except Exception as e:
                 logger.debug(f"Sync WS error: {e}")
             finally:
-                if receiver is not None:
+                if receiver is not None and \
+                        self._receivers.get(receiver.sid) is receiver:
                     self._receivers.pop(receiver.sid, None)
-                    logger.info(f"Sync receiver disconnected: {receiver.name}")
+                if st is not None and st.ws is ws:
+                    st.ws = None
+                    if st.ws_task is not None:
+                        st.ws_task.cancel()
+                    # A closed socket is a receiver that has stopped, and
+                    # that is known now, not a silence sweep later.
+                    if self.running and st.interrupted_since is None:
+                        st.interrupted_since = time.monotonic()
+                    logger.info(f"Sync receiver disconnected: {st.name}")
 
         return app
 

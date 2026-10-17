@@ -162,7 +162,7 @@ A zone is addressed as an ordinary player, `zone:<gid>`, and routes through the 
 
 **A skip is spliced just ahead of the furthest reader, not at the write head.** Everything between the readers and the write head is decoded but served to nobody — ~6 s of it for faster-than-real-time material — and a seam at the head makes the listener wait through all of it. Truncating the ring back towards the readers is safe on two conditions, and the skip waits for both. The cut lands past the reader margin plus a block (`SKIP_GUARD_S`), so no sample already served is rewritten (§A.2). And the target's head (`SKIP_HEAD_S`) is already decoded when the cut is made, so the write head lands well clear of every reader instead of on top of one: the latch §A.2 describes happens when a reader sits inside the margin with nothing ahead of it. Until then the outgoing item keeps decoding, so a slow resolve costs time, not silence. The cut is a 50 ms constant-power fade over the outgoing audio still resident past the cut, which removes the click without being heard as a crossfade.
 
-What remains is irreducible: the audio already sent to each device's own buffer, which only a re-LOAD drops. If the target cannot be decoded in `SKIP_READY_MAX_S` the skip falls back to ending the item and splicing at the write head, as before.
+What remains is the audio already sent to each device's own buffer. A default receiver's only drops on a re-LOAD. A custom receiver's is flushed: `_flush_receivers` cuts each one `RECEIVER_FLUSH_LEAD_S` ahead of the frame leaving its DAC and rewinds its reader to the block it was cut at, restoring every deliberate move made since, because none of it will now be heard. The splice then reads the rewound readers, so it lands behind audio that was sent but will never play. The page re-plays from the cut frame, so its frame-to-time line and the ladder's reading of it are unbroken. Measured against simulated receivers, the target is heard ~1.3 s after the skip against ~2.6 s without the flush; the rest is the flush lead, the reader margin and the block grid, which the splice needs to never rewrite a sample a reader is rendering. If the target cannot be decoded in `SKIP_READY_MAX_S` the skip falls back to ending the item and splicing at the write head, as before.
 
 **Repeat-all wraps at a seam.** ffmpeg's own `-stream_loop` is used only for a source with no queue; on a queued item it would repeat that item forever and never reach a seam.
 
@@ -224,6 +224,7 @@ One encoder instance per device: streams differ in content phase, so no encode i
 | Ecosystem | Mechanism | Notes |
 |---|---|---|
 | Google Cast | Default Media Receiver pointed at a per-device URL; device pulls chunked HTTP | Media status used for state and position reporting; never as a timing authority |
+| Google Cast, custom receiver | The same per-device stream over a WebSocket to `sync_receiver.html` (§4.4a) | The page reports the frame leaving its DAC; falls back to the row above per device |
 | AirPlay / RAOP | Server acts as RAOP sender (RTP with timing channel) | AirPlay 2 PTP mode not required; correction is upstream |
 | Sonos / UPnP-DLNA | `SetAVTransportURI` + `Play` | Stream mode preferred over buffered radio mode |
 | Generic (browsers, Squeezebox, VLC) | Plain HTTP stream URL | Browsers serve as zero-cost test endpoints |
@@ -231,6 +232,20 @@ One encoder instance per device: streams differ in content phase, so no encode i
 Bluetooth endpoints are excluded: their latency is large *and time-varying* (jitter rather than fixed offset), so no static model fits and the correction loop cannot converge.
 
 The HTTP server issues unbounded chunked responses (no `Content-Length`), one per device, reading from that device's post-encoder FIFO. On reconnect, the stream resumes from the live edge and the device re-enters acquisition (§7.3).
+
+#### 4.4a The Custom Receiver as a Transport
+
+The custom receiver is not a second engine. It was one, once: a shared chunk feed every receiver scheduled against the server clock, with no per-device correction and no ladder. It is now a transport for the engine the default receiver uses, and the two differ in exactly two places.
+
+**What carries the stream.** The same generator an HTTP fetch pulls (`_pcm_stream`) is iterated by `_ws_feed`, and each block goes out framed with the stream frame it starts at. The page plays blocks back to back and never moves them, so it is the free-running, fixed-latency pipe of §3 — the server's delay line, resampler and ladder do all of the correcting, as they do for a device they cannot program.
+
+**What the sensor reads.** `_read_media_time` is the one place every rung measures through, and for a receiver it returns the page's last report — the frame leaving the DAC at a server-clock instant, from `getOutputTimestamp()` and the page's clock sync — extrapolated to now. That is the same quantity a Cast media status approximates to ~10 ms, read to well under one, so a single report per poll replaces the median of repeated status reads. The pre-roll probe, the interruption sweep and the drift fit work unchanged on it.
+
+A **load** is the receiver's LOAD. A start message names one; the page drops everything it holds and restarts its media time, and the server cancels the old feed before sending it, because anything served after that would advance a reader the new load is about to be seated against. Frame 0 of a load is seated at its hello, not before, for the same reason. Later loads go over the open socket rather than through Cast, so a reload is a round trip on the LAN, not an app launch.
+
+**A closed socket is an interruption, known at once.** The page does not reconnect by itself: the server marks the device interrupted on the spot and the interruption rung restarts it with a fresh load (§7.1).
+
+**Fallback is per device.** A speaker whose page never says hello within `RECEIVER_CONNECT_MAX_S` is LOADed on the default receiver and stays there for the session. A zone can therefore mix the two transports, and each device is corrected through whichever sensor it has. `_cast_owner` counts both receivers as the zone's own, since a fallen-back device plays on the default one.
 
 ### 5. Correction Domain
 
@@ -433,6 +448,7 @@ Three things differ from session start, and each is a branch rather than a copy.
 | Error source | Magnitude | Mitigation |
 |---|---|---|
 | Reported-position noise (per poll, after aggregation) | ~±7 ms | median filtering; drives coarse ladder only |
+| Custom-receiver DAC position (§4.4a) | sub-ms, plus clock-sync error | one report per poll; no median needed |
 | GCC-PHAT peak resolution at 44.1/48 kHz | ~0.1–0.3 ms | parabolic peak interpolation |
 | Microphone path asymmetry | ~1 ms per 34 cm | placement at listening position; two-position calibration |
 | Room reflections | peak smearing | PHAT weighting; windowed chirps; acceptance threshold |
@@ -461,7 +477,7 @@ Reference deployment: two Google Cast devices (Chromecast-class and Nest Audio),
 6. **Same-room phase-coherent pairing** across vendors is not a goal; the target is echo-free multi-room listening.
 7. **On the default receiver, endpoint displays show the session, not the item.** Track metadata and artwork ride on the load message that starts a device's stream, and closed endpoints offer no way to revise them afterwards; re-issuing the load would restart the device's buffering and cost the zone its alignment (§7.3), and at every track boundary it would exhaust the reload budget §7.1 measures rather than merely being expensive. A zone playing a multi-item queue therefore labels its screens with the **set** — the album, playlist or mix, or failing a name for it the queue's length — never with the head track, which would otherwise sit on every screen for the whole session and read as a stuck player. The controlling application tracks the individual item, where doing so is free. **The picture is the exception, on screens that redraw it.** The receiver takes one artwork URL and never asks again, so on a multi-item queue that URL is `/sync/art/<sid>.mjpg` — a `multipart/x-mixed-replace` image that never ends, each cover a new part — and the screen follows the track with no load issued. A cover is pushed when the item is *heard*, the group's lag after the decoder opened it. Only for models seen to redraw a streamed image (`live_art_models`: Pixel Tablet, Nest Hub); elsewhere the fixed cover stands, because a display that does not redraw shows nothing rather than something stale. Title and artist remain the set's.
 
-   In **receiver mode** the limitation does not apply: the custom receiver draws its own screen, so the engine pushes each item over the session WebSocket stamped with the server-clock instant the seam is *heard* — the same clock the receiver already estimates to schedule its audio (§4). The display therefore turns over with the speakers rather than with the decoder, which is a delay line and a device buffer ahead of them, and it costs the audio path nothing. This is the only per-item display path: it needs an App ID registered for the receiver page (`media.cast.sync.app_id`, see `static/cast/README.md`).
+   In **receiver mode** the limitation does not apply: the custom receiver draws its own screen, so the engine pushes each item over the session WebSocket stamped with the server-clock instant the seam is *heard* — the same clock the receiver already estimates for its position reports (§4.4a). The display therefore turns over with the speakers rather than with the decoder, which is a delay line and a device buffer ahead of them, and it costs the audio path nothing. This is the only per-item display path: it needs an App ID registered for the receiver page (`media.cast.sync.app_id`, see `static/cast/README.md`).
 
 ### 11. Future Work
 
