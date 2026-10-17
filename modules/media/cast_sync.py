@@ -694,8 +694,8 @@ class OpenZone:
 
     async def skip_to(self, index: int) -> dict:
         """Move the zone's queue to ``index`` and re-cut the timeline there.
-        The seam lands at the write head, so it is heard once the delay line
-        drains — open-zone.md §4.1b."""
+        The target is spliced in just ahead of the furthest reader once its
+        head is decoded — open-zone.md §4.1b."""
         if not self.running:
             return {"success": False, "error": "This zone is not playing"}
         n = len(self._queue)
@@ -1028,7 +1028,18 @@ class OpenZone:
                                 "artwork_url": media.get("artwork_url") or "",
                                 "owner": owner}]
 
+            async def resolve(item: dict) -> str:
+                # Mixed queues: an item's own media_type wins over the block's.
+                sub = item.get("source_id") or ""
+                if not sub:
+                    return item.get("url") or ""
+                return await self._on_main(self._url_resolver(
+                    item.get("media_type") or stype,
+                    sub, item.get("owner") or owner)) or ""
+
             async def provider(last_rc=None):
+                # 0 = the item played out, so step on; anything else (a fault,
+                # a skip) re-resolves where the cursor already is.
                 if last_rc == 0:
                     self._queue_pos += 1
                     if self._queue_pos >= len(self._queue):
@@ -1036,15 +1047,36 @@ class OpenZone:
                             return ""
                         self._queue_pos = 0
                 item = self._queue[self._queue_pos]
-                # Mixed queues: an item's own media_type wins over the block's.
-                sub = item.get("source_id") or ""
-                url = (await self._on_main(self._url_resolver(
-                           item.get("media_type") or stype,
-                           sub, item.get("owner") or owner))
-                       if sub else (item.get("url") or ""))
+                url = await resolve(item)
                 if not url:
                     return ""
                 return {"url": url, "title": item.get("title") or ""}
+
+            async def next_item():
+                """The successor, resolved without moving the cursor."""
+                at = self._queue_pos
+                i = at + 1
+                if i >= len(self._queue):
+                    if not loop_forever:
+                        return None
+                    i = 0
+                item = self._queue[i]
+                url = await resolve(item)
+                if not url:
+                    return None
+                return {"url": url, "title": item.get("title") or "",
+                        "index": i, "from": at}
+
+            def advance(rec: dict) -> bool:
+                if self._queue_pos != rec.get("from"):
+                    return False         # a skip moved the cursor meanwhile
+                self._queue_pos = rec["index"]
+                return True
+
+            def item_duration():
+                q, i = self._queue, self._queue_pos
+                ms = (q[i].get("duration_ms") or 0) if 0 <= i < len(q) else 0
+                return ms / 1000.0 if ms else None
 
             try:
                 first = await provider()
@@ -1065,14 +1097,20 @@ class OpenZone:
                 chain = self._eq_engine.make_chain(f"syncgroup:{group_id}")
             except Exception as e:
                 logger.debug(f"Sync EQ chain unavailable: {e}")
+        queued = provider is not None
         src = MediaSource(media["url"].strip(), self._epoch,
                           delay_s=self._source_delay_s,
                           capacity_s=self._ring_capacity_s, eq_chain=chain,
-                          loop_forever=loop_forever,
+                          # A queue repeats at its seams; ffmpeg's own loop
+                          # would repeat its first item forever instead.
+                          loop_forever=loop_forever and not queued,
                           title=(media.get("title") or "").strip(),
                           url_provider=provider,
                           crossfade_s=self._session_crossfade_s,
-                          reader_pos=self._reader_head)
+                          reader_pos=self._reader_head,
+                          next_provider=next_item if queued else None,
+                          advance=advance if queued else None,
+                          item_duration=item_duration if queued else None)
         try:
             await src.start()
         except Exception as e:
@@ -1247,9 +1285,13 @@ class OpenZone:
                    max(STREAM_COOLDOWN_S, observed + STREAM_POLL_S))
 
     def _crossfade_max(self) -> float:
-        """Ceiling advertised to the UI. The overlap actually granted is
-        decided per seam against measured headroom (open-zone.md §4.1a)."""
-        return max(0.0, self._source_delay_s - _src.XFADE_GUARD_S)
+        """Ceiling advertised to the UI: the write head runs ``delay`` ahead of
+        the play point and the furthest reader ``delay - STREAM_AHEAD_S``
+        behind it, and a successor decoded ahead spends none of the gap
+        resolving. Still decided per seam against measured headroom
+        (open-zone.md §4.1a)."""
+        return max(0.0, 2 * self._source_delay_s - STREAM_AHEAD_S
+                   - _src.XFADE_READER_MARGIN_S - _src.XFADE_GUARD_S)
 
     async def start_session(self, player_ids: Optional[List[str]] = None,
                             group_id: str = "", duration_s: int = 0,
@@ -2177,8 +2219,10 @@ class OpenZone:
         """Keep ``_art_now`` on the cover of the item the zone is *hearing*.
 
         The queue index moves when the decoder opens an item, a delay line
-        ahead of the speakers, so a change is held for the group's lag before
-        it is shown. The first cover is not held: nothing is on screen yet."""
+        ahead of the speakers, so a change is held until the item's first
+        sample is heard: its timeline origin plus the group's lag. A skip
+        splices nearer the readers than a seam does, so a fixed hold would
+        be seconds late. The first cover is not held: nothing is on screen."""
         shown = None
         try:
             async with httpx.AsyncClient(timeout=10.0,
@@ -2190,8 +2234,7 @@ class OpenZone:
                         key = (np_.get("index"), url)
                         if url and key != shown:
                             if shown is not None:
-                                await asyncio.sleep(
-                                    self._target_lag or self._source.delay_s)
+                                await asyncio.sleep(self._until_heard())
                             got = await self._fetch_art(http, url)
                             if got is not None:
                                 self._art_now = (key, *got)
@@ -2201,6 +2244,17 @@ class OpenZone:
                     await asyncio.sleep(LIVE_ART_POLL_S)
         except asyncio.CancelledError:
             pass
+
+    def _until_heard(self) -> float:
+        """Seconds until the current item's first sample reaches the room."""
+        lag = self._target_lag or self._source.delay_s
+        try:
+            origin = self._source.item_origin_s()
+        except Exception:
+            origin = None
+        if origin is None:
+            return lag
+        return max(0.0, self._epoch + origin + lag - time.monotonic())
 
     @staticmethod
     async def _fetch_art(http, url: str) -> Optional[tuple]:
