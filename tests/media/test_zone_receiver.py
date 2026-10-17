@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import socket
 import struct
 import tempfile
@@ -27,7 +28,8 @@ import websockets
 from harness import Checker
 
 from modules.media import cast_sync
-from modules.media.cast_sync import OpenZone, RATE, CHANNELS, WS_PCM
+from modules.media.cast_sync import (OpenZone, RATE, CHANNELS, WS_PCM,
+                                     _auth_mac, _pair_code)
 
 APP = "ZMMTEST1"
 START_LEAD = 0.25
@@ -66,12 +68,38 @@ class FakeReceiver:
         self.next_frame = 0
         self.underruns = 0
         self.flushes = 0
+        self.stops = 0
+        self.volume = None
+        self.registered = None
+        self.paired = None
+        self.errors: list = []
+        self.sent: list = []          # every JSON message this client sent
+        self.key = secrets.token_hex(32)
+        self.cid = None
         self.closed = False
         self._tasks: list = []
 
     def ctx(self, t: float = None) -> float:
         t = time.monotonic() if t is None else t
         return (t - self.t0) * (1.0 + self.ppm * 1e-6)
+
+    async def _connect(self) -> None:
+        self.ws = await websockets.connect(f"ws://127.0.0.1:{self.port}/ws",
+                                           max_size=None)
+        self._tasks = [asyncio.create_task(self._recv()),
+                       asyncio.create_task(self._report())]
+
+    async def send(self, obj: dict) -> None:
+        self.sent.append(obj)
+        await self.ws.send(json.dumps(obj))
+
+    async def register(self, cid: str, name: str) -> None:
+        """Standalone: join on its own, as /receiver does in a browser."""
+        self.cid = cid
+        if self.ws is None:
+            await self._connect()
+        await self.send({"type": "register", "id": cid, "name": name,
+                         "ua": "fake"})
 
     async def on_start(self, payload: dict) -> None:
         if (payload["sid"], payload["load"]) == (self.sid, self.load) \
@@ -80,10 +108,7 @@ class FakeReceiver:
         self.sid, self.load = payload["sid"], payload["load"]
         self.reset()
         if self.ws is None:
-            self.ws = await websockets.connect(f"ws://127.0.0.1:{self.port}/ws",
-                                               max_size=None)
-            self._tasks = [asyncio.create_task(self._recv()),
-                           asyncio.create_task(self._report())]
+            await self._connect()
         await self.ws.send(json.dumps({"type": "hello", "sid": self.sid,
                                        "load": self.load}))
 
@@ -100,10 +125,31 @@ class FakeReceiver:
                 if d["type"] == "flush":
                     self._flush(d["frame"])
                 elif d["type"] == "start":
-                    self.load = d["load"]
+                    self.sid, self.load = d["sid"], d["load"]
                     self.reset()
                     await self.ws.send(json.dumps(
                         {"type": "hello", "sid": self.sid, "load": self.load}))
+                elif d["type"] == "stop":
+                    self.reset()
+                    self.sid = None
+                    self.stops += 1
+                elif d["type"] == "volume":
+                    self.volume = (d["level"], d["muted"])
+                elif d["type"] == "registered":
+                    self.registered = d
+                    self.paired = d["paired"]
+                elif d["type"] == "challenge":
+                    await self.send({"type": "auth", "mac": _auth_mac(
+                        self.key, self.cid, d["nonce"])})
+                elif d["type"] == "enrol":
+                    await self.send({"type": "enrol", "key": self.key})
+                elif d["type"] == "paired":
+                    self.paired = True
+                elif d["type"] == "forgotten":
+                    self.paired = False
+                    self.key = secrets.token_hex(32)
+                elif d["type"] == "error":
+                    self.errors.append(d["error"])
         except Exception:
             pass
 
@@ -197,7 +243,9 @@ class _Provider:
 
 class _Rig:
     def __init__(self, tmp: str, ppm: dict, connect: bool = True,
-                 source_delay_s: float = 1.5):
+                 source_delay_s: float = 1.5, clients: dict = None):
+        """``ppm`` are Cast-launched receivers, ``clients`` standalone ones
+        that register themselves; both keyed by a short name."""
         self.port = _free_port()
         self.prov = _Provider(list(ppm))
         z = OpenZone(self.prov, {
@@ -207,9 +255,15 @@ class _Rig:
             "groups_file": f"{tmp}/g.json", "model_file": f"{tmp}/m.json",
             "policy_file": f"{tmp}/p.json", "last_file": f"{tmp}/l.json",
             "trim_graph_file": f"{tmp}/tg.json",
+            "receivers_file": f"{tmp}/rx.json",
         })
         self.z = z
+        self.tmp = tmp
         self.rx = {i: FakeReceiver(self.port, p) for i, p in ppm.items()}
+        self.pids = {i: f"cast:{i}" for i in ppm}
+        for i, p in (clients or {}).items():
+            self.rx[i] = FakeReceiver(self.port, p)
+            self.pids[i] = f"receiver:{self.cid(i)}"
         self.starts: list = []
         self.loaded: list = []
         self.connect = connect
@@ -240,12 +294,30 @@ class _Rig:
                 break
             except OSError:
                 await asyncio.sleep(0.05)
-        return await self.z.start_session([f"cast:{i}" for i in self.rx],
+        for i in self.rx:
+            if self.pids[i].startswith("receiver:") and i not in self.offline:
+                await self.register(i)
+        return await self.z.start_session(list(self.pids.values()),
                                           media=media)
+
+    offline: set = set()
+
+    @staticmethod
+    def cid(i) -> str:
+        return f"client-{i}-0123456789"
+
+    async def register(self, i, pair: bool = True) -> None:
+        r = self.rx[i]
+        r.registered = None
+        await r.register(self.cid(i), f"Tablet {i}")
+        await self.until(lambda: r.registered is not None, 5.0)
+        if pair and not r.paired:
+            await self.z.pair_receiver(self.cid(i), _pair_code(r.key))
+            await self.until(lambda: r.paired, 3.0)
 
     def stream(self, i):
         return next(s for s in self.z._streams.values()
-                    if s.player_id == f"cast:{i}")
+                    if s.player_id == self.pids[i])
 
     def timeline_at(self, i, t: float):
         """Timeline sample device ``i`` is outputting at server time t, from
@@ -374,6 +446,254 @@ def _tight(c: Checker, tmp: str) -> None:
     asyncio.run(go())
 
 
+def _clients(c: Checker, tmp: str) -> None:
+    c.section("clients that join on their own play in the same zone as Cast")
+
+    async def go():
+        rig = _Rig(tmp, {"a": +30.0}, clients={"t": -25.0, "u": +5.0})
+        res = await rig.start()
+        c.check("a zone of one Cast receiver and two clients starts",
+                res.get("success"), res)
+        await rig.until(lambda: rig.z._target_lag is not None
+                        and all(s.acquired for s in rig.z._streams.values()), 30.0)
+        c.check("all three are acquired",
+                all(s.acquired for s in rig.z._streams.values()),
+                [(s.name, s.transport, s.acquired) for s in rig.z._streams.values()])
+        c.check("the clients were started on their own sockets, not Cast",
+                {u for u, _ in rig.starts} == {"a"}, rig.starts)
+        await asyncio.sleep(8.0)
+        worst = max([_spread_ms(rig, ("a", "t", "u")) for _ in range(3)])
+        c.check("all three stay within 2 ms of each other", worst < 2.0, worst)
+        names = {r["name"] for r in rig.z.receivers()}
+        c.check("the clients are listed by the names they gave",
+                {"Tablet t", "Tablet u"} <= names, names)
+        saved = json.load(open(f"{tmp}/rx.json"))
+        c.check("…and remembered under the ids they generated",
+                rig.cid("t") in saved and rig.cid("u") in saved, list(saved))
+
+        c.check("a client is sent its volume when it registers",
+                rig.rx["u"].volume == (1.0, False), rig.rx["u"].volume)
+        await rig.z.set_receiver_volume(rig.cid("t"), level=0.4)
+        c.check("a volume change reaches the client",
+                await rig.until(lambda: rig.rx["t"].volume == (0.4, False), 3.0),
+                rig.rx["t"].volume)
+
+        before = rig.stream("t").reloads
+        await rig.rx["t"].drop()
+        await rig.until(lambda: rig.stream("t").parked_since is not None, 3.0)
+        c.check("a client that disconnects is parked at once",
+                rig.stream("t").parked_since is not None)
+        t0 = time.monotonic()
+        rig.rx["t"].volume = None
+        await rig.register("t")
+        back = await rig.until(lambda: rig.stream("t").parked_since is None
+                               and rig.stream("t").connected, 10.0)
+        c.check("registering again rejoins it promptly, not on the 30 s probe",
+                back and time.monotonic() - t0 < 5.0, time.monotonic() - t0)
+        c.check("…and its volume is restored",
+                await rig.until(lambda: rig.rx["t"].volume == (0.4, False), 3.0),
+                rig.rx["t"].volume)
+        await rig.until(lambda: rig.stream("t").acquired, 20.0)
+        await asyncio.sleep(6.0)
+        worst = max([_spread_ms(rig, ("a", "t", "u")) for _ in range(3)])
+        c.check("…back in step with the others", worst < 3.0, worst)
+        c.check("…without charging a reload to the re-align budget",
+                rig.stream("t").reloads_since_align == 0,
+                (rig.stream("t").reloads, before))
+
+        await rig.z.stop_session()
+        await rig.until(lambda: rig.rx["u"].stops > 0, 3.0)
+        c.check("stopping the zone sends clients back to idle",
+                rig.rx["u"].stops == 1 and rig.rx["u"].sid is None, rig.rx["u"].stops)
+        c.check("…still connected, ready for the next zone",
+                rig.cid("u") in rig.z._client_ws)
+        await rig.stop()
+    asyncio.run(go())
+
+
+def _client_late(c: Checker, tmp: str) -> None:
+    c.section("a client offline when the zone starts joins when it connects")
+
+    async def go():
+        rig = _Rig(tmp, {"a": 0.0}, clients={"v": +10.0})
+        rig.offline = {"v"}
+        await rig.start()
+        await rig.until(lambda: rig.stream("v").parked_since is not None, 5.0)
+        c.check("it is parked, not waited for",
+                rig.stream("v").parked_since is not None)
+        await rig.until(lambda: rig.stream("a").acquired, 30.0)
+        c.check("the rest of the zone plays on", rig.stream("a").acquired)
+        await rig.register("v")
+        ok = await rig.until(lambda: rig.stream("v").acquired, 25.0)
+        c.check("connecting later brings it into the zone", ok,
+                rig.stream("v").stats)
+        await asyncio.sleep(5.0)
+        c.check("…in step", _spread_ms(rig, ("a", "v")) < 3.0,
+                _spread_ms(rig, ("a", "v")))
+        await rig.stop()
+    asyncio.run(go())
+
+
+def _provider(c: Checker, tmp: str) -> None:
+    c.section("the controller sees clients as players a zone can drive")
+
+    async def go():
+        from modules.media.players.receiver import ReceiverPlayerProvider
+        rig = _Rig(tmp, {}, clients={"w": 0.0})
+        rig.z.start()
+        await asyncio.sleep(0.3)
+        prov = ReceiverPlayerProvider(rig.z)
+        c.check("a client is a zone transport", prov.zone_transport)
+        await rig.register("w")
+        players = await prov.list_players()
+        mine = [p for p in players if p.player_id == rig.pids["w"]]
+        c.check("a connected client is an available player",
+                len(mine) == 1 and mine[0].available and mine[0].name == "Tablet w",
+                [p.to_dict() for p in players])
+        await rig.rx["w"].drop()
+        await rig.until(lambda: rig.cid("w") not in rig.z._client_ws, 3.0)
+        st = await prov.get_state(rig.pids["w"])
+        c.check("a disconnected one stays listed, unavailable",
+                st is not None and not st.available, st)
+        err = None
+        try:
+            await prov.play_url(rig.pids["w"], None)
+        except RuntimeError as e:
+            err = str(e)
+        c.check("it refuses to play outside a zone, saying why",
+                err and "zone" in err, err)
+        await rig.register("w")
+        first = rig.rx["w"]
+        second = FakeReceiver(rig.port, 0.0)
+        second.key = first.key        # the same device: a second tab
+        got = []
+
+        async def watch_first():
+            try:
+                async for m in first.ws:
+                    if isinstance(m, str):
+                        got.append(json.loads(m)["type"])
+            except Exception:
+                pass
+        for t in first._tasks:
+            t.cancel()
+        watcher = asyncio.create_task(watch_first())
+        await second.register(rig.cid("w"), "Tablet w")
+        await rig.until(lambda: "replaced" in got, 3.0)
+        c.check("a second socket for one client takes over and tells the first",
+                "replaced" in got
+                and rig.z._client_ws.get(rig.cid("w")) is not None, got)
+        watcher.cancel()
+        await second.close()
+        bad = FakeReceiver(rig.port, 0.0)
+        await bad.register("x", "short id")
+        await asyncio.sleep(0.3)
+        c.check("an id that is not one a client generated is refused",
+                "x" not in rig.z._client_ws and bad.registered is None)
+        await bad.close()
+        await rig.rx["w"].close()
+        rig.z.stop()
+        await asyncio.sleep(0.3)
+    asyncio.run(go())
+
+
+def _pairing(c: Checker, tmp: str) -> None:
+    c.section("a client is admitted by pairing, and proves it on every connect")
+
+    async def go():
+        from modules.media.players.receiver import ReceiverPlayerProvider
+        rig = _Rig(tmp, {}, clients={"p": 0.0})
+        rig.z.start()
+        await asyncio.sleep(0.3)
+        prov = ReceiverPlayerProvider(rig.z)
+        # As the controller resolves it in the app.
+        rig.z.set_provider_resolver(
+            lambda pid: prov if pid.startswith("receiver:") else None)
+        r, cid = rig.rx["p"], rig.cid("p")
+        await rig.register("p", pair=False)
+        c.check("a new client enrols and waits to be paired",
+                r.registered and r.paired is False, r.registered)
+        c.check("…it is not offered as a player",
+                not [p for p in await prov.list_players()
+                     if p.player_id == rig.pids["p"]])
+        c.check("…nor accepted into a zone", not rig.z._zone_capable(rig.pids["p"])
+                and rig.z.save_group("Kitchen", [rig.pids["p"]]).get("success") is not True)
+        status = json.dumps(rig.z.status())
+        c.check("the key appears nowhere in the status",
+                r.key not in status and "key" not in json.dumps(rig.z.receivers()))
+        import os, stat
+        mode = stat.S_IMODE(os.stat(f"{tmp}/rx.json").st_mode)
+        c.check("the registry holding it is owner-only on disk", mode == 0o600, oct(mode))
+
+        res = await rig.z.pair_receiver(cid, "000000" if _pair_code(r.key) != "000000"
+                                        else "111111")
+        c.check("a wrong code is refused, saying how many tries are left",
+                not res["success"] and res.get("left") == 4, res)
+        res = await rig.z.pair_receiver(cid, _pair_code(r.key)[:3] + " "
+                                        + _pair_code(r.key)[3:])
+        c.check("the code it shows pairs it (spaces allowed)", res["success"], res)
+        c.check("…and the client is told",
+                await rig.until(lambda: r.paired is True, 3.0))
+        c.check("…and is now a player",
+                [p.player_id for p in await prov.list_players()] == [rig.pids["p"]])
+        c.check("…a zone can drive", rig.z._zone_capable(rig.pids["p"]))
+
+        await r.drop()
+        await rig.until(lambda: cid not in rig.z._client_ws, 3.0)
+        await rig.register("p", pair=False)
+        c.check("reconnecting answers a challenge and comes back paired",
+                r.paired is True and any(m["type"] == "auth" for m in r.sent), r.sent)
+        c.check("…the key went over the wire once, at enrolment, never again",
+                sum(1 for m in r.sent if "key" in m) == 1,
+                [m["type"] for m in r.sent])
+
+        thief = FakeReceiver(rig.port, 0.0)      # knows the id, not the key
+        await thief.register(cid, "Kitchen tablet")
+        await asyncio.sleep(0.5)
+        c.check("a client claiming a paired id without its key is refused",
+                "authentication failed" in thief.errors, thief.errors)
+        c.check("…and cannot evict the real one",
+                rig.z._client_ws.get(cid) is not None and r.ws is not None
+                and rig.z._client_ws.get(cid) is not None)
+        await thief.close()
+
+        res = await rig.z.start_session([rig.pids["p"]], media={
+            "items": [{"source_id": "a", "duration_ms": 600_000}],
+            "media_type": "x"})
+        await rig.until(lambda: rig.stream("p").connected, 10.0)
+        st = rig.stream("p")
+        other = FakeReceiver(rig.port, 0.0)
+        await other._connect()
+        await other.send({"type": "hello", "sid": st.sid, "load": st.ws_load})
+        await asyncio.sleep(0.5)
+        c.check("a socket that has not proved it is the client cannot take its stream",
+                "unknown sid" in other.errors and st.ws is not None
+                and st.ws is not getattr(other, "ws", None), other.errors)
+        await other.close()
+        await rig.z.stop_session()
+
+        old_code = _pair_code(r.key)
+        ok = await rig.z.forget_receiver(cid)
+        c.check("forgetting it tells the client and drops it",
+                ok and await rig.until(lambda: r.paired is False, 3.0)
+                and cid not in rig.z._clients)
+        await asyncio.sleep(0.3)
+        r.ws = None
+        await rig.register("p", pair=False)
+        c.check("…it can only come back by enrolling again, with a new code",
+                r.paired is False and _pair_code(r.key) != old_code
+                and rig.z._clients[cid]["key"] == r.key)
+        for _ in range(5):
+            res = await rig.z.pair_receiver(cid, "999999" if _pair_code(r.key) != "999999"
+                                            else "888888")
+        c.check("five wrong codes drop the enrolment",
+                not res["success"] and cid not in rig.z._clients, res)
+        await r.close()
+        rig.z.stop()
+        await asyncio.sleep(0.3)
+    asyncio.run(go())
+
+
 def _fallback(c: Checker, tmp: str) -> None:
     c.section("a device whose receiver never answers falls back alone")
 
@@ -472,6 +792,10 @@ def run() -> Checker:
         _aligned(c, tmp)
         _test_signal(c, tmp)
         _tight(c, tmp)
+        _clients(c, tmp)
+        _client_late(c, tmp)
+        _provider(c, tmp)
+        _pairing(c, tmp)
         _fallback(c, tmp)
         _dropped(c, tmp)
         _skip(c, tmp)

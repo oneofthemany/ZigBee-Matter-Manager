@@ -182,6 +182,16 @@ the zone its alignment. A queue therefore shows the *set* on the speakers,
 while `now_playing` in the status payload tracks the individual item for the
 app, where it is free.
 
+### Phones, tablets and browsers as receivers
+
+Open `http://<hub-lan>:8010/receiver` on any device on the network (the zone
+builder shows the exact link) and tap **Join**. The device appears as a
+speaker — `receiver:<id>` — that can be added to a zone next to Cast
+speakers; its id is generated once and kept, its name is editable. It keeps
+its screen awake while joined, reconnects by itself, and rejoins a running
+zone the moment it is back. Keep the page in front: a backgrounded tab may be
+suspended by the browser. See open-zone.md §4.4b.
+
 ### Device launch flow
 
 1. `CastPlayerProvider._get_cast()` connects to the device (pychromecast).

@@ -9,6 +9,10 @@
   server's — and reports which stream frame is leaving the DAC at what server
   time, the sensor the default receiver can only approximate to ~10 ms.
 
+  Off a Cast device (/receiver on the same listener) it is a client of its
+  own: it keeps an id it generated, registers it with the zone engine, and
+  waits to be added to a zone (docs/open-zone.md §4.4b).
+
   It also draws the now-playing screen, stamped with the server-clock instant
   each item is heard (docs/open-zone.md §10.7). Served by the ZMM sync
   listener over plain HTTP so the ws:// socket is same-origin; see
@@ -17,8 +21,8 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>ZMM Sync Receiver</title>
-  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>OpenZone Receiver</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; background: #000; color: #fff;
@@ -47,6 +51,8 @@
       -webkit-box-orient: vertical; }
     #artist { font-size: 3.4vh; opacity: .72; margin-top: 1.4vh;
       overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    /* A sentence for whoever set the device up, not an artist name: wrap it. */
+    #artist.note { white-space: normal; overflow: visible; }
     #pos { margin-top: 3.4vh; display: none; }
     #bar { height: .7vh; border-radius: .7vh; background: rgba(255,255,255,.22);
       overflow: hidden; }
@@ -63,6 +69,30 @@
       font-size: 1.8vh; opacity: .42; font-variant-numeric: tabular-nums; }
     #pulse { width: 1.4vh; height: 1.4vh; border-radius: 50%; background: #2a6;
       opacity: .25; transition: opacity .1s; flex: 0 0 auto; }
+
+    /* Phones and tablets held upright: art above text, sized to the width. */
+    @media (orientation: portrait) {
+      #wrap { flex-direction: column; gap: 4vh; padding: 8vh 6vw; }
+      #art { width: min(46vh, 84vw); height: min(46vh, 84vw); }
+      #text { max-width: 88vw; width: 100%; text-align: center; }
+      #title { font-size: min(6vh, 8vw); }
+      #artist { font-size: min(3.4vh, 4.6vw); }
+      #foot { font-size: min(1.8vh, 3vw); padding: 0 4vw; text-align: center; }
+    }
+
+    /* Standalone join screen: a browser plays audio only after a tap. */
+    #join { position: fixed; inset: 0; display: none; align-items: center;
+      justify-content: center; background: rgba(0,0,0,.86); z-index: 10;
+      padding: 16px; }
+    #join .card { width: 100%; max-width: 420px; background: #161616;
+      border-radius: 14px; padding: 22px; text-align: center; }
+    #join h1 { font-size: 20px; margin-bottom: 8px; }
+    #join p { font-size: 14px; opacity: .7; margin-bottom: 16px; line-height: 1.4; }
+    #join input { width: 100%; font-size: 16px; padding: 10px 12px;
+      border-radius: 8px; border: 1px solid #333; background: #0b0b0b;
+      color: #fff; margin-bottom: 14px; }
+    #join button { width: 100%; font-size: 16px; padding: 12px; border: 0;
+      border-radius: 8px; background: #2a6; color: #fff; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -81,6 +111,13 @@
     </div>
   </div>
   <div id="foot"><div id="pulse"></div><div id="detail"></div></div>
+  <div id="join"><div class="card">
+    <h1>Join OpenZone</h1>
+    <p>This device becomes a speaker ZigBee Manager can add to a zone. Keep
+      this page open and the screen on while it plays.</p>
+    <input id="joinName" maxlength="60" aria-label="Speaker name">
+    <button id="joinBtn">Join</button>
+  </div></div>
 
   <script>
     const NAMESPACE = 'urn:x-cast:zmm.sync';
@@ -122,12 +159,26 @@
     let nextFrame = 0;
     let played = 0, underruns = 0, flushes = 0, startedAt = 0;
 
+    let out = null;              // gain node: the client's own volume
+    let volume = 1, muted = false;
+
     function makeContext() {
+      let c;
       try {
-        return new AudioContext({ sampleRate: rate, latencyHint: 'playback' });
+        c = new AudioContext({ sampleRate: rate, latencyHint: 'playback' });
       } catch (e) {
-        return new (window.AudioContext || window.webkitAudioContext)();
+        c = new (window.AudioContext || window.webkitAudioContext)();
       }
+      out = c.createGain();
+      out.gain.value = muted ? 0 : volume;
+      out.connect(c.destination);
+      return c;
+    }
+
+    function onVolume(msg) {
+      volume = Math.max(0, Math.min(1, Number(msg.level)));
+      muted = !!msg.muted;
+      if (out) out.gain.setTargetAtTime(muted ? 0 : volume, ctx.currentTime, 0.05);
     }
 
     function resetAudio() {
@@ -161,7 +212,7 @@
       }
       const src = ctx.createBufferSource();
       src.buffer = ab;
-      src.connect(ctx.destination);
+      src.connect(out);
       src.start(nextTime);
       sched.push({ frame, n, t0: nextTime, src });
       nextTime += n / ab.sampleRate;
@@ -226,12 +277,16 @@
     }
     setInterval(report, REPORT_MS);
 
+    let footNote = '';           // a standing warning for whoever set this up
+
     function heartbeat() {
+      const parts = [];
       if (estOffset !== null) {
-        $('detail').textContent =
-          `rtt ${(lastRtt * 1000).toFixed(1)} ms · played ${played}` +
-          ` · underruns ${underruns}`;
+        parts.push(`rtt ${(lastRtt * 1000).toFixed(1)} ms · played ${played}` +
+                   ` · underruns ${underruns}`);
       }
+      if (footNote) parts.push(footNote);
+      if (parts.length) $('detail').textContent = parts.join(' · ');
       if (ws && ws.readyState === 1 && sid) {
         ws.send(JSON.stringify({
           type: 'stats',
@@ -247,20 +302,19 @@
 
     // A start names a load: a new one drops what this device holds and
     // restarts its media time, which is what a LOAD does on the default
-    // receiver. It arrives over Cast first and over the socket after.
+    // receiver. On Cast it arrives over Cast first and the socket after;
+    // standalone, only ever on the socket. Any open socket carries the hello:
+    // the server binds the stream by sid, not by connection.
     function onStart(d) {
-      if (d.sid === sid && d.load === load && ws && ws.readyState === 1) return;
-      const sameSocket = d.sid === sid && ws && ws.readyState === 1;
+      const open = ws && ws.readyState === 1;
+      if (d.sid === sid && d.load === load && open) return;
       sid = d.sid;
       load = d.load || 0;
       if (!ctx) ctx = makeContext();
       if (ctx.state === 'suspended') ctx.resume();
       resetAudio();
-      if (sameSocket) hello();
-      else {
-        if (ws) try { ws.onclose = null; ws.close(); } catch (e) {}
-        connect();
-      }
+      if (open) hello();
+      else connect();
     }
 
     function hello() {
@@ -274,7 +328,8 @@
         // Only while there is nothing better on screen: a reconnect must not
         // overwrite the item the speakers are still playing.
         if (!now) $('artist').textContent = 'Connected — syncing clock…';
-        hello();
+        if (STANDALONE) register();
+        if (sid) hello();
         let n = 0;
         const ping = () => {
           if (!ws || ws.readyState !== 1) return;
@@ -290,6 +345,28 @@
         if (msg.type === 'pong') onPong(msg);
         else if (msg.type === 'flush') onFlush(msg.frame);
         else if (msg.type === 'start') onStart(msg);
+        else if (msg.type === 'volume') onVolume(msg);
+        else if (msg.type === 'stop') { resetAudio(); sid = null; idleText(); }
+        else if (msg.type === 'challenge') onChallenge(msg.nonce);
+        else if (msg.type === 'enrol') ws.send(JSON.stringify({ type: 'enrol', key: clientKey }));
+        else if (msg.type === 'registered') {
+          clientName = msg.name;
+          paired = !!msg.paired;
+          if (paired) idleText(); else pairingText();
+        }
+        else if (msg.type === 'paired') { paired = true; idleText(); }
+        else if (msg.type === 'forgotten') {
+          // A new code needs a new key; the server has dropped the old one.
+          paired = false;
+          newKey();
+        }
+        else if (msg.type === 'error' && msg.error === 'authentication failed') {
+          // This id belongs to a key we do not hold — enrol as a new device
+          // rather than fight for it; it pairs like any other.
+          clientId = newId(); store('openzone.id', clientId);
+          newKey();
+        }
+        else if (msg.type === 'replaced') replaced = true;
         else if (msg.type === 'now') onNow(msg);
         else if (msg.type === 'hello_ack') {
           rate = msg.rate; channels = msg.channels;
@@ -301,10 +378,213 @@
         }
       };
       ws.onclose = () => {
-        // The server notices a closed socket at once and restarts this
-        // device with a fresh load, over Cast; nothing is replayed here.
+        // The server notices a closed socket at once: on Cast it restarts
+        // this device with a fresh load; standalone, nothing else can, so
+        // the page reconnects and registers again.
         resetAudio();
+        if (replaced) {
+          sid = null; now = null;
+          $('title').textContent = clientName || 'OpenZone';
+          $('artist').textContent = 'Open in another tab or window — playing there instead';
+          return;
+        }
         if (!now) $('artist').textContent = 'Disconnected — waiting for the zone…';
+        if (STANDALONE) setTimeout(connect, 2000);
+      };
+    }
+
+    // Standalone: a client of its own, off any Cast device (§4.4b).
+    const ON_CAST = /CrKey/.test(navigator.userAgent);
+    const STANDALONE = !ON_CAST;
+    let clientId = null, clientName = '';
+    let replaced = false;        // this id opened elsewhere: do not fight it
+
+    function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    function recall(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+    // Not crypto.randomUUID: it needs a secure context, and this page is
+    // served over plain http on the LAN.
+    function newId() {
+      const b = new Uint8Array(16);
+      crypto.getRandomValues(b);
+      return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    }
+
+    function defaultName() {
+      const ua = navigator.userAgent;
+      const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS'
+        : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows'
+        : /Linux/.test(ua) ? 'Linux' : 'device';
+      return `Browser on ${os}`;
+    }
+
+    function register() {
+      ws.send(JSON.stringify({ type: 'register', id: clientId,
+                               name: clientName, ua: navigator.userAgent }));
+    }
+
+    // Pairing (docs/open-zone.md §4.4c). crypto.subtle needs a secure
+    // context this plain-http page does not have, so SHA-256 and HMAC are
+    // here; the server checks them against Python's own.
+    const SHA_K = new Uint32Array([
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+
+    function sha256(bytes) {
+      const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+      const len = bytes.length;
+      const n = ((len + 9 + 63) >> 6) << 6;
+      const m = new Uint8Array(n);
+      m.set(bytes);
+      m[len] = 0x80;
+      const dv = new DataView(m.buffer);
+      dv.setUint32(n - 8, Math.floor(len / 0x20000000));
+      dv.setUint32(n - 4, (len * 8) >>> 0);
+      const w = new Uint32Array(64);
+      const rotr = (x, k) => (x >>> k) | (x << (32 - k));
+      for (let i = 0; i < n; i += 64) {
+        for (let t = 0; t < 16; t++) w[t] = dv.getUint32(i + t * 4);
+        for (let t = 16; t < 64; t++) {
+          const s0 = rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >>> 3);
+          const s1 = rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >>> 10);
+          w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0;
+        }
+        let [a, b, c, d, e, f, g, h] = H;
+        for (let t = 0; t < 64; t++) {
+          const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25))
+                      + ((e & f) ^ (~e & g)) + SHA_K[t] + w[t]) | 0;
+          const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22))
+                      + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+          h = g; g = f; f = e; e = (d + t1) | 0;
+          d = c; c = b; b = a; a = (t1 + t2) | 0;
+        }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d;
+        H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+      }
+      const out = new Uint8Array(32);
+      const ov = new DataView(out.buffer);
+      for (let i = 0; i < 8; i++) ov.setUint32(i * 4, H[i]);
+      return out;
+    }
+
+    function hmacSha256(key, msg) {
+      const k = new Uint8Array(64);
+      k.set(key.length > 64 ? sha256(key) : key);
+      const inner = new Uint8Array(64 + msg.length);
+      const outer = new Uint8Array(64 + 32);
+      for (let i = 0; i < 64; i++) { inner[i] = k[i] ^ 0x36; outer[i] = k[i] ^ 0x5c; }
+      inner.set(msg, 64);
+      outer.set(sha256(inner), 64);
+      return sha256(outer);
+    }
+
+    const utf8 = str => new TextEncoder().encode(str);
+    const toHex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    const fromHex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+
+    let clientKey = null;        // hex, 32 bytes; never sent again after enrolment
+    let paired = false;
+
+    function pairCode() {
+      const m = hmacSha256(fromHex(clientKey), utf8('openzone-pair'));
+      const n = ((m[0] << 24) | (m[1] << 16) | (m[2] << 8) | m[3]) >>> 0;
+      return String(n % 1000000).padStart(6, '0');
+    }
+
+    function newKey() {
+      clientKey = newId() + newId();
+      store('openzone.key', clientKey);
+    }
+
+    function onChallenge(nonce) {
+      const mac = hmacSha256(fromHex(clientKey),
+                             utf8(`openzone-auth|${clientId}|${nonce}`));
+      ws.send(JSON.stringify({ type: 'auth', mac: toHex(mac) }));
+    }
+
+    function pairingText() {
+      const c = pairCode();
+      $('title').textContent = `${c.slice(0, 3)} ${c.slice(3)}`;
+      $('artist').style.display = '';
+      $('artist').classList.add('note');
+      $('artist').textContent = `Pair “${clientName}”: enter this code in ZigBee Manager → Media → OpenZone`;
+    }
+
+    function idleText() {
+      if (now || sid) return;
+      if (STANDALONE && clientKey && !paired) { pairingText(); return; }
+      $('title').textContent = clientName || 'OpenZone';
+      $('artist').style.display = '';
+      $('artist').classList.add('note');
+      $('artist').textContent = 'Ready — add this speaker to a zone in ZigBee Manager';
+    }
+
+    // Keep the screen on while joined. The Wake Lock API needs a secure
+    // context and this page is plain http on the LAN, so where it is missing
+    // a muted 16 px looping video does the same job — playing video holds the
+    // screen awake on mobile browsers. Started inside the Join tap, which is
+    // the gesture a browser requires before it will play.
+    const WAKE_WEBM = 'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAI6EU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggIk7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAzV0GNTGF2ZjYyLjEyLjEwM0SJiECvQAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYjGyUj/b4AVOpyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhDuaygDgkLCBELqBEJqBAlWwhFW5gQESVMNn/HNzoGPAgGfImkWjh0VOQ09ERVJEh41MYXZmNjIuMTIuMTAzc3PWY8CLY8WIxslI/2+AFTpnyKFFo4dFTkNPREVSRIeUTGF2YzYyLjI4LjEwMyBsaWJ2cHhnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjA0LjAwMDAwMDAwMAAfQ7Z1+eeBAKOjgQAAgBACAJ0BKhAAEAAARwiFhYiZhIgCAgAMDWAA/v+rUICjmYED6ACxAQABEBAAGAAwP/QMAAAA/v+rUICjmYEH0ACxAQABEBAAGAAwP/QMAAAA/v+rUICjmYELuACxAQABEBAAGAAwP/QMAAAA/v+rUIAcU7trkbuPs4EAt4r3gQHxggGm8IED';
+    let wakeVideo = null;
+
+    async function keepAwake() {
+      try {
+        if (window.isSecureContext && navigator.wakeLock) {
+          await navigator.wakeLock.request('screen');
+          return true;
+        }
+      } catch (e) {}
+      try {
+        if (!wakeVideo) {
+          wakeVideo = document.createElement('video');
+          wakeVideo.muted = true;
+          wakeVideo.loop = true;
+          wakeVideo.setAttribute('playsinline', '');
+          wakeVideo.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none';
+          wakeVideo.src = WAKE_WEBM;
+          document.body.appendChild(wakeVideo);
+        }
+        await wakeVideo.play();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // A lock or a paused video is released when the page is hidden; take it
+    // again on return. Re-playing is not a new gesture, which browsers allow
+    // for a muted video.
+    document.addEventListener('visibilitychange', () => {
+      if (STANDALONE && clientId && document.visibilityState === 'visible') keepAwake();
+    });
+
+    function startStandalone() {
+      clientId = recall('openzone.id');
+      if (!clientId) { clientId = newId(); store('openzone.id', clientId); }
+      clientName = recall('openzone.name') || defaultName();
+      clientKey = recall('openzone.key');
+      if (!clientKey || !/^[0-9a-f]{64}$/.test(clientKey)) newKey();
+      $('joinName').value = clientName;
+      $('join').style.display = 'flex';
+      $('joinBtn').onclick = () => {
+        clientName = $('joinName').value.trim() || defaultName();
+        store('openzone.name', clientName);
+        if (!ctx) ctx = makeContext();      // inside the tap: audio unlocks
+        if (ctx.state === 'suspended') ctx.resume();
+        $('join').style.display = 'none';
+        idleText();
+        keepAwake().then(ok => {
+          if (!ok) footNote = 'this browser may let the screen sleep — set its timeout to never';
+          heartbeat();
+        });
+        connect();
       };
     }
 
@@ -329,6 +609,7 @@
       now = msg;
       const title = msg.title || 'ZMM OpenZone';
       $('title').textContent = title;
+      $('artist').classList.remove('note');
       $('artist').textContent = msg.artist || '';
       $('artist').style.display = msg.artist ? '' : 'none';
       const art = msg.artwork || '';
@@ -362,18 +643,29 @@
     }
     setInterval(drawProgress, 500);
 
-    // Cast wiring
-    const context = cast.framework.CastReceiverContext.getInstance();
-    context.addCustomMessageListener(NAMESPACE, ev => {
-      const d = ev.data || {};
-      if (d.type === 'start') onStart(d);
-    });
+    // Cast wiring, on a Cast device only: the SDK is loaded there and nowhere
+    // else, so a browser client never reaches out to gstatic.
+    function startCast() {
+      const context = cast.framework.CastReceiverContext.getInstance();
+      context.addCustomMessageListener(NAMESPACE, ev => {
+        const d = ev.data || {};
+        if (d.type === 'start') onStart(d);
+      });
+      const options = new cast.framework.CastReceiverOptions();
+      // No CAF media session is used — without this the platform would kill
+      // the app as "idle" a few minutes in.
+      options.disableIdleTimeout = true;
+      context.start(options);
+    }
 
-    const options = new cast.framework.CastReceiverOptions();
-    // No CAF media session is used — without this the platform would kill the
-    // app as "idle" a few minutes in.
-    options.disableIdleTimeout = true;
-    context.start(options);
+    if (ON_CAST) {
+      const sdk = document.createElement('script');
+      sdk.src = 'https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js';
+      sdk.onload = startCast;
+      document.head.appendChild(sdk);
+    } else {
+      startStandalone();
+    }
   </script>
 </body>
 </html>

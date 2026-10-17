@@ -64,6 +64,10 @@ software can see — the speaker's own DSP and amplifier — set once by ear or
 by mic. A speaker that cannot run the page falls back to the default
 receiver on its own.
 
+The same page also works **without Cast**: open
+`http://<zmm-host>:8010/receiver` on a phone, tablet or computer and tap
+*Join* — no App ID or registration needed (docs/open-zone.md §4.4b).
+
 It also draws the **now-playing screen**: cover, title, artist, progress and
 the track's place in the queue. This is the only way to get per-song metadata
 on a zone's screens. Without an App ID a zone falls back to the built-in

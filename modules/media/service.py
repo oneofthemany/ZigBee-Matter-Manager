@@ -214,7 +214,13 @@ class MediaService:
                 # the queue/lyrics/favourite actions can all target one.
                 from modules.media.players.zone import ZonePlayerProvider
                 self.controller.add_player_provider(
-                    ZonePlayerProvider(self.cast_sync, self.start_zone))
+                    ZonePlayerProvider(self.cast_sync, self.start_zone,
+                                       self.controller._provider_for))
+                # Browsers and boxes that register on the zone's socket
+                # themselves rather than being launched by Cast.
+                from modules.media.players.receiver import ReceiverPlayerProvider
+                self.controller.add_player_provider(
+                    ReceiverPlayerProvider(self.cast_sync))
             except Exception as e:
                 logger.warning(f"OpenZone unavailable: {e}")
 

@@ -247,6 +247,20 @@ A **load** is the receiver's LOAD. A start message names one; the page drops eve
 
 **Fallback is per device.** A speaker whose page never says hello within `RECEIVER_CONNECT_MAX_S` is LOADed on the default receiver and stays there for the session. A zone can therefore mix the two transports, and each device is corrected through whichever sensor it has. `_cast_owner` counts both receivers as the zone's own, since a fallen-back device plays on the default one.
 
+#### 4.4b Clients That Join on Their Own
+
+Cast was only ever how a receiver got *launched*; nothing in the transport or the sensor depends on it. So the same page, opened anywhere off a Cast device (`http://<hub-lan>:8010/receiver`), is a client of its own: a phone, a tablet, a desktop browser, a box in a kiosk. It registers on the engine's socket, becomes the player `receiver:<id>`, and from there is a zone member like any other — same delay line, same per-device stream, same DAC-position sensor and ladder.
+
+**The id is the client's, and it never changes.** The page generates it once and keeps it; the name is a label the user can change and is never keyed on. Not `crypto.randomUUID`, which needs a secure context the plain-http LAN page does not have.
+
+**It is started on its own socket, and absence is its connection.** There is no Cast to launch it, so a zone starts it by sending the load down the socket it registered on, and a client that is not connected is parked, not waited for. A disconnect parks it at once — nothing can relaunch it — and registering again rejoins it straight away rather than on the 30 s park probe, against the zone's existing target, without charging the re-align budget. The page reconnects by itself.
+
+**One live socket per client, the newest.** A socket may be half-open after a phone sleeps, so the newer one wins; the old one is told `replaced` first and stops reconnecting, or two tabs on one device would evict each other forever.
+
+**The registry is the provider.** `ReceiverPlayerProvider` is the controller's view of the clients the engine holds: `zone_transport`, so the capability check admits them to zones; listed whether or not connected; refusing to play outside a zone; volume kept per client and applied by its page, so it survives reconnects. A zone's volume is fanned out to each member *through its own provider*, which is what lets a zone span ecosystems at all.
+
+**A screen that sleeps is a client that leaves.** A browser slows or suspends a page whose screen is off. The Wake Lock API needs a secure context, so where it is missing the page plays a muted 16 px looping video, started inside the Join tap, which holds the screen awake on mobile browsers; where even that fails it says so on the screen. Cast devices are unaffected: their screens are the platform's to keep awake.
+
 ### 5. Correction Domain
 
 A lossy codec quantises the *cutting points* of a stream to its frame size (AAC-LC 1024 samples ≈ 21.3 ms at 48 kHz; MP3 24 ms; Opus typically 20 ms; FLAC blocks ~85 ms). Any compressed-domain correction — frame drop, stream restart, seek — therefore moves the timeline in steps of one frame, one to two orders of magnitude larger than the ±2 ms budget. Frame boundaries between two independent streams need never coincide, however: only the audio *within* the frames must be simultaneous. Shifting the PCM by an exact sample count before encoding achieves arbitrary alignment while the encoder packages the shifted audio obliviously. This yields the invariant of §4 and the requirement for per-device encoder instances.

@@ -122,6 +122,8 @@ export function initMedia() {
     // Speaker-sync groups (group-builder sub-tab)
     window.mediaSyncCreate = syncCreateGroup;
     window.mediaSyncDelete = syncDeleteGroup;
+    window.mediaReceiverPair = receiverPair;
+    window.mediaReceiverForget = receiverForget;
     window.mediaSyncStart = syncStartGroup;
     window.mediaSyncStop = syncStopSession;
     window.mediaSyncDur = syncSetDuration;
@@ -309,6 +311,7 @@ function iconFor(p) {
     if (p.provider === 'local') return 'fas fa-mobile-screen';   // this browser
     if (p.provider === 'sonos') return 'fas fa-house-signal';
     if (p.provider === 'airplay') return 'fab fa-apple';
+    if (p.provider === 'receiver') return 'fas fa-tower-broadcast';   // OpenZone client
     return p.provider === 'cast' ? 'fab fa-chromecast' : 'fas fa-volume-up';
 }
 
@@ -353,6 +356,7 @@ const PROVIDER_TABS = [
     { id: 'wiim', label: 'WiiM' },
     { id: 'sonos', label: 'Sonos' },
     { id: 'airplay', label: 'AirPlay' },
+    { id: 'receiver', label: 'Receivers' },
     { id: 'zone', label: 'Zones' },
 ];
 
@@ -2194,6 +2198,8 @@ function _renderGroupProviderPills(ids) {
 let NATIVE_GROUP_PROVIDERS = {};
 // Ecosystems whose speakers have a device panel (WiiM), same source.
 let DEVICE_PANEL_PROVIDERS = {};
+// Ecosystems a zone can drive (Cast, OpenZone receivers), same source.
+let ZONE_PROVIDERS = {};
 
 function _readProviderCaps(data) {
     const caps = data?.providers || {};
@@ -2203,6 +2209,8 @@ function _readProviderCaps(data) {
             .map(([id, c]) => [id, c.label || id]));
     DEVICE_PANEL_PROVIDERS = Object.fromEntries(
         Object.entries(caps).filter(([, c]) => c.device_panel).map(([id]) => [id, true]));
+    ZONE_PROVIDERS = Object.fromEntries(
+        Object.entries(caps).filter(([, c]) => c.zone_transport).map(([id]) => [id, true]));
 }
 
 function renderNativeBuilder(provider) {
@@ -2543,7 +2551,8 @@ async function renderSyncPane() {
 
     const disabled = !_syncStatus || !!_syncStatus.error;
     const unregistered = !disabled && !_syncStatus.configured;
-    const casts = _players.filter(p => p.provider === 'cast' && !p.is_group);
+    // Whatever a zone can drive, not one ecosystem: the server says which.
+    const capable = _players.filter(p => ZONE_PROVIDERS[p.provider] && !p.is_group);
     const running = !disabled && _syncStatus.running;
 
     const banner = disabled
@@ -2625,20 +2634,22 @@ async function renderSyncPane() {
       <div class="card">
         <div class="card-body py-2">
           <div class="fw-semibold small mb-2"><i class="fas fa-plus-circle me-1"></i> New sync group</div>
-          ${casts.length < 2
-              ? '<div class="text-muted small">Needs at least two discovered Cast speakers.</div>'
+          ${capable.length < 2
+              ? '<div class="text-muted small">Needs at least two speakers a zone can drive — Cast speakers, or receivers joined below.</div>'
               : `
           <input type="text" class="form-control form-control-sm mb-2" id="syncGroupName"
                  placeholder="Group name, e.g. Downstairs">
-          ${casts.map(p => `
+          ${capable.map(p => `
             <div class="form-check">
               <input class="form-check-input sync-member" type="checkbox" value="${esc(p.player_id)}"
                      id="sm_${esc(p.player_id)}">
-              <label class="form-check-label small" for="sm_${esc(p.player_id)}">${esc(p.name)}</label>
+              <label class="form-check-label small text-break" for="sm_${esc(p.player_id)}">
+                <i class="${iconFor(p)} me-1 text-muted"></i>${esc(p.name)}${p.available ? '' : ' <span class="text-muted">(offline)</span>'}</label>
             </div>`).join('')}
           <button class="btn btn-sm btn-primary mt-2" onclick="window.mediaSyncCreate()">Create sync group</button>`}
         </div>
       </div>
+      ${_syncJoinHint()}
       </div>
       <div id="syncResultsPane">
         <div id="syncLabPicker"></div>
@@ -2661,6 +2672,68 @@ async function renderSyncPane() {
     _mountZoneScopes();
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(whileVisible(refreshSyncStats), 3000);
+}
+
+// Where another device joins as a receiver, and the pairing that admits it
+// (open-zone.md §4.4c). The URL is the hub's LAN address from the server: the
+// listener is LAN-only, never behind the tunnel.
+function _syncJoinHint() {
+    const url = (_syncStatus || {}).receiver_url;
+    if (!url) return '';
+    const rx = (_syncStatus || {}).receivers || [];
+    const waiting = rx.filter(r => !r.paired && r.connected);
+    const paired = rx.filter(r => r.paired);
+    const pendingRows = waiting.map(r => `
+          <div class="d-flex align-items-center gap-2 flex-wrap mt-2">
+            <span class="fw-semibold text-break flex-grow-1" style="min-width:8rem">${esc(r.name)}</span>
+            <input type="text" inputmode="numeric" maxlength="7" autocomplete="off"
+                   class="form-control form-control-sm" style="width:7.5rem"
+                   id="rxcode-${esc(r.id)}" placeholder="Code" aria-label="Code shown on ${esc(r.name)}">
+            <button class="btn btn-sm btn-primary" onclick="window.mediaReceiverPair('${esc(r.id)}')">Pair</button>
+          </div>`).join('');
+    const pairedRows = paired.map(r => `
+          <div class="d-flex align-items-center gap-2 mt-1">
+            <i class="fas fa-tower-broadcast text-muted"></i>
+            <span class="text-break flex-grow-1">${esc(r.name)}${r.connected ? '' : ' <span class="text-muted">(offline)</span>'}</span>
+            <button class="btn btn-sm btn-link text-danger p-0" onclick="window.mediaReceiverForget('${esc(r.id)}')">Forget</button>
+          </div>`).join('');
+    return `
+      <div class="card mt-2">
+        <div class="card-body py-2 small">
+          <div class="fw-semibold mb-1"><i class="fas fa-tower-broadcast me-1"></i> Add a phone, tablet or computer</div>
+          <div class="text-muted">On the device, on this network, open
+            <a href="${esc(url)}" target="_blank" rel="noopener" class="text-break">${esc(url)}</a>
+            and tap <em>Join</em>. It shows a code — enter it here to pair it, and it appears above as a speaker.
+            Keep the page open with the screen on while it plays.</div>
+          ${waiting.length ? `<div class="mt-2 fw-semibold">Waiting to pair</div>${pendingRows}` : ''}
+          ${paired.length ? `<div class="mt-2 fw-semibold">Paired</div>${pairedRows}` : ''}
+        </div>
+      </div>`;
+}
+
+async function receiverPair(id) {
+    const code = document.getElementById('rxcode-' + id)?.value?.trim();
+    if (!code) { toast('Enter the code the device is showing', 'warning'); return; }
+    const r = await apiPost('/api/media/sync/receivers/pair', { id, code });
+    if (!r.success) {
+        toast((r.error || 'Could not pair') + (r.left ? ` (${r.left} tries left)` : ''), 'error');
+        renderSyncPane();
+        return;
+    }
+    toast(`Paired “${r.name}”`, 'success');
+    await loadPlayers();
+    renderSyncPane();
+}
+
+async function receiverForget(id) {
+    const r0 = ((_syncStatus || {}).receivers || []).find(x => x.id === id);
+    const name = r0 ? r0.name : 'this receiver';
+    if (!await confirmDialog(`Forget “${name}”? It stops playing in any zone and has to be paired again to come back.`)) return;
+    const r = await apiPost('/api/media/sync/receivers/forget', { id });
+    if (!r.success) { toast(r.error || 'Could not forget it', 'error'); return; }
+    toast(`Forgot “${name}”`, 'success');
+    await loadPlayers();
+    renderSyncPane();
 }
 
 async function refreshSyncStats() {

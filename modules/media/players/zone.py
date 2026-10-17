@@ -46,11 +46,19 @@ class ZonePlayerProvider(PlayerProvider):
     #: that rode in on the load that started their stream (open-zone.md §10.7)
     labels_queue_once = True
 
-    def __init__(self, cast_sync, start_zone):
+    def __init__(self, cast_sync, start_zone, provider_for=None):
         self._sync = cast_sync
         # MediaService.start_zone — one validation + saved-window path for
         # every caller (Media page, automation, resume).
         self._start_zone = start_zone
+        # A member's own provider: a zone spans ecosystems, so its volume is
+        # each member's, asked of whatever owns it.
+        self._provider_for = provider_for
+
+    def _owner(self, member: str):
+        if self._provider_for is not None:
+            return self._provider_for(member)
+        return getattr(self._sync, "cast", None)
 
     # Discovery / state
     def _groups(self) -> List[dict]:
@@ -104,11 +112,12 @@ class ZonePlayerProvider(PlayerProvider):
 
     async def _member_volume(self, members: List[str]) -> tuple:
         """Mean member volume, and muted only when every member is."""
-        cast = getattr(self._sync, "cast", None)
-        if cast is None or not members:
+        owned = [(m, self._owner(m)) for m in members]
+        owned = [(m, p) for m, p in owned if p is not None]
+        if not owned:
             return 0.0, False
         states = await asyncio.gather(
-            *(cast.get_state(m) for m in members), return_exceptions=True)
+            *(p.get_state(m) for m, p in owned), return_exceptions=True)
         # UNKNOWN is the discovery view of a device we aren't connected to —
         # its volume reads 0.0, which would drag the mean down to nothing.
         live = [s for s in states if isinstance(s, PlayerState) and s.available
@@ -229,13 +238,15 @@ class ZonePlayerProvider(PlayerProvider):
 
     async def _each(self, player_id: str, method: str, *args) -> None:
         gid = self._require(player_id)
-        cast = getattr(self._sync, "cast", None)
         members = [m["player_id"] for g in self._groups() if g["id"] == gid
                    for m in g.get("members", [])]
-        if cast is None or not members:
+        owned = [(m, self._owner(m)) for m in members]
+        owned = [(m, p) for m, p in owned if p is not None]
+        if not owned:
             return
+        members = [m for m, _ in owned]
         results = await asyncio.gather(
-            *(getattr(cast, method)(m, *args) for m in members),
+            *(getattr(p, method)(m, *args) for m, p in owned),
             return_exceptions=True)
         for member, r in zip(members, results):
             if isinstance(r, Exception):

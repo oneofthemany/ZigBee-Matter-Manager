@@ -4,9 +4,13 @@ OpenZone — synchronised multi-speaker casting.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
+import secrets
 import logging
 import os
+import re
 import socket
 import struct
 import tempfile
@@ -43,6 +47,27 @@ RECEIVER_CONNECT_MAX_S = 20.0   # no hello by then: default receiver instead
 RECEIVER_FLUSH_LEAD_S = 0.25    # a skip cuts a receiver this far ahead of its DAC
 RECEIVER_HIST_S = 4.0           # reader history kept per receiver, for a flush
 WS_PCM = 1                      # binary message type: [u8 type][u64 frame][s16le]
+# A client that registers itself rather than being launched by Cast (§4.4b).
+RECEIVER_PREFIX = "receiver:"
+RECEIVER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+RECEIVER_NAME_MAX = 60
+# Pairing (§4.4c): a 32-byte key per client, a 6-digit code to admit it.
+RECEIVER_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+RECEIVER_PAIR_FAILS = 5         # wrong codes before the enrolment is dropped
+
+
+def _pair_code(key_hex: str) -> str:
+    """The code a client shows to be admitted: a fingerprint of its key, so
+    typing it in approves that key and no other."""
+    mac = hmac.new(bytes.fromhex(key_hex), b"openzone-pair",
+                   hashlib.sha256).digest()
+    return f"{int.from_bytes(mac[:4], 'big') % 1_000_000:06d}"
+
+
+def _auth_mac(key_hex: str, cid: str, nonce: str) -> str:
+    return hmac.new(bytes.fromhex(key_hex),
+                    f"openzone-auth|{cid}|{nonce}".encode(),
+                    hashlib.sha256).hexdigest()
 
 DEFAULT_APP_ID = "CC1AD845"      # built-in default media receiver (no registration)
 STREAM_BLOCK_S = 0.2             # stream-mode PCM block size
@@ -248,6 +273,25 @@ MEDIA_FIELDS = ("url", "station_uuid", "source_id", "media_type", "kind",
 
 
 _GENERATED = GeneratedSource()
+
+
+def _is_client(player_id: str) -> bool:
+    """A registered receiver client, reached on its own socket, not via Cast."""
+    return (player_id or "").startswith(RECEIVER_PREFIX)
+
+
+def _lan_ip() -> str:
+    """The address LAN devices reach this host on. A UDP connect sends
+    nothing; it only picks the interface the default route leaves by."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 9))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        return "127.0.0.1"
 
 
 def _ws_clients() -> bool:
@@ -553,6 +597,11 @@ class OpenZone:
         self._policy_file = cfg.get("policy_file",
                                     "./data/zone_device_policy.json")
         self._policies: Dict[str, dict] = self._read_json(self._policy_file)
+        # Registered clients, by the id each generated for itself: the name is
+        # theirs to change, the id never does (open-zone.md §4.4b).
+        self._clients_file = cfg.get("receivers_file", "./data/zone_receivers.json")
+        self._clients: Dict[str, dict] = self._read_json(self._clients_file)
+        self._client_ws: Dict[str, object] = {}     # id -> live socket
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         # What each zone last played, for a play that names no source.
@@ -792,6 +841,8 @@ class OpenZone:
         silently drops whatever it has not heard of.
         """
         prov = self._provider_for(player_id)
+        if _is_client(player_id) and not self._client_paired(player_id):
+            return False          # admitted by pairing, not by connecting
         return bool(getattr(prov, "zone_transport", False))
 
     def _device_key(self, player_id: str) -> str:
@@ -1456,7 +1507,7 @@ class OpenZone:
                                   min(STREAM_RATE_MAX_PPM,
                                       float(m.get("drift_ppm", 0.0))))
                 st.rate_prior = st.rate_ppm
-                if receiver:
+                if receiver or _is_client(pid):
                     st.transport = "ws"
                 self._streams[sid] = st
                 # Starting a zone is a deliberate takeover of other Cast
@@ -1554,7 +1605,10 @@ class OpenZone:
             self._source = _GENERATED
         for r in list(self._receivers.values()):
             try:
-                await r.ws.close()
+                if _is_client(r.player_id):
+                    await r.ws.send_json({"type": "stop"})   # back to idle
+                else:
+                    await r.ws.close()
             except Exception:
                 pass
         self._receivers = {}
@@ -1636,6 +1690,8 @@ class OpenZone:
             "configured": bool(self.app_id),
             "mode": "receiver" if self.app_id else "stream",
             "http_port": self.http_port,
+            "receiver_url": self.receiver_url(),
+            "receivers": self.receivers(),
             "group_id": self._active_group,
             "elapsed_s": elapsed,
             "duration_s": self._duration_s if self.running else 0,
@@ -2036,6 +2092,9 @@ class OpenZone:
         return {"success": True}
 
     def _player_name(self, player_id: str) -> str:
+        if _is_client(player_id):
+            rec = self._clients.get(player_id[len(RECEIVER_PREFIX):]) or {}
+            return rec.get("name") or player_id
         uuid_str = player_id.split(":", 1)[-1]
         info = (getattr(self.cast, "_infos", None) or {}).get(uuid_str)
         return getattr(info, "friendly_name", player_id) if info else player_id
@@ -2063,6 +2122,9 @@ class OpenZone:
         "full" for recovery, "input" for session start (a deliberate takeover
         of other Cast apps, not of a physical input), "none" when the caller
         has just checked."""
+        if _is_client(player_id):
+            await self._launch_client(player_id, sid, gate)
+            return
         uuid_str = player_id.split(":", 1)[1]
         cast = await self._on_main(self.cast._get_cast(uuid_str))
         if not cast:
@@ -3497,6 +3559,13 @@ class OpenZone:
         """Stop the zone's stream on a device it has just given up, so the
         speaker is idle for whatever the user switches it to — only while
         what it is playing is still ours."""
+        if _is_client(st.player_id):
+            if st.ws is not None:
+                try:
+                    await st.ws.send_json({"type": "stop"})
+                except Exception:
+                    pass
+            return
         casts = getattr(self.cast, "_casts", None) or {}
         cast = casts.get(st.player_id.split(":", 1)[1])
         if cast is None or self._cast_owner(cast) is not None:
@@ -3671,16 +3740,24 @@ class OpenZone:
             if not self.running or self._streams.get(st.sid) is not st:
                 return
             uuid_str = st.player_id.split(":", 1)[1]
-            try:
-                cast = await self._on_main(self.cast._get_cast(uuid_str))
-            except Exception as e:
-                logger.debug(f"Sync rejoin probe failed for {st.name}: {e}")
-                cast = None
+            if _is_client(st.player_id):
+                # Present is connected: a client is reached on its own socket.
+                cast = uuid_str in self._client_ws or None
+                why = "the receiver is not connected"
+            else:
+                try:
+                    cast = await self._on_main(self.cast._get_cast(uuid_str))
+                except Exception as e:
+                    logger.debug(f"Sync rejoin probe failed for {st.name}: {e}")
+                    cast = None
+                why = "the cast provider cannot resolve it"
             if not cast:
                 if st.yield_kind:
-                    self._park_stream(st, "the cast provider cannot resolve it")
+                    self._park_stream(st, why)
                 st.park_probe_at = time.monotonic() + STREAM_PARK_RETRY_S
                 return
+            if cast is True:
+                cast = None
             if st.yield_kind and not await self._yield_over(st, cast):
                 return
             away = time.monotonic() - (st.parked_since or time.monotonic())
@@ -4352,6 +4429,171 @@ class OpenZone:
         while st.hist and st.hist[-1][0] >= frame:
             st.hist.pop()
 
+    async def _launch_client(self, player_id: str, sid: str, gate: str) -> None:
+        """``_launch_stream`` for a registered client: no Cast to launch it,
+        so it is started on its own socket, and one that is not connected is
+        absent — parked until it registers again (open-zone.md §4.4b)."""
+        st = self._streams.get(sid)
+        if st is None:
+            return
+        if gate != "none":
+            owner = await self._foreign_owner(st, cast_apps=False)
+            if owner is not None:
+                self._yield_stream(st, *owner)
+                return
+        self._consume_handback(player_id)
+        if not self._client_paired(player_id):
+            self._park_stream(st, "the receiver is not paired")
+            return
+        if player_id[len(RECEIVER_PREFIX):] not in self._client_ws:
+            self._park_stream(st, "the receiver is not connected")
+            return
+        if not await self._start_receiver(None, st):
+            self._park_stream(st, "the receiver did not answer")
+
+    def receivers(self) -> List[dict]:
+        """Every client that has enrolled, connected or not. Never the key."""
+        return [{"id": cid, "player_id": RECEIVER_PREFIX + cid,
+                 "name": rec.get("name") or cid,
+                 "paired": bool(rec.get("paired")),
+                 "connected": cid in self._client_ws,
+                 "volume": float(rec.get("volume", 1.0)),
+                 "muted": bool(rec.get("muted", False)),
+                 "last_seen": rec.get("last_seen")}
+                for cid, rec in self._clients.items()]
+
+    async def set_receiver_volume(self, cid: str, level: Optional[float] = None,
+                                  muted: Optional[bool] = None) -> bool:
+        """Kept per client and applied by its page, so it survives reconnects."""
+        rec = self._clients.get(cid)
+        if rec is None:
+            return False
+        if level is not None:
+            rec["volume"] = max(0.0, min(1.0, float(level)))
+        if muted is not None:
+            rec["muted"] = bool(muted)
+        self._save_clients()
+        await self._send_volume(cid)
+        return True
+
+    async def _send_volume(self, cid: str) -> None:
+        ws, rec = self._client_ws.get(cid), self._clients.get(cid) or {}
+        if ws is None:
+            return
+        try:
+            await ws.send_json({"type": "volume",
+                                "level": float(rec.get("volume", 1.0)),
+                                "muted": bool(rec.get("muted", False))})
+        except Exception:
+            pass
+
+    def _save_clients(self) -> None:
+        """The registry holds each client's key: owner-only on disk."""
+        self._write_json(self._clients_file, self._clients)
+        try:
+            os.chmod(self._clients_file, 0o600)
+        except OSError:
+            pass
+
+    def _client_paired(self, player_id: str) -> bool:
+        rec = self._clients.get(player_id[len(RECEIVER_PREFIX):]) or {}
+        return bool(rec.get("paired"))
+
+    async def pair_receiver(self, cid: str, code: str) -> dict:
+        """Admit a client by the code it is showing (open-zone.md §4.4c)."""
+        rec = self._clients.get(cid)
+        if rec is None or not rec.get("key"):
+            return {"success": False, "error": "No receiver waiting to pair"}
+        if rec.get("paired"):
+            return {"success": True, "id": cid, "name": rec.get("name", "")}
+        given = "".join(ch for ch in str(code or "") if ch.isdigit())
+        if hmac.compare_digest(given, _pair_code(rec["key"])):
+            rec["paired"], rec["pair_fails"] = True, 0
+            self._save_clients()
+            await self._notify_client(cid, {"type": "paired"})
+            logger.info(f"OpenZone receiver paired: {rec.get('name')}")
+            await self._client_registered(cid, self._client_ws.get(cid))
+            return {"success": True, "id": cid, "name": rec.get("name", "")}
+        rec["pair_fails"] = int(rec.get("pair_fails", 0)) + 1
+        if rec["pair_fails"] >= RECEIVER_PAIR_FAILS:
+            # The code is a fingerprint of the key, so a new code needs a new
+            # key: the page makes one when told it was forgotten.
+            await self.forget_receiver(cid)
+            return {"success": False, "error": "Too many wrong codes — the "
+                    "receiver will show a new one"}
+        self._save_clients()
+        return {"success": False, "error": "That code does not match",
+                "left": RECEIVER_PAIR_FAILS - rec["pair_fails"]}
+
+    async def forget_receiver(self, cid: str) -> bool:
+        """Drop a client and its key. A connected one is told, and enrols
+        again with a fresh key — so a new code — if it is to come back."""
+        if self._clients.pop(cid, None) is None:
+            return False
+        self._save_clients()
+        await self._notify_client(cid, {"type": "forgotten"}, close=True)
+        return True
+
+    async def _notify_client(self, cid: str, msg: dict,
+                             close: bool = False) -> None:
+        ws = self._client_ws.get(cid)
+        if ws is None:
+            return
+        try:
+            await ws.send_json(msg)
+            if close:
+                self._client_ws.pop(cid, None)
+                await ws.close()
+        except Exception:
+            pass
+
+    def receiver_url(self) -> str:
+        """Where a browser or tablet joins, on the hub's LAN address: the
+        listener is LAN-only and is never behind the public tunnel."""
+        return f"http://{_lan_ip()}:{self.http_port}/receiver"
+
+    async def _admit_client(self, ws, claim: dict) -> str:
+        """An authenticated socket becomes the client's one live socket."""
+        cid = claim["id"]
+        rec = self._clients[cid]
+        rec["name"] = claim["name"] or rec.get("name") or "OpenZone receiver"
+        rec["ua"] = claim["ua"]
+        rec["last_seen"] = time.time()
+        self._save_clients()
+        old = self._client_ws.get(cid)
+        self._client_ws[cid] = ws
+        if old is not None and old is not ws:
+            # The newest wins — the old may be half-open after a sleep — and is
+            # told first, so a second tab on one device does not reconnect and
+            # evict this one in turn. Only a socket that proved the key gets
+            # this far, so nobody else can evict a client.
+            try:
+                await old.send_json({"type": "replaced"})
+                await old.close()
+            except Exception:
+                pass
+        paired = bool(rec.get("paired"))
+        await ws.send_json({"type": "registered", "id": cid,
+                            "player_id": RECEIVER_PREFIX + cid,
+                            "name": rec["name"], "paired": paired})
+        logger.info(f"OpenZone receiver connected: {rec['name']}"
+                    f"{'' if paired else ' (waiting to be paired)'}")
+        await self._client_registered(cid, ws)
+        return cid
+
+    async def _client_registered(self, cid: str, ws) -> None:
+        """A client is back: send its volume, and if a running zone parked it
+        for being away, rejoin it now rather than on the next probe."""
+        await self._send_volume(cid)
+        if not (self._clients.get(cid) or {}).get("paired"):
+            return
+        pid = RECEIVER_PREFIX + cid
+        for st in list(self._streams.values()):
+            if (st.player_id == pid and self.running and st.parked_since is not None
+                    and not st.yield_kind and not st.park_probing):
+                st.park_probing = True
+                asyncio.create_task(self._rejoin_stream(st))
+
     async def _push_start(self, cast, uuid_str: str, payload: dict) -> None:
         """One start message to the custom receiver on this device."""
         ctrl = self._controllers.get(uuid_str)
@@ -4374,7 +4616,7 @@ class OpenZone:
         st.ws_load += 1
         load = st.ws_load
         payload = {"type": "start", "sid": st.sid, "load": load}
-        if st.ws is None:
+        if st.ws is None and cast is not None:
             await asyncio.to_thread(self.cast._ensure_app, cast, self.app_id)
         deadline = time.monotonic() + RECEIVER_CONNECT_MAX_S
         pushed = 0.0
@@ -4387,9 +4629,11 @@ class OpenZone:
                 try:
                     # Over the open socket when there is one: no Cast round
                     # trip, and the receiver keeps its connection.
-                    if st.ws is not None:
-                        await st.ws.send_json(payload)
-                    else:
+                    ws = st.ws or self._client_ws.get(
+                        uuid_str if _is_client(st.player_id) else "")
+                    if ws is not None:
+                        await ws.send_json(payload)
+                    elif cast is not None:
                         await self._push_start(cast, uuid_str, payload)
                 except Exception as e:
                     logger.debug(f"Sync start message to {st.name} failed: {e}")
@@ -4403,6 +4647,13 @@ class OpenZone:
         async def receiver_page():
             return FileResponse("static/cast/sync_receiver.html",
                                 media_type="text/html")
+
+        @app.get("/receiver")
+        async def standalone_receiver():
+            # The same page; off a Cast device it registers itself (§4.4b).
+            return FileResponse("static/cast/sync_receiver.html",
+                                media_type="text/html",
+                                headers={"Cache-Control": "no-store"})
 
         @app.get("/health")
         async def health():
@@ -4433,6 +4684,9 @@ class OpenZone:
             await ws.accept()
             receiver: Optional[_Receiver] = None
             st: Optional[_Stream] = None
+            client_id = ""
+            claim: Optional[dict] = None     # a register awaiting its proof
+            nonce = ""
             try:
                 while True:
                     msg = await ws.receive_json()
@@ -4440,6 +4694,54 @@ class OpenZone:
                     if mtype == "ping":
                         await ws.send_json({"type": "pong", "t": msg.get("t"),
                                             "s": time.monotonic()})
+                    elif mtype == "register":
+                        # A client says who it is; it is believed only once it
+                        # proves the key it enrolled with (open-zone.md §4.4c).
+                        cid = str(msg.get("id") or "")
+                        if not RECEIVER_ID_RE.match(cid):
+                            await ws.send_json({"type": "error",
+                                                "error": "bad receiver id"})
+                            continue
+                        claim = {"id": cid,
+                                 "name": " ".join(str(msg.get("name") or "")
+                                                  .split())[:RECEIVER_NAME_MAX],
+                                 "ua": str(msg.get("ua") or "")[:200]}
+                        if (self._clients.get(cid) or {}).get("key"):
+                            nonce = secrets.token_hex(16)
+                            await ws.send_json({"type": "challenge",
+                                                "nonce": nonce})
+                        else:
+                            nonce = ""
+                            await ws.send_json({"type": "enrol"})
+                    elif mtype == "enrol" and claim and not nonce:
+                        key = str(msg.get("key") or "").lower()
+                        cid = claim["id"]
+                        if not RECEIVER_KEY_RE.match(key) \
+                                or (self._clients.get(cid) or {}).get("key"):
+                            await ws.send_json({"type": "error",
+                                                "error": "enrolment refused"})
+                            continue
+                        # Trust on first use, and only as far as pending: the
+                        # key admits nothing until its code is typed in.
+                        self._clients[cid] = {"key": key, "paired": False}
+                        client_id = await self._admit_client(ws, claim)
+                        claim = None
+                    elif mtype == "auth" and claim and nonce:
+                        cid = claim["id"]
+                        rec = self._clients.get(cid) or {}
+                        given = str(msg.get("mac") or "")
+                        ok = bool(rec.get("key")) and hmac.compare_digest(
+                            given, _auth_mac(rec["key"], cid, nonce))
+                        nonce = ""
+                        if not ok:
+                            await ws.send_json({"type": "error",
+                                                "error": "authentication failed"})
+                            logger.warning(f"OpenZone receiver {cid[:8]}… "
+                                           "failed authentication")
+                            await ws.close()
+                            return
+                        client_id = await self._admit_client(ws, claim)
+                        claim = None
                     elif mtype == "pos" and st is not None and st.ws is ws:
                         st.ws_report = {
                             "frame": int(msg.get("frame") or 0),
@@ -4450,7 +4752,11 @@ class OpenZone:
                         sid = str(msg.get("sid") or "")
                         info = self._pending.get(sid)
                         st = self._streams.get(sid)
-                        if not info or st is None or st.transport != "ws":
+                        if not info or st is None or st.transport != "ws" or (
+                                _is_client(st.player_id) and st.player_id
+                                != RECEIVER_PREFIX + client_id):
+                            # A client's stream goes only to the socket that
+                            # proved it is that client, not to whoever has the sid.
                             await ws.send_json({"type": "error",
                                                 "error": "unknown sid"})
                             st = None
@@ -4488,6 +4794,12 @@ class OpenZone:
             except Exception as e:
                 logger.debug(f"Sync WS error: {e}")
             finally:
+                if client_id and self._client_ws.get(client_id) is ws:
+                    self._client_ws.pop(client_id, None)
+                    rec = self._clients.get(client_id)
+                    if rec is not None:
+                        rec["last_seen"] = time.time()
+                        self._save_clients()
                 if receiver is not None and \
                         self._receivers.get(receiver.sid) is receiver:
                     self._receivers.pop(receiver.sid, None)
@@ -4496,8 +4808,14 @@ class OpenZone:
                     if st.ws_task is not None:
                         st.ws_task.cancel()
                     # A closed socket is a receiver that has stopped, and
-                    # that is known now, not a silence sweep later.
-                    if self.running and st.interrupted_since is None:
+                    # that is known now, not a silence sweep later. A client
+                    # has nothing to relaunch it: it is away until it
+                    # registers again (_client_registered).
+                    if (self.running and _is_client(st.player_id)
+                            and self._streams.get(st.sid) is st
+                            and st.parked_since is None):
+                        self._park_stream(st, "the receiver disconnected")
+                    elif self.running and st.interrupted_since is None:
                         st.interrupted_since = time.monotonic()
                     logger.info(f"Sync receiver disconnected: {st.name}")
 
