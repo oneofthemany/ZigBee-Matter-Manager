@@ -182,6 +182,20 @@ A seam used to cost a URL resolve and a decoder start with the write head parked
 
 **Decoders are reaped, not just killed.** A killed ffmpeg whose stdout is never read again leaves its pipe paused, and the transport holds its descriptors until garbage collection. A session that skips every few minutes would leak a descriptor each time. Every retired decoder is drained to EOF in the background.
 
+#### 4.4c Pairing
+
+A receiver on the LAN is admitted by a code, once, after which it proves who it is on every connection. What it defends against is precise, and so is what it does not.
+
+**The key is the client's, and the code is a fingerprint of it.** On first contact the page generates a 32-byte key and enrols it — the one time the key crosses the wire. The server holds it as *pending*: listed, connected, but not a player and not admissible to a zone. The page shows a six-digit code, `HMAC(key, "openzone-pair")` reduced to six digits; an admin types it into ZigBee Manager (`POST /api/media/sync/receivers/pair`, admin scope). Because the code is derived from the key, typing it approves *that* key and no other: a second device enrolling at the same moment shows a different code, and only the one the person is looking at gets in. Five wrong codes drop the enrolment; a dropped or forgotten client makes a new key, so a new code, before it can try again.
+
+**Every reconnect is a challenge, not a password.** A known id gets a fresh nonce and must answer `HMAC(key, "openzone-auth|id|nonce")`; the key is never sent again. A socket only becomes the client's after that answer, and only such a socket can take over from an older one (§4.4b) or receive the client's stream — a `hello` carrying a client's session id from any other socket is refused, so knowing a sid is not enough to take a stream. A wrong answer closes the socket; the real client is not evicted. A page whose key no longer matches its id enrols as a new device rather than fighting for the old one.
+
+**Why HMAC in page script.** The receiver page is plain http on the LAN, which is not a secure context, and `crypto.subtle` exists only in secure contexts. SHA-256 and HMAC are therefore implemented in the page (`crypto.getRandomValues`, which is available, supplies the key), and checked against Python's `hashlib`/`hmac` on the block-boundary lengths, multi-block input, an over-long key, and the pair and auth derivations exactly as the server computes them.
+
+**What it does not do: encrypt.** This authenticates the client and leaves the stream in clear. A pure-script cipher at ~1.4 Mbit/s on a Nest Hub costs more than it buys on a LAN where reading the stream already means breaking the Wi-Fi. For the same reason the enrolment itself is trust-on-first-use: someone *passively* capturing it learns the key. The registry holding the keys is written owner-only (`0600`), and the status API never returns them.
+
+Cast-launched receivers are outside this: Cast starts them with a session id over its own channel, and they never register.
+
 #### 4.2 Variable Resampler
 
 An arbitrary-ratio resampler per device, its ratio modulated around unity by a control signal expressed in ppm. Requirements: ratio resolution ≤ 0.1 ppm, continuous ratio changes without discontinuity, and negligible THD+N impact at ±200 ppm. A stateless fractional-delay filter satisfies all three trivially, because it has no state for a ratio change to discontinue. Tempo-domain processors (`pitch`, `scaletempo`) are unsuitable.
@@ -258,6 +272,8 @@ Cast was only ever how a receiver got *launched*; nothing in the transport or th
 **One live socket per client, the newest.** A socket may be half-open after a phone sleeps, so the newer one wins; the old one is told `replaced` first and stops reconnecting, or two tabs on one device would evict each other forever.
 
 **The registry is the provider.** `ReceiverPlayerProvider` is the controller's view of the clients the engine holds: `zone_transport`, so the capability check admits them to zones; listed whether or not connected; refusing to play outside a zone; volume kept per client and applied by its page, so it survives reconnects. A zone's volume is fanned out to each member *through its own provider*, which is what lets a zone span ecosystems at all.
+
+**Admission is by pairing, not by connecting** (§4.4c): until then a client is listed as waiting, and is neither a player nor a zone member.
 
 **A screen that sleeps is a client that leaves.** A browser slows or suspends a page whose screen is off. The Wake Lock API needs a secure context, so where it is missing the page plays a muted 16 px looping video, started inside the Join tap, which holds the screen awake on mobile browsers; where even that fails it says so on the screen. Cast devices are unaffected: their screens are the platform's to keep awake.
 

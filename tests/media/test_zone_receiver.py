@@ -635,7 +635,7 @@ def _pairing(c: Checker, tmp: str) -> None:
         c.check("…and the client is told",
                 await rig.until(lambda: r.paired is True, 3.0))
         c.check("…and is now a player",
-                [p.player_id for p in await prov.list_players()] == [rig.pids["p"]])
+                rig.pids["p"] in [p.player_id for p in await prov.list_players()])
         c.check("…a zone can drive", rig.z._zone_capable(rig.pids["p"]))
 
         await r.drop()

@@ -192,6 +192,12 @@ its screen awake while joined, reconnects by itself, and rejoins a running
 zone the moment it is back. Keep the page in front: a backgrounded tab may be
 suspended by the browser. See open-zone.md §4.4b.
 
+A new device is **paired** before it can join anything: it shows a six-digit
+code, and an admin enters it under Media → OpenZone (*Waiting to pair*).
+After that it proves itself on every reconnect without sending its key
+again; *Forget* removes it, and it has to pair afresh to come back
+(open-zone.md §4.4c).
+
 ### Device launch flow
 
 1. `CastPlayerProvider._get_cast()` connects to the device (pychromecast).

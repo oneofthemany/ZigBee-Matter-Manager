@@ -11,7 +11,7 @@ from typing import List, Optional
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
-from modules.auth_middleware import Principal, require_authenticated
+from modules.auth_middleware import Principal, require_authenticated, require_scope
 
 logger = logging.getLogger("routes.cast_sync")
 
@@ -83,6 +83,15 @@ class SyncGroupConfigBody(BaseModel):
     # "until stopped" / "no crossfade" and must survive as itself.
     duration_s: Optional[int] = None
     crossfade_s: Optional[float] = None
+
+
+class ReceiverPairBody(BaseModel):
+    id: str
+    code: str
+
+
+class ReceiverIdBody(BaseModel):
+    id: str
 
 
 class SyncPolicyBody(BaseModel):
@@ -203,6 +212,25 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             body.player_id, mode=body.mode, lock=body.lock,
             minutes=max(0.0, float(body.minutes or 0)),
             by=getattr(getattr(principal, "user", None), "username", "") or "")
+
+    @app.post("/api/media/sync/receivers/pair")
+    async def receiver_pair(body: ReceiverPairBody,
+                            _=Depends(require_scope("admin"))):
+        """Admit a receiver by the code it shows (open-zone.md §4.4c).
+        Admin: it puts a device into the house's audio."""
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "OpenZone is disabled"}
+        return await sync.pair_receiver(body.id, body.code)
+
+    @app.post("/api/media/sync/receivers/forget")
+    async def receiver_forget(body: ReceiverIdBody,
+                              _=Depends(require_scope("admin"))):
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "OpenZone is disabled"}
+        ok = await sync.forget_receiver(body.id)
+        return {"success": ok, **({} if ok else {"error": "Unknown receiver"})}
 
     @app.get("/api/media/sync/groups")
     async def sync_groups():
