@@ -1160,7 +1160,13 @@ class OpenZone:
 
         **The play point.** A reader past it has no decoded headroom left, so
         the next decoder hiccup puts it past the head regardless of the guard.
+
+        A closed-form source has neither: there is no head to overtake and no
+        decoder to hiccup, and with ``delay_s`` 0 its readers sit past the play
+        point by design, so either bound would refuse every correction.
         """
+        if getattr(source, "closed_form", False):
+            return float("inf")
         play_now = (time.monotonic() - self._epoch) * RATE
         _latest = getattr(source, "latest_sample", None)
         if not callable(_latest):

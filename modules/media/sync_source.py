@@ -70,6 +70,7 @@ class GeneratedSource:
     delay_s = 0.0
     channels = CHANNELS
     finished = False           # a closed-form timeline never runs out
+    closed_form = True         # no write head: any sample, at any time
 
     def read(self, n0: int, frames: int) -> np.ndarray:
         mono = _gen_float_mono(n0, frames).astype(np.float32)

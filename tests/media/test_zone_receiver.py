@@ -227,11 +227,11 @@ class _Rig:
 
         z._url_resolver = resolver
 
-    async def start(self, media=None) -> dict:
-        # Real media, as a session plays: the closed-form test signal has no
-        # delay line, so its readers sit past the play point (_reader_ceiling).
-        media = media or {"items": [{"source_id": "a", "duration_ms": 600_000}],
-                          "media_type": "x"}
+    async def start(self, media=None, test_signal: bool = False) -> dict:
+        if not test_signal:
+            media = media or {"items": [{"source_id": "a",
+                                         "duration_ms": 600_000}],
+                              "media_type": "x"}
         self.z.start()
         for _ in range(100):
             try:
@@ -315,6 +315,30 @@ def _aligned(c: Checker, tmp: str) -> None:
                 {i: r.underruns for i, r in rig.rx.items()})
         c.check("nothing fell back to the default receiver", not rig.loaded,
                 rig.loaded)
+        await rig.stop()
+    asyncio.run(go())
+
+
+def _test_signal(c: Checker, tmp: str) -> None:
+    c.section("the test signal is corrected like media, and can be aligned by ear")
+
+    async def go():
+        rig = _Rig(tmp, {"a": +40.0, "b": -40.0})
+        res = await rig.start(test_signal=True)
+        c.check("the session plays the test signal",
+                res.get("source") == "generated", res)
+        await rig.until(lambda: rig.z._target_lag is not None
+                        and all(s.acquired for s in rig.z._streams.values()), 30.0)
+        c.check("the ladder acquires both devices",
+                all(s.acquired for s in rig.z._streams.values()),
+                [(s.name, s.stats.get("offset_ms")) for s in rig.z._streams.values()])
+        await asyncio.sleep(8.0)
+        worst = max([_spread_ms(rig, ("a", "b")) for _ in range(3)])
+        c.check("80 ppm apart, they stay within 2 ms", worst < 2.0, worst)
+        res = await rig.z.align_start("cast:a", "cast:b")
+        c.check("the by-ear probe finds timeline ahead for its clicks",
+                res.get("success"), res)
+        rig.z.align_cancel()
         await rig.stop()
     asyncio.run(go())
 
@@ -415,6 +439,7 @@ def run() -> Checker:
         for sid in LEVEL:
             _wav(f"{tmp}/{sid}.wav", LEVEL[sid], 120.0)
         _aligned(c, tmp)
+        _test_signal(c, tmp)
         _fallback(c, tmp)
         _dropped(c, tmp)
         _skip(c, tmp)
