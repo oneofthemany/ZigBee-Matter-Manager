@@ -14,7 +14,7 @@ import time
 import uuid as uuid_mod
 from collections import deque
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import httpx
 import numpy as np
@@ -95,8 +95,23 @@ STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inau
 # a third of a cent, well under a tenth of what anyone can hear.
 STREAM_SLEW_GENTLE_PPM = 200.0
 STREAM_SLEW_FAST_THRESH_S = 0.030
-STREAM_SLEW_MAX_S = STREAM_JUMP_MIN_S
 STREAM_RATE_MAX_PPM = 50.0
+
+
+class _Ladder(NamedTuple):
+    """The ladder's sensor-sized thresholds (open-zone.md §7.1): ``fast`` is
+    the quiet band and the pre-lock step, ``jump`` the step past lock and the
+    slew cap (equal, so a slew never disarms the step), ``fresh`` what makes a
+    fast slew a new decision rather than the same one re-read."""
+    fast: float
+    jump: float
+    fresh: float
+
+
+# ~2σ of a Cast media status, aggregated.
+LADDER_CAST = _Ladder(STREAM_SLEW_FAST_THRESH_S, STREAM_JUMP_MIN_S, 0.010)
+# ~2σ of the receiver's clock sync, the noise floor of its DAC reports.
+LADDER_RECEIVER = _Ladder(0.004, 0.050, 0.001)
 STREAM_FIT_MIN_POINTS = 8        # polls needed before the drift fit runs
 STREAM_FIT_MAX_POINTS = 360      # ≈20 min of polls
 STREAM_FIT_APPLY_SPAN_S = 60.0   # shorter baselines are all noise — hold off
@@ -447,6 +462,11 @@ class _Stream:
         self.hist: deque = deque()
         self.flush_to: Optional[int] = None    # frame a skip cuts the receiver at
         self.flush_pos: Optional[float] = None  # ...and the reader position there
+
+    @property
+    def ladder(self) -> "_Ladder":
+        """Thresholds for this device's sensor, which its transport decides."""
+        return LADDER_RECEIVER if self.transport == "ws" else LADDER_CAST
 
 
 def _lock_label(lock: dict) -> str:
@@ -2402,10 +2422,10 @@ class OpenZone:
                     st.err_hist = (st.err_hist + [error])[-3:]
                     med3 = self._median(st.err_hist)
                     residual = med3 - st.slew_s
-                    jump_min = (STREAM_JUMP_MIN_S if st.acquired
-                                else STREAM_SLEW_FAST_THRESH_S)
+                    lad = st.ladder
+                    jump_min = lad.jump if st.acquired else lad.fast
                     if not st.acquired and len(st.err_hist) >= 2 \
-                            and abs(med3) <= STREAM_SLEW_FAST_THRESH_S:
+                            and abs(med3) <= lad.fast:
                         st.acquired = True
                         # Reloading works against the current target, which is
                         # the only question the count asks. Otherwise unrelated
@@ -2425,7 +2445,7 @@ class OpenZone:
                                   - st.pos) / RATE
                     unreachable = (len(st.err_hist) >= 2
                                    and min(st.err_hist[-2:])
-                                   > reach_s + STREAM_JUMP_MIN_S)
+                                   > reach_s + lad.jump)
                     if abs(residual) > jump_min \
                             and (concordant or unreachable
                                  or (not st.acquired and len(st.err_hist) >= 2)):
@@ -2501,20 +2521,19 @@ class OpenZone:
                         # Only a fresh LOAD closes this, by dropping the buffer
                         # the reader cannot reach. Not awaited: the poll pass
                         # owns the other speakers.
-                        if shortfall > STREAM_JUMP_MIN_S:
+                        if shortfall > lad.jump:
                             self._escalate_shortfall(
                                 st, f"{st.name} {med3 * 1000:+.0f} ms out with "
                                     f"only {shortfall * 1000:.0f} ms more "
                                     f"timeline than the reader can reach")
                     elif (time.monotonic() < st.slew_hold_until
-                          or abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S
+                          or abs(st.slew_s) > lad.fast
                           or len(st.err_hist) < 2):
                         self._pll_update(st, lag)
-                    elif abs(med3) > STREAM_SLEW_FAST_THRESH_S:
-                        fresh = abs(med3 - st.slew_s) > 0.010
+                    elif abs(med3) > lad.fast:
+                        fresh = abs(med3 - st.slew_s) > lad.fresh
                         # Ceiling keeps the jump rung armed (§A.4).
-                        st.slew_s = max(-STREAM_SLEW_MAX_S,
-                                        min(STREAM_SLEW_MAX_S, med3))
+                        st.slew_s = max(-lad.jump, min(lad.jump, med3))
                         st.slew_ppm = STREAM_SLEW_FAST_PPM
                         if fresh:
                             # Nothing may re-decide until this has actually
@@ -2529,7 +2548,7 @@ class OpenZone:
                                         f"{STREAM_SLEW_FAST_PPM:.0f} ppm"
                                         + (f" (of {med3 * 1000:+.0f} ms —"
                                            " excess left for resync)"
-                                           if abs(med3) > STREAM_SLEW_MAX_S
+                                           if abs(med3) > lad.jump
                                            else ""))
                         self._pll_update(st, lag)
                     else:

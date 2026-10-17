@@ -343,6 +343,37 @@ def _test_signal(c: Checker, tmp: str) -> None:
     asyncio.run(go())
 
 
+def _tight(c: Checker, tmp: str) -> None:
+    c.section("a receiver's ladder closes errors a Cast ladder would leave")
+
+    async def after_disturbance(ladder) -> float:
+        saved = cast_sync.LADDER_RECEIVER
+        cast_sync.LADDER_RECEIVER = ladder
+        try:
+            rig = _Rig(tmp, {"a": +10.0, "b": -10.0})
+            await rig.start()
+            await rig.until(lambda: rig.z._target_lag is not None
+                            and all(s.acquired for s in rig.z._streams.values()),
+                            30.0)
+            await asyncio.sleep(6.0)
+            rig.rx["b"].t0 += 0.012       # b drops 12 ms behind, as a hiccup does
+            await asyncio.sleep(22.0)
+            worst = max([_spread_ms(rig, ("a", "b")) for _ in range(3)])
+            await rig.stop()
+            return worst
+        finally:
+            cast_sync.LADDER_RECEIVER = saved
+
+    async def go():
+        tight = await after_disturbance(cast_sync.LADDER_RECEIVER)
+        loose = await after_disturbance(cast_sync.LADDER_CAST)
+        c.check("22 s after a 12 ms hiccup the pair is back within 2 ms",
+                tight < 2.0, tight)
+        c.check("the Cast thresholds leave it still out by more (control)",
+                loose > tight + 2.0, (tight, loose))
+    asyncio.run(go())
+
+
 def _fallback(c: Checker, tmp: str) -> None:
     c.section("a device whose receiver never answers falls back alone")
 
@@ -440,6 +471,7 @@ def run() -> Checker:
             _wav(f"{tmp}/{sid}.wav", LEVEL[sid], 120.0)
         _aligned(c, tmp)
         _test_signal(c, tmp)
+        _tight(c, tmp)
         _fallback(c, tmp)
         _dropped(c, tmp)
         _skip(c, tmp)
