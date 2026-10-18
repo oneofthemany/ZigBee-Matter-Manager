@@ -411,7 +411,8 @@ zigbee:
 
 octopus:
   # Octopus Energy consumption, tariffs and Home Mini telemetry (Energy tab).
-  # The API key is set from Settings → APIs → Octopus and is not shipped here.
+  # The API key never goes here (this file is tracked in git): it lives in
+  # config/secrets.yaml, or ZMM_OCTOPUS_API_KEY. See docs/energy.md.
   enabled: false
   account_number: ""          # A-XXXXXXXX
   gas_calorific_value: 39.5   # MJ/m³, for converting m³ to kWh. Your bill shows

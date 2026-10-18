@@ -8,11 +8,12 @@ returns None on any doubt. Config and the Mini reconcile rules: docs/energy.md.
 """
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from modules import telemetry_db
+from modules import secrets_file, telemetry_db
 
 logger = logging.getLogger("modules.octopus")
 
@@ -107,13 +108,57 @@ def product_code_from_tariff(tariff_code: str) -> Optional[str]:
     return "-".join(parts[2:-1]) or None
 
 
+# The API key never lives in config.yaml (tracked in git): the environment
+# wins, then config/secrets.yaml under `octopus`.
+API_KEY_ENV = "ZMM_OCTOPUS_API_KEY"
+
+
+def resolve_api_key(config: Optional[dict] = None) -> tuple[str, str]:
+    """(key, source): environment, then secrets.yaml, then a key still in
+    config.yaml from before the move, which migrate_api_key() relocates."""
+    env = os.environ.get(API_KEY_ENV, "").strip()
+    if env:
+        return env, "environment"
+    stored = str(secrets_file.read_section("octopus").get("api_key") or "").strip()
+    if stored:
+        return stored, "secrets_file"
+    legacy = str((config or {}).get("api_key") or "").strip()
+    return (legacy, "config") if legacy else ("", "none")
+
+
+def save_api_key(key: str) -> None:
+    section = secrets_file.read_section("octopus")
+    secrets_file.write_section("octopus", {**section, "api_key": key.strip()})
+
+
+def migrate_api_key(config: dict, config_path: str = "./config/config.yaml") -> None:
+    """Move a config.yaml `octopus.api_key` into secrets.yaml, once.
+
+    The config copy is removed only after the secrets write succeeds; a key
+    already in secrets.yaml wins over the config one.
+    """
+    legacy = str((config or {}).get("api_key") or "").strip()
+    if not legacy:
+        return
+    try:
+        if not str(secrets_file.read_section("octopus").get("api_key") or "").strip():
+            save_api_key(legacy)
+        from modules.config_yaml import remove_keys
+        remove_keys(config_path, "octopus", ["api_key"])
+    except Exception as e:
+        logger.warning(f"Octopus API key left in config.yaml, could not move it: {e}")
+        return
+    config.pop("api_key", None)
+    logger.info("Octopus API key moved from config.yaml to config/secrets.yaml")
+
+
 class OctopusEnergyService:
     """Periodic Octopus Energy fetcher + in-memory rate cache."""
 
     def __init__(self, config: dict):
         config = config or {}
         self.enabled = bool(config.get("enabled", False))
-        self.api_key = str(config.get("api_key") or "")
+        self.api_key = resolve_api_key(config)[0]
         self.account_number = str(config.get("account_number") or "").strip()
         try:
             self.calorific_value = float(config.get("gas_calorific_value") or DEFAULT_CALORIFIC_VALUE)

@@ -331,6 +331,11 @@ media_service = MediaService(
 
 # Built before the heating advisor so live tariff rates can be injected.
 # Config is read at construction: changes need a service restart.
+try:
+    from modules.octopus import migrate_api_key
+    migrate_api_key(CONFIG.get("octopus") or {})
+except Exception as e:
+    logger.warning(f"Octopus API key migration skipped: {e}")
 octopus_service = OctopusEnergyService(config=CONFIG.get("octopus", {}))
 
 # Default engine is in-process Kokoro-82M; set media.therapy.engine to

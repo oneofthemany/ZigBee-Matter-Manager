@@ -14,6 +14,9 @@ from modules.network_init import (
     generate_network_key, select_best_channel, ZIGBEE_CHANNELS
 )
 from modules.spectrum_monitor import get_history, get_channel_averages, get_channel_stats, save_scan
+from modules.octopus import (migrate_api_key as migrate_octopus_key,
+                             resolve_api_key as resolve_octopus_key,
+                             save_api_key as save_octopus_key)
 
 logger = logging.getLogger("routes.config")
 
@@ -79,9 +82,9 @@ SECURITY_DEFAULTS = {
     },
 }
 
-# api_key is deliberately absent: the stored key is never echoed back to the
-# frontend — the GET handler sends api_key="" + api_key_set instead, and the
-# save path only overwrites it when a non-blank value arrives.
+# api_key is deliberately absent: it lives in config/secrets.yaml, is never
+# echoed back to the frontend (the GET handler sends api_key="" + api_key_set),
+# and the save path only replaces it when a non-blank value arrives.
 OCTOPUS_DEFAULTS = {
     "enabled": False,
     "account_number": "",
@@ -231,7 +234,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                              if k != "api_key"},
                             OCTOPUS_DEFAULTS),
                         "api_key": "",
-                        "api_key_set": bool((cfg.get("octopus") or {}).get("api_key")),
+                        "api_key_set": bool(resolve_octopus_key(cfg.get("octopus"))[0]),
                     },
                     "ota": {
                         "enabled": bool(ota.get("enabled", True)),
@@ -450,9 +453,13 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     octopus_cfg["enabled"] = bool(o["enabled"])
                 if "account_number" in o:
                     octopus_cfg["account_number"] = str(o.get("account_number") or "").strip()
-                # Blank key = keep the stored one (mqtt-password rule)
+                # The key goes to secrets.yaml, never this tracked file; a
+                # blank one keeps the stored key (mqtt-password rule).
                 if o.get("api_key"):
-                    octopus_cfg["api_key"] = str(o["api_key"]).strip()
+                    save_octopus_key(str(o["api_key"]))
+                elif octopus_cfg.get("api_key"):
+                    migrate_octopus_key(octopus_cfg)
+                octopus_cfg.pop("api_key", None)
                 if o.get("gas_calorific_value"):
                     octopus_cfg["gas_calorific_value"] = float(o["gas_calorific_value"])
                 if o.get("gas_unit") in ("auto", "kwh", "m3"):

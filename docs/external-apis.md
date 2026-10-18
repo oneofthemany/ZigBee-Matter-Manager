@@ -32,7 +32,7 @@ There are two save paths:
 | Radio Browser | radio-browser.info | cloud, free | nothing | — | [speaker_sync.md](speaker_sync.md) |
 | Tidal | Tidal (unofficial client, personal use only) | cloud | Tidal login | `data/media/tidal/` | [speaker_sync.md](speaker_sync.md) |
 | Air Con | Gree and Midea units | local | bind (Midea: one-time token fetch) | `config.yaml` → `ac.units` | [air-conditioning.md](air-conditioning.md) |
-| Energy | Octopus Energy | cloud | API key and account number | `config.yaml` → `octopus` | [energy.md](energy.md) |
+| Energy | Octopus Energy | cloud | API key and account number | key: `config/secrets.yaml`; the rest: `config.yaml` → `octopus` | [energy.md](energy.md) |
 | Blueair | Blueair cloud (AWS) | cloud | Blueair app email and password | `config/secrets.yaml` → `blueair` | [below](#blueair) |
 | Shelly | Shelly local API (Gen1 REST, Gen2+ RPC) | local | the device password, if one is set | `config/secrets.yaml` → `shelly` | [wifi-devices.md](wifi-devices.md) |
 | ESPHome | ESPHome native API | local | the device's API encryption key | `config/secrets.yaml` → `esphome` | [wifi-devices.md](wifi-devices.md) |

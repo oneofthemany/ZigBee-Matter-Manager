@@ -14,7 +14,6 @@ Consumption endpoints need auth; product and tariff rate endpoints are public.
 ```yaml
 octopus:
   enabled: true
-  api_key: sk_live_...
   account_number: A-XXXXXXXX
   gas_calorific_value: 39.5   # MJ/m³, from your gas bill
   gas_unit: auto              # auto|kwh|m3 (SMETS1 reports kWh, SMETS2 m³)
@@ -25,6 +24,12 @@ octopus:
   telemetry_poll_minutes: 5   # Home Mini sampling cadence (5–10 min typical)
   retention_days: 400         # local history kept in data/octopus.duckdb
 ```
+
+The API key is not part of this block: config.yaml is tracked in git. It lives
+in `config/secrets.yaml` under `octopus.api_key`, written there by Settings →
+APIs → Octopus, or comes from the `ZMM_OCTOPUS_API_KEY` environment variable,
+which wins. A key left in config.yaml by an older version is moved to
+secrets.yaml on the next start.
 
 Gas is converted m³ → kWh by volume correction × calorific value (MJ/m³) ÷ 3.6
 MJ per kWh.
