@@ -27,6 +27,12 @@ listener names from `blocking_seeds.json`:
 Keep the two in step: a seed added to `blocking_calls.py` belongs in
 `blocking_seeds.json` too.
 
+The drift check runs the same way, with ZMM's skips, symbol exceptions and
+config mirror from `drift_settings.json`. The config mirror needs an
+interpreter with PyYAML, e.g. the lockfile venv in `REA_PYTHON_COMMAND`:
+
+    rea inspect-python-docs-drift . --settings scripts/audit/drift_settings.json --json
+
 ## Limits
 
 Static reachability can't see a callable that was injected (a `telemetry_query=`

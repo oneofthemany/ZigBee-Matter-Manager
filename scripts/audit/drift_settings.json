@@ -1,0 +1,6 @@
+{
+  "skip_dirs": ["logs", "data", "screenshots", "android", "tests"],
+  "backend_exclude_dirs": ["scripts"],
+  "ignore_symbols": ["ControllerApplication", "Result"],
+  "config_mirrors": [{ "yaml": "config/config.yaml", "module": "routes/config_routes.py" }]
+}

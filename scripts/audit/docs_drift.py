@@ -206,8 +206,11 @@ def check(root: Path, undocumented: bool):
                     out.append({"kind": "route", "file": str(rel), "line": lineno,
                                 "detail": f"frontend calls {path} — no backend route serves it"})
 
-    docs = {rel.name: (p.read_text(encoding="utf-8", errors="replace"), rel)
-            for p, rel in files(root, ".md")}
+    # Keyed by name for citations; the shallowest wins, so a nested README.md
+    # never shadows the root one.
+    docs = {}
+    for p, rel in sorted(files(root, ".md"), key=lambda f: (len(f[1].parts), str(f[1]))):
+        docs.setdefault(rel.name, (p.read_text(encoding="utf-8", errors="replace"), rel))
     runtime_files = ignored(root)
     for name, (text, rel) in docs.items():
         for lineno, num, prev, prev_line in out_of_order(text):
