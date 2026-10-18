@@ -459,6 +459,7 @@ window.uploadFullSchedule = async function(ieee) {
             if (transitions.length === 0) continue;
 
             const payload = {
+                ieee,
                 command: "set_schedule",
                 value: {
                     day_of_week: DAY_TO_ZCL_BIT[d],
@@ -469,11 +470,16 @@ window.uploadFullSchedule = async function(ieee) {
                 }
             };
 
-            await fetch(`/api/device/${ieee}/command`, {
+            const res = await fetch('/api/device/command', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+            // A failed command still answers 200 with success: false.
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.success === false) {
+                throw new Error(`${DAY_NAMES[d]}: ${data.error || data.detail || 'HTTP ' + res.status}`);
+            }
 
             // Small delay between day commands to avoid overwhelming the device
             await new Promise(r => setTimeout(r, 300));
