@@ -475,62 +475,6 @@ Three things differ from session start, and each is a branch rather than a copy.
 
 **A rejoiner is held silent until it is on target.** A device returning from a park or a yield re-seats against a target the rest of the zone set without it, and where the delay line cannot hold that seat it comes back seconds early; the step that fixes it lands a cooldown later. Played through, that is one room out of time with the others and then a jump. So its stream carries silence until the ladder marks it acquired, then fades in (`_join_gain`), bounded by `STREAM_JOIN_HOLD_MAX_S`. Only a join is held: an ordinary reload is a device already in the room's sound, and muting it is a dropout the listener did not have before.
 
-### 8. Error Budget
-
-| Error source | Magnitude | Mitigation |
-|---|---|---|
-| Reported-position noise (per poll, after aggregation) | ~±7 ms | median filtering; drives coarse ladder only |
-| Custom-receiver DAC position (§4.4a) | sub-ms, plus clock-sync error | one report per poll; no median needed |
-| GCC-PHAT peak resolution at 44.1/48 kHz | ~0.1–0.3 ms | parabolic peak interpolation |
-| Microphone path asymmetry | ~1 ms per 34 cm | placement at listening position; two-position calibration |
-| Room reflections | peak smearing | PHAT weighting; windowed chirps; acceptance threshold |
-| Estimator residual drift | ≤ 3 ppm | periodic re-measurement; HOLDING budget ~10 min |
-| Microphone clock drift over one calibration | < 0.5 ms | single-recording differencing |
-
-Net achievable with the acoustic sensor: **±0.5–1 ms** inter-device at the calibration point, inside the ±2 ms target with margin. The target denotes multi-room echo-free reproduction; sub-millisecond phase-coherent stereo pairing across vendors within one room lies at the edge of feasibility and is not claimed.
-
-### 9. Empirical Results
-
-Reference deployment: two Google Cast devices (Chromecast-class and Nest Audio), LPCM/WAV over chunked HTTP at 44.1 kHz, reported-position sensor only, five-minute fixed observation windows.
-
-- **Steady-state alignment (reported-position domain):** per-device median |error| 3–13 ms, 90th percentile 7–29 ms; inter-device spread median 8–9 ms. These figures sit at the aggregated sensor's noise floor — the loop extracts essentially all the information the sensor contains.
-- **Drift estimation:** live estimates converge to 0–5 ppm and remain stable across sessions; in simulation against a known ground truth with realistic sensor noise, the estimator settles within ±2–4 ppm of the true rate, where the superseded integral controller oscillated between ±50 ppm clamps.
-- **Acquisition:** one buffer step per device per session (frequently zero for the high-latency device, whose model-based pre-alignment lands within the slew window), completing within ~10 s. The earlier single-reading policy produced a characteristic overshoot-and-return step pair at every start.
-- **Static latency:** θ session-to-session repeatability differs sharply between devices (§3), confirming recency-weighted per-device modelling.
-- **Chirp extraction:** ±0.001 ms recovery against ground truth under synthetic room conditions; in-room accuracy is expected to be dominated by the §8 acoustic terms rather than by the estimator.
-
-### 10. Limitations
-
-1. **Endpoint pipeline events break lock.** Rebuffering and reconnects cause seconds-long desynchronisation until re-acquisition; unavoidable without firmware access.
-2. **The group plays late** by approximately the largest device latency (observed up to ~6.5 s). Music is unaffected; lip-synchronised video is out of scope.
-3. **Bluetooth endpoints are excluded** (time-varying latency; no stable model).
-4. **Full automation requires a microphone**; without one the system is manual static offset plus open-loop drift hold.
-5. **Device behaviours require per-model accommodation** (stream-format probing, buffered-radio modes, firmware changes to latency); an ongoing compatibility matrix, not a one-off implementation.
-6. **Same-room phase-coherent pairing** across vendors is not a goal; the target is echo-free multi-room listening.
-7. **On the default receiver, endpoint displays show the session, not the item.** Track metadata and artwork ride on the load message that starts a device's stream, and closed endpoints offer no way to revise them afterwards; re-issuing the load would restart the device's buffering and cost the zone its alignment (§7.3), and at every track boundary it would exhaust the reload budget §7.1 measures rather than merely being expensive. A zone playing a multi-item queue therefore labels its screens with the **set** — the album, playlist or mix, or failing a name for it the queue's length — never with the head track, which would otherwise sit on every screen for the whole session and read as a stuck player. The controlling application tracks the individual item, where doing so is free. **The picture is the exception, on screens that redraw it.** The receiver takes one artwork URL and never asks again, so on a multi-item queue that URL is `/sync/art/<sid>.mjpg` — a `multipart/x-mixed-replace` image that never ends, each cover a new part — and the screen follows the track with no load issued. A cover is pushed when the item is *heard*, the group's lag after the decoder opened it. Only for models seen to redraw a streamed image (`live_art_models`: Pixel Tablet, Nest Hub); elsewhere the fixed cover stands, because a display that does not redraw shows nothing rather than something stale. Title and artist remain the set's.
-
-   In **receiver mode** the limitation does not apply: the custom receiver draws its own screen, so the engine pushes each item over the session WebSocket stamped with the server-clock instant the seam is *heard* — the same clock the receiver already estimates for its position reports (§4.4a). The display therefore turns over with the speakers rather than with the decoder, which is a delay line and a device buffer ahead of them, and it costs the audio path nothing. This is the only per-item display path: it needs an App ID registered for the receiver page (`media.cast.sync.app_id`, see `static/cast/README.md`).
-
-### 11. Future Work
-
-Programme-correlated acoustic tracking (§6.2) for continuous closed-loop operation; RAOP and UPnP transport senders alongside the Cast implementation; multi-microphone operation and cached per-model latency profiles; migration of the fan-out, resampling, and transport hot path to a compiled daemon; concurrent independent sessions, the engine still being single-session by construction.
-
-Ingest of arbitrary programme material (§4.1) and the per-device resampler (§4.2) are implemented and no longer future work. The empirical figures in §9 predate them and were taken on the generated timeline; they have not yet been re-measured against programme material, where the sensor is unchanged but the correction domain now carries real spectral content.
-
----
-
-### Appendix A. Implementation Invariants
-
-Rules the implementation depends on, kept here rather than in the source. Each one is a constraint whose violation has a specific consequence; the code carries a section reference where the hazard is not visible from the line itself.
-
-**A late joiner is seated only where it can be corrected from.** A device that was absent at session start rejoins against the target the group already derived, which is right — re-deriving it would cost the whole zone silence for a device that may be one of six. But the target was set without this one, so it may ask for a seat the timeline cannot give: a joiner *slower* than the target allows needs audio newer than has been written, and a joiner needing more history than the ring holds needs audio already discarded. Clamping it to the nearest edge, which is what an unchecked seat does, leaves it playing early with no move of the reader able to bring it back — the one late-joiner failure the correction ladder cannot undo. The seat is therefore tested against both ends of the delay line before it is taken, and a device that does not fit escalates to a re-align, which re-derives the target with it included.
-
-**Returning is not failing.** The re-align budget counts reloads that did not fix a device the ladder could not reach; past a couple, a reload is known not to work and only re-deriving the target will converge. A device that was simply switched off has not failed at any of that, so the reload that brings it back is not charged against the budget — otherwise a speaker powered on mid-session arrives one ordinary correction away from muting the entire zone.
-
-**Membership is a capability, not an id.** A zone can only hold devices it can both serve and measure; a device it can play to but not read back is an open loop, and the whole system is a closed one. That is a property of the ecosystem, so the engine asks the provider rather than matching on the id's prefix. A prefix test has to be edited every time another ecosystem learns to carry a timeline, and until it is, it silently drops the devices it has not heard of. The same answer decides what a zone will accept as a member and what the interface offers as groupable, so the two cannot drift apart. Native grouping is a separate capability: an ecosystem whose own firmware syncs its members needs no timing help here, and is offered as itself rather than as a zone.
-
-**One box is one box, however many ways it answers.** A single speaker can be discovered by two ecosystems at once — a WiiM Ultra answers Cast discovery and LinkPlay both — and then arrives as two players, with two ids, two model keys, and two sets of learned timing that know nothing about each other. A listener who aligns it through one has not aligned it through the other, and the two can be learned to disagree about the same hardware. The output pipeline a trim describes belongs to the box, not to the protocol it was reached through, so the device's address — the one identity both ecosystems can agree on, neither vendor's id meaning anything to the other — ties them together, and an offset set through either applies to both. A provider that cannot name a device's address says so and opts out: no identity is safer than a shared one, since a wrong match hands one speaker's timing to another.
-
 #### 7.6 Relating Models That Were Never Heard Together
 
 A trim is only ever established by aligning a device against another one in the same zone, so what the listener produces is a relation, not an absolute: this hub needs 81 ms more than that streamer. Recording only the absolute throws that structure away, and every new model then has to be aligned against whatever happened to be playing beside it. Recording the relation instead makes alignments compose — a WiiM aligned against a hub and a Mini aligned against the same hub leaves the WiiM and the Mini related, without those two ever having shared a zone. Each new model costs one alignment and is then on the same scale as the whole fleet.
@@ -625,6 +569,62 @@ The arithmetic is why the answer drops straight into the existing store. The sub
 **An inconclusive search is refused rather than rounded.** Answers that contradict each other leave the bracket open when the round budget runs out. That is evidence about the test, not about the speakers — they may be far enough apart that the room arrives before the direct sound, or close enough that no delta separates them — and the midpoint of a bracket that never narrowed describes nothing. The offset is left where it was.
 
 **"Together" ends the search where it stands.** A listener who cannot separate the two is reporting that the bracket is already inside their resolution. Continuing would record their coin-flips as measurements.
+
+### 8. Error Budget
+
+| Error source | Magnitude | Mitigation |
+|---|---|---|
+| Reported-position noise (per poll, after aggregation) | ~±7 ms | median filtering; drives coarse ladder only |
+| Custom-receiver DAC position (§4.4a) | sub-ms, plus clock-sync error | one report per poll; no median needed |
+| GCC-PHAT peak resolution at 44.1/48 kHz | ~0.1–0.3 ms | parabolic peak interpolation |
+| Microphone path asymmetry | ~1 ms per 34 cm | placement at listening position; two-position calibration |
+| Room reflections | peak smearing | PHAT weighting; windowed chirps; acceptance threshold |
+| Estimator residual drift | ≤ 3 ppm | periodic re-measurement; HOLDING budget ~10 min |
+| Microphone clock drift over one calibration | < 0.5 ms | single-recording differencing |
+
+Net achievable with the acoustic sensor: **±0.5–1 ms** inter-device at the calibration point, inside the ±2 ms target with margin. The target denotes multi-room echo-free reproduction; sub-millisecond phase-coherent stereo pairing across vendors within one room lies at the edge of feasibility and is not claimed.
+
+### 9. Empirical Results
+
+Reference deployment: two Google Cast devices (Chromecast-class and Nest Audio), LPCM/WAV over chunked HTTP at 44.1 kHz, reported-position sensor only, five-minute fixed observation windows.
+
+- **Steady-state alignment (reported-position domain):** per-device median |error| 3–13 ms, 90th percentile 7–29 ms; inter-device spread median 8–9 ms. These figures sit at the aggregated sensor's noise floor — the loop extracts essentially all the information the sensor contains.
+- **Drift estimation:** live estimates converge to 0–5 ppm and remain stable across sessions; in simulation against a known ground truth with realistic sensor noise, the estimator settles within ±2–4 ppm of the true rate, where the superseded integral controller oscillated between ±50 ppm clamps.
+- **Acquisition:** one buffer step per device per session (frequently zero for the high-latency device, whose model-based pre-alignment lands within the slew window), completing within ~10 s. The earlier single-reading policy produced a characteristic overshoot-and-return step pair at every start.
+- **Static latency:** θ session-to-session repeatability differs sharply between devices (§3), confirming recency-weighted per-device modelling.
+- **Chirp extraction:** ±0.001 ms recovery against ground truth under synthetic room conditions; in-room accuracy is expected to be dominated by the §8 acoustic terms rather than by the estimator.
+
+### 10. Limitations
+
+1. **Endpoint pipeline events break lock.** Rebuffering and reconnects cause seconds-long desynchronisation until re-acquisition; unavoidable without firmware access.
+2. **The group plays late** by approximately the largest device latency (observed up to ~6.5 s). Music is unaffected; lip-synchronised video is out of scope.
+3. **Bluetooth endpoints are excluded** (time-varying latency; no stable model).
+4. **Full automation requires a microphone**; without one the system is manual static offset plus open-loop drift hold.
+5. **Device behaviours require per-model accommodation** (stream-format probing, buffered-radio modes, firmware changes to latency); an ongoing compatibility matrix, not a one-off implementation.
+6. **Same-room phase-coherent pairing** across vendors is not a goal; the target is echo-free multi-room listening.
+7. **On the default receiver, endpoint displays show the session, not the item.** Track metadata and artwork ride on the load message that starts a device's stream, and closed endpoints offer no way to revise them afterwards; re-issuing the load would restart the device's buffering and cost the zone its alignment (§7.3), and at every track boundary it would exhaust the reload budget §7.1 measures rather than merely being expensive. A zone playing a multi-item queue therefore labels its screens with the **set** — the album, playlist or mix, or failing a name for it the queue's length — never with the head track, which would otherwise sit on every screen for the whole session and read as a stuck player. The controlling application tracks the individual item, where doing so is free. **The picture is the exception, on screens that redraw it.** The receiver takes one artwork URL and never asks again, so on a multi-item queue that URL is `/sync/art/<sid>.mjpg` — a `multipart/x-mixed-replace` image that never ends, each cover a new part — and the screen follows the track with no load issued. A cover is pushed when the item is *heard*, the group's lag after the decoder opened it. Only for models seen to redraw a streamed image (`live_art_models`: Pixel Tablet, Nest Hub); elsewhere the fixed cover stands, because a display that does not redraw shows nothing rather than something stale. Title and artist remain the set's.
+
+   In **receiver mode** the limitation does not apply: the custom receiver draws its own screen, so the engine pushes each item over the session WebSocket stamped with the server-clock instant the seam is *heard* — the same clock the receiver already estimates for its position reports (§4.4a). The display therefore turns over with the speakers rather than with the decoder, which is a delay line and a device buffer ahead of them, and it costs the audio path nothing. This is the only per-item display path: it needs an App ID registered for the receiver page (`media.cast.sync.app_id`, see `static/cast/README.md`).
+
+### 11. Future Work
+
+Programme-correlated acoustic tracking (§6.2) for continuous closed-loop operation; RAOP and UPnP transport senders alongside the Cast implementation; multi-microphone operation and cached per-model latency profiles; migration of the fan-out, resampling, and transport hot path to a compiled daemon; concurrent independent sessions, the engine still being single-session by construction.
+
+Ingest of arbitrary programme material (§4.1) and the per-device resampler (§4.2) are implemented and no longer future work. The empirical figures in §9 predate them and were taken on the generated timeline; they have not yet been re-measured against programme material, where the sensor is unchanged but the correction domain now carries real spectral content.
+
+---
+
+### Appendix A. Implementation Invariants
+
+Rules the implementation depends on, kept here rather than in the source. Each one is a constraint whose violation has a specific consequence; the code carries a section reference where the hazard is not visible from the line itself.
+
+**A late joiner is seated only where it can be corrected from.** A device that was absent at session start rejoins against the target the group already derived, which is right — re-deriving it would cost the whole zone silence for a device that may be one of six. But the target was set without this one, so it may ask for a seat the timeline cannot give: a joiner *slower* than the target allows needs audio newer than has been written, and a joiner needing more history than the ring holds needs audio already discarded. Clamping it to the nearest edge, which is what an unchecked seat does, leaves it playing early with no move of the reader able to bring it back — the one late-joiner failure the correction ladder cannot undo. The seat is therefore tested against both ends of the delay line before it is taken, and a device that does not fit escalates to a re-align, which re-derives the target with it included.
+
+**Returning is not failing.** The re-align budget counts reloads that did not fix a device the ladder could not reach; past a couple, a reload is known not to work and only re-deriving the target will converge. A device that was simply switched off has not failed at any of that, so the reload that brings it back is not charged against the budget — otherwise a speaker powered on mid-session arrives one ordinary correction away from muting the entire zone.
+
+**Membership is a capability, not an id.** A zone can only hold devices it can both serve and measure; a device it can play to but not read back is an open loop, and the whole system is a closed one. That is a property of the ecosystem, so the engine asks the provider rather than matching on the id's prefix. A prefix test has to be edited every time another ecosystem learns to carry a timeline, and until it is, it silently drops the devices it has not heard of. The same answer decides what a zone will accept as a member and what the interface offers as groupable, so the two cannot drift apart. Native grouping is a separate capability: an ecosystem whose own firmware syncs its members needs no timing help here, and is offered as itself rather than as a zone.
+
+**One box is one box, however many ways it answers.** A single speaker can be discovered by two ecosystems at once — a WiiM Ultra answers Cast discovery and LinkPlay both — and then arrives as two players, with two ids, two model keys, and two sets of learned timing that know nothing about each other. A listener who aligns it through one has not aligned it through the other, and the two can be learned to disagree about the same hardware. The output pipeline a trim describes belongs to the box, not to the protocol it was reached through, so the device's address — the one identity both ecosystems can agree on, neither vendor's id meaning anything to the other — ties them together, and an offset set through either applies to both. A provider that cannot name a device's address says so and opts out: no identity is safer than a shared one, since a wrong match hands one speaker's timing to another.
 
 ### Appendix B. Glossary
 

@@ -131,8 +131,8 @@ model):
   dashboards, and LAN service accounts.
 - **Brute force**: per-IP rate limiting and per-account lockout are
   always on; Cloudflare's edge adds its own DDoS protection.
-- **Anonymous surface**: the API map (`/routes`, `/api-docs`) and
-  `/api/system/status` are only served anonymously to LAN clients;
+- **Anonymous surface**: the API map (`/routes`, `/api-docs`,
+  `/api/routes`) is only served anonymously to LAN clients;
   internet visitors see the login page and nothing else. The first-run
   setup wizard is LAN-only.
 - **Extra wall (optional, not required)**: the tunnel setup above is

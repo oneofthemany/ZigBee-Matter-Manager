@@ -6,9 +6,10 @@ Cross-check what the docs, the frontend and the code each say exists. Read-only.
   cite      a code comment cites ``name.md §N`` and the doc or section is gone
   path      a doc names a repo file (``modules/x.py``) that doesn't exist
   symbol    a doc names ``func()`` or ``Class.method`` defined nowhere
-  doc       a numbered heading out of order (a section pasted in the wrong place)
+  doc       a numbered heading out of order, or under the wrong section
   config    a *_DEFAULTS mirror in routes/config_routes.py disagrees with
-            config/config.yaml (key missing on one side, or a different value)
+            config/config.yaml: a mirrored default YAML lacks, or a different
+            value. YAML keys the mirror doesn't repeat are not drift
 
 ``--undocumented`` also lists backend routes no doc or frontend file mentions.
 
@@ -71,9 +72,11 @@ def route_matches(path: str, routes: set[str]) -> bool:
 
 
 class Routes(ast.NodeVisitor):
-    def __init__(self):
+    def __init__(self, calls):
         self.prefix: dict[str, str] = {}
         self.found: list[tuple[str, str, str, int]] = []
+        self.templates: list = []
+        self.calls = calls
         self.path = ""
 
     def visit_Assign(self, node):
@@ -101,15 +104,55 @@ class Routes(ast.NodeVisitor):
             self.found.append((d.func.attr.upper(), self.prefix.get(owner, "") + path,
                                self.path, d.lineno))
 
+    def _path_of(self, arg, names):
+        """A literal or f-string path; a parameter hole stays as {=name}."""
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+        if isinstance(arg, ast.JoinedStr):
+            return "".join(v.value if isinstance(v, ast.Constant)
+                           else names.get(getattr(v.value, "id", None), "{}") for v in arg.values)
+        if isinstance(arg, ast.Name):
+            return names.get(arg.id)
+        return None
+
     def visit_FunctionDef(self, node):
         self._deco(node)
+        # app.get(path)(handler): routes registered by call, not decorator. A
+        # path built from a parameter is a template, filled from call sites.
+        params = [a.arg for a in node.args.args]
+        names = {name: "{=" + name + "}" for name in params}
+        for stmt in ast.walk(node):
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                path = self._path_of(stmt.value, names)
+                if path is not None:
+                    names[stmt.targets[0].id] = path
+        for call in ast.walk(node):
+            inner = call.func if isinstance(call, ast.Call) else None
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr in METHODS and inner.args):
+                path = self._path_of(inner.args[0], names)
+                if path is None or not path.startswith("/"):
+                    continue
+                owner = inner.func.value.id if isinstance(inner.func.value, ast.Name) else ""
+                route = (inner.func.attr.upper(), self.prefix.get(owner, "") + path, self.path, inner.lineno)
+                (self.templates.append((node.name, params, route)) if "{=" in path
+                 else self.found.append(route))
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        # Literal arguments at each call site, for filling route templates.
+        name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+        if name:
+            self.calls.setdefault(name, []).append(
+                [a.value if isinstance(a, ast.Constant) and isinstance(a.value, str) else None
+                 for a in node.args])
         self.generic_visit(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
 
 def backend(root: Path):
-    routes, defs = [], set()
+    routes, defs, templates, calls = [], set(), [], {}
     for p, rel in files(root, ".py"):
         if rel.parts[0] == "scripts":
             continue
@@ -117,16 +160,27 @@ def backend(root: Path):
             tree = ast.parse(p.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        v = Routes()
+        v = Routes(calls)
         v.path = str(rel)
         v.visit(tree)
         routes += v.found
+        templates += v.templates
         for n in ast.walk(tree):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 defs.add(n.name)
                 if isinstance(n, ast.ClassDef):
                     defs.update(f"{n.name}.{m.name}" for m in n.body
                                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    # Fill each parameter-built path from call sites; an unresolved one is
+    # dropped, never kept as a wildcard that would hide drift.
+    for func, params, (method, path, src, line) in templates:
+        for args in calls.get(func, []):
+            filled = path
+            for index, param in enumerate(params):
+                if f"{{={param}}}" in filled and index < len(args) and args[index] is not None:
+                    filled = filled.replace(f"{{={param}}}", args[index])
+            if "{=" not in filled:
+                routes.append((method, filled, src, line))
     # Python isn't the only source of names a doc may cite.
     for p, _ in files(root, ".js", ".kt"):
         text = p.read_text(encoding="utf-8", errors="replace")
@@ -156,19 +210,37 @@ def headings(md: str) -> set[str]:
     return out
 
 
-def out_of_order(md: str):
-    """Numbered headings that come after a later-numbered one."""
-    last, last_line = None, 0
+def misplaced_headings(md):
+    """Numbered headings out of order among their siblings, or numbered under
+    the wrong section: 7.6 placed outside a section 7 the doc does have.
+    Headings in code fences are not headings."""
+    heads, in_code = [], False
     for lineno, line in enumerate(md.splitlines(), 1):
-        m = re.match(r"^#+\s*§?\s*(\d+(?:\.\d+)*)\.?\s", line)
-        if not m:
-            continue
-        num = tuple(int(x) for x in m.group(1).split("."))
-        # A heading numbered 1 starts a fresh numbered run (steps in a recipe).
-        if last and num < last and num[-1] != 1:
-            yield lineno, ".".join(map(str, num)), ".".join(map(str, last)), last_line
-        last, last_line = num, lineno
-
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+        m = None if in_code else re.match(r"^(#+)\s", line)
+        if m:
+            n = re.match(r"^#+\s*(?:Appendix\s+)?§?\s*(\d+(?:\.\d+)*)\.?\s", line)
+            num = tuple(int(x) for x in n.group(1).split(".")) if n else None
+            heads.append((lineno, len(m.group(1)), num, line.lstrip("#").strip()))
+    present = {num for _, _, num, _ in heads if num}
+    stack = []  # open ancestors: [level, num, title, last numbered child]
+    for lineno, level, num, title in heads:
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent = stack[-1] if stack else None
+        if num:
+            owner = num[:-1]
+            if len(num) > 1 and owner in present and not any(a[1] == owner for a in stack):
+                where = parent[2] if parent else "the top of the doc"
+                yield lineno, f"section {'.'.join(map(str, num))} sits under '{where}', not section {'.'.join(map(str, owner))}"
+            if parent is not None:
+                last = parent[3]
+                # A heading numbered 1 starts a fresh run (steps in a recipe).
+                if last and num < last[0] and num[-1] != 1:
+                    yield lineno, f"section {'.'.join(map(str, num))} comes after section {'.'.join(map(str, last[0]))} (line {last[1]})"
+                parent[3] = (num, lineno)
+        stack.append([level, num, title, None])
 
 def ignored(root: Path) -> set[str]:
     """Anchored, literal .gitignore entries: files a doc may name that are made at runtime."""
@@ -213,9 +285,8 @@ def check(root: Path, undocumented: bool):
         docs.setdefault(rel.name, (p.read_text(encoding="utf-8", errors="replace"), rel))
     runtime_files = ignored(root)
     for name, (text, rel) in docs.items():
-        for lineno, num, prev, prev_line in out_of_order(text):
-            out.append({"kind": "doc", "file": str(rel), "line": lineno,
-                        "detail": f"section {num} comes after section {prev} (line {prev_line})"})
+        for lineno, detail in misplaced_headings(text):
+            out.append({"kind": "doc", "file": str(rel), "line": lineno, "detail": detail})
     for name, (text, rel) in docs.items():
         if rel.parts[0] not in ("docs",) and rel.name not in ("README.md", "AGENTS.md"):
             continue
@@ -301,9 +372,10 @@ def config_mirror(root: Path):
                         "detail": f"{name} mirrors '{section}', which config.yaml lacks"})
             continue
         for path, a, b in diff(defaults, yaml_side, section):
+            # The mirror fills gaps for what the UI edits; YAML may hold more.
             if a is MISSING:
-                d = f"{path}: in config.yaml ({b!r}), missing from {name}"
-            elif b is MISSING:
+                continue
+            if b is MISSING:
                 d = f"{path}: in {name} ({a!r}), missing from config.yaml"
             else:
                 d = f"{path}: {name} says {a!r}, config.yaml says {b!r}"

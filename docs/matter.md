@@ -302,9 +302,9 @@ grep "matter_bridge" /opt/zigbee_manager/logs/zigbee.log
 | `/api/matter/commission`      | POST   | Commission device `{"code": "..."}` |
 | `/api/matter/remove`          | POST   | Remove node `{"node_id": N}`        |
 | `/api/devices`                | GET    | Merged Zigbee + Matter device list   |
-| `/api/device/{ieee}/command`  | POST   | Routed by `matter_` prefix           |
-| `/api/device/{ieee}/remove`   | POST   | Routed by `matter_` prefix           |
-| `/api/device/{ieee}/rename`   | POST   | Routed by `matter_` prefix           |
+| `/api/device/command`         | POST   | `{"ieee": "matter_<node>", ...}`: routed by the `matter_` prefix |
+| `/api/device/remove`          | POST   | Same body shape and routing          |
+| `/api/device/rename`          | POST   | Same body shape and routing          |
 
 ---
 

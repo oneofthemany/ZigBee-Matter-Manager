@@ -1,4 +1,4 @@
-# Notifications, Requests & Web Push
+# Notifications, Messages & Web Push
 
 Three related things, easiest understood by what each can reach:
 
@@ -6,7 +6,7 @@ Three related things, easiest understood by what each can reach:
 |---|---|---|
 | **In-app / browser notifications** | a browser with ZMM open | notification permission |
 | **Web Push** | a device with the screen off | permission **+ a trusted HTTPS address** |
-| **Requests** | a person, and tells the sender if ignored | either channel above |
+| **Messages** | a person: their conversation thread, pushed to their phone | Web Push for the phone |
 
 ---
 
@@ -42,64 +42,6 @@ same warning.
 > **This is also why enabling notifications is not part of first-run setup.**
 > The setup wizard is LAN-only by design, which is exactly where notifications
 > cannot be enabled. Enable them later, from your tunnel address.
-
----
-
-## Requests — asks that need an answer
-
-A notification is fire-and-forget: nobody learns whether it arrived. A
-**request** is addressed to a person, expects accept or decline, and escalates
-to the sender when neither comes.
-
-```
-Sean reaches the shops  ->  "Get milk?" sent to Alex
-Alex accepts            ->  Sean sees it was accepted
-nobody answers in 20m   ->  Sean is told it lapsed
-```
-
-### State is authoritative; delivery is not
-
-A request exists and expires identically whether or not any notification
-arrived. A phone that was off, a browser that was closed, and a person who
-ignored it all end in the same place — which is what makes the escalation
-trustworthy. A failed push never rolls back a request.
-
-### Answering
-
-- from the **header badge** in ZMM (persists until answered, shows time left),
-- or straight from the **push notification**, which carries Accept / Decline
-  buttons — no need to open the app.
-
-Answering something that already expired returns `409` and says so, rather
-than leaving a button that appears to work.
-
-### From an automation
-
-```yaml
-type: request
-to_user: alex
-message: "Get milk?"
-timeout_s: 1200        # 20 minutes
-from_user: sean        # optional; defaults to "zmm"
-```
-
-The rule does **not** wait for the answer. Blocking a sequence for twenty
-minutes would tie up the engine and make the outcome depend on the hub staying
-up; the escalation closes the loop instead.
-
-### API
-
-| | |
-|---|---|
-| `GET /api/requests` | yours (sent or received); admin sees all |
-| `POST /api/requests` | create one |
-| `POST /api/requests/{id}/accept` | accept — addressee only |
-| `POST /api/requests/{id}/decline` | decline — addressee only |
-| `POST /api/requests/sweep` | force an expiry pass (admin; useful for testing escalation) |
-
-Unanswered requests expire after their timeout; answered ones are kept 24h so
-the UI can show what happened, then dropped. This is a scratchpad for asks in
-flight, not a message archive.
 
 ---
 
@@ -167,7 +109,6 @@ Subscriptions are removed automatically when a push service reports them gone
 | Works with ZMM open, not when closed | No push subscription; only the in-app channel is active. Rules still run on the hub — enable push on that device. |
 | Nothing on iOS | ZMM must be installed to the home screen first. |
 | `POST /api/push/test` says no subscriptions | That account has not registered a device. Enable notifications in a browser signed in as that account. |
-| Requests expire though the phone was on | Push not configured for the recipient — the ask still lapses and the sender is told, which is the intended honest outcome. |
 | Accept from the notification does nothing | Session cookie expired; open ZMM and sign in again. |
 
 ## Secure context is the usual blocker
@@ -186,7 +127,7 @@ with a publicly-issued certificate, everything works.
 
 ## Permission vs subscription
 
-These are distinct, and requests need the second:
+These are distinct, and a message to a phone needs the second:
 
 - `Notification.permission` lets the **page** raise a notification while it is
   running.
@@ -313,7 +254,7 @@ labels and icons for the editor in `static/js/notifications.js`.
 
 Everything else in this codebase notifies a browser that is already running.
 Web Push (`modules/webpush.py`) is the only mechanism that reaches a device with
-the screen off, and it is what makes a request ("get milk?") arrive when it
+the screen off, and it is what makes a message ("get milk?") arrive when it
 matters rather than when someone next opens the page.
 
 ### What the relay can see

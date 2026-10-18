@@ -239,15 +239,6 @@ Response: {
 }
 ```
 
-### Get Motion Events
-```
-GET /api/debug/motion_events?limit=50
-Response: {
-  "success": true,
-  "events": [...]
-}
-```
-
 ### Download Log File
 ```
 GET /api/debug/log_file?lines=1000

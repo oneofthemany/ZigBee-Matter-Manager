@@ -539,7 +539,7 @@ An editor for the running container, with the safety rails that makes necessary.
 Upgrade from the web UI — no SSH, no `build.sh` re-run. The system pulls a tagged release from GitHub, builds a new container image in the background while the current app keeps running, then atomic-swaps when you choose. If the new container fails to start or fails health-check, it rolls back automatically.
 
 - **Blue-green deployment** — new image builds in parallel; only the final swap causes a brief (~15 s) interruption
-- **Atomic swap with auto-rollback** — health-check-gated; if the new container doesn't respond at `/api/status` within 60 s, the previous container is restored
+- **Atomic swap with auto-rollback** — health-check-gated; if the new container doesn't respond at `/api/system/health` within 60 s, the previous container is restored
 - **One-click manual rollback** — the previous container and image are retained after every successful upgrade, and rollback to *any* retained version is driven from the [ZMM Manager](#-zmm-manager-the-sidecar), so it works with the app down
 - **GitHub tag polling** — background check every 6 hours with a toast when a release appears; manual "Check now" too
 - **Configurable auto-update** — off by default; when enabled, updates install only inside a quiet window (default 03:00–05:00) so the hub never restarts mid heating cycle or mid pairing
@@ -1008,7 +1008,7 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/security.md](docs/security.md) | MFA, lockout, LAN-only accounts, smart locks, tile proxy |
 | [docs/auth.md](docs/auth.md) | Users, groups, scopes and tokens |
 | [docs/remote_access.md](docs/remote_access.md) | Managed Cloudflare Tunnel |
-| [docs/notifications.md](docs/notifications.md) | Notifications, requests, messages and web push |
+| [docs/notifications.md](docs/notifications.md) | Notifications, messages and web push |
 | [docs/air-conditioning.md](docs/air-conditioning.md) | Gree and Midea local-LAN AC control |
 | [docs/external-apis.md](docs/external-apis.md) | Settings → APIs — every integration at a glance; Blueair and HomeKit TVs in full |
 | [docs/telemetry_database.md](docs/telemetry_database.md) | DuckDB stores — resilience, repair and recovery |

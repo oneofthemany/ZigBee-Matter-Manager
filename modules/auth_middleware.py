@@ -146,9 +146,7 @@ ANONYMOUS_PREFIXES: Tuple[str, ...] = (
 # Paths that skip auth ONLY for LAN clients (or anyone authenticated).
 # These leak internals (API map, system info) we don't want to hand to
 # anonymous internet traffic when ZMM is exposed via a tunnel/proxy.
-LAN_ANONYMOUS_PATHS: Tuple[str, ...] = (
-    "/api/system/status",        # very basic status — read-only
-)
+LAN_ANONYMOUS_PATHS: Tuple[str, ...] = ()
 
 LAN_ANONYMOUS_PREFIXES: Tuple[str, ...] = (
     "/api-docs",                 # docs viewer is read-only static html/js

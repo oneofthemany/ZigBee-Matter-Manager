@@ -34,11 +34,11 @@ MEDIA_DEFAULTS = {
     "enabled": False,
     "poll_interval_seconds": 10,
     "adopt_sessions": True,
-    # Sub-source defaults mirror modules/media/service.py: cast and wiim
-    # default ON when the key is absent (they only matter once media.enabled
-    # is true), radio_browser ON, tidal and speaker-sync OFF.
+    # Sub-source defaults mirror config.yaml and modules/media/service.py:
+    # wiim and radio_browser ON (they only matter once media.enabled is true),
+    # cast, tidal and speaker-sync OFF.
     "cast": {
-        "enabled": True,
+        "enabled": False,
         "app_id": "CC1AD845",
         "lyrics_app_id": "",
         "karaoke": False,
@@ -64,16 +64,18 @@ MEDIA_DEFAULTS = {
     "eq": {"base_url": ""},
 }
 
+# Each lock integration is opt-in; once on, its channels default ON, as
+# routes/security_routes.py reads them, so saving the form keeps them on.
 SECURITY_DEFAULTS = {
     "nuki": {
         "enabled": False,
-        "bridge": {"enabled": False, "host": "", "port": 8080,
+        "bridge": {"enabled": True, "host": "", "port": 8080,
                    "hashed_token": True},
-        "matter": {"enabled": False},
+        "matter": {"enabled": True},
     },
     "yale": {
         "enabled": False,
-        "matter": {"enabled": False},
+        "matter": {"enabled": True},
     },
 }
 

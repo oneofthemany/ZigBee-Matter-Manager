@@ -155,7 +155,7 @@ class MediaService:
                 logger.warning(f"AirPlay support unavailable (pyatv not installed?): {e}")
 
         cast_cfg = config.get("cast", {}) or {}
-        if cast_cfg.get("enabled", True):
+        if cast_cfg.get("enabled", False):
             # Imported lazily so the app still boots if pychromecast isn't installed.
             try:
                 from modules.media.players.cast import CastPlayerProvider

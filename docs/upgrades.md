@@ -1070,7 +1070,7 @@ Known limitations and planned improvements:
 2. **Schema migration hooks.** No mechanism for "v1.4.0 needs to migrate `config.yaml` from schema v1 to v2 before starting". Currently relies on backward-compatible config parsing in the app.
 3. **Auto-swap option.** Currently auto-update stops at `ready_to_swap`. Add an "auto-swap during quiet window" toggle for users who want fully unattended upgrades.
 4. **Multi-step rollback.** Currently retains only the immediate previous version. Could add a "rollback chain" of N versions, but disk usage on a Rock 5B is the limiting factor (each image is ~1.5–2 GB).
-5. **Health check granularity.** `/api/status` returning 200 means "the app started". Could add a `/api/status?ready=true` variant that only returns 200 when all services are fully initialized — but with 40+ devices this can take 30+ seconds, longer than the 60-second swap window allows.
+5. **Health check granularity.** `/api/system/health` returning 200 means "the app started". Could add a `/api/system/health?ready=true` variant that only returns 200 when all services are fully initialized — but with 40+ devices this can take 30+ seconds, longer than the 60-second swap window allows.
 6. **Build resumability.** A failed build today must be re-run from scratch. Podman caches layers internally, so the rebuild is fast — but the framework could expose a "Resume" button instead of "Build again".
 7. **GitHub authentication.** Currently unauthenticated (60 req/hr). For users hitting the limit, add an optional `github.token` to `config.yaml` for 5000 req/hr.
 

@@ -54,6 +54,8 @@ media:
                               # (the Cast device rejects our self-signed HTTPS).
       app_id: ""              # Cast console App ID registered for
                               # http://<zmm-host>:8010/cast/sync_receiver.html
+      mic_device: ""          # input used to measure speaker latency; blank =
+                              # the system default input
       live_art_models:        # screens given artwork that follows the track:
         - pixel tablet        # one never-ending image, a new part per cover
         - nest hub            # (open-zone.md §10.7). Substrings of the model
@@ -73,8 +75,19 @@ media:
                               # one is on HDMI-ARC/optical/BT and leaves it be
     discovery: true           # also add discovered boxes as WiiM players
     state_file: ./data/linkplay_state.json   # learned per-box Cast mode
+  sonos:
+    enabled: false            # opt-in: needs the soco package, and its SSDP
+    discovery: true           # discovery sweeps the LAN on startup
+    devices: []               # manual IPs, optional
+  airplay:
+    enabled: false            # opt-in: this host decodes and pushes every
+    discovery: true           # stream through ffmpeg, which costs CPU the
+    devices: []               # URL-fetching players do not
   radio_browser:
     enabled: true
+  eq:                         # Cast EQ proxy
+    base_url: ""              # this app's LAN address, so speakers can fetch
+                              # the processed stream. Blank = tidal.manifest_base_url
   tts:                        # text-to-speech for automation announcements
     base_url: "https://translate.google.com/translate_tts"  # keyless; swap engine here
     lang: en
@@ -204,6 +217,23 @@ security:
     # lan_ranges:
     #   - "192.168.0.0/16"
     #   - "10.0.0.0/8"
+
+  # Smart locks (Settings → APIs → Security). Each integration is opt-in; once
+  # on, its channels are used unless switched off here.
+  nuki:
+    enabled: false
+    bridge:                   # Nuki Bridge HTTP API on the LAN
+      enabled: true
+      host: ""
+      port: 8080
+      hashed_token: true      # send the token as a hash, never in clear
+    matter:
+      enabled: true           # locks commissioned over Matter
+  yale:
+    enabled: false
+    matter:
+      enabled: true           # the only channel: Yale's cloud API is not
+                              # open to third-party apps
 
 # Matter integration (optional — requires python-matter-server)
 matter:
@@ -378,6 +408,23 @@ zigbee:
   # ================================================================
   deconz:
     baudrate: auto           # 38400 for ConBee II/III/RaspBee, 57600 for ConBee I
+
+octopus:
+  # Octopus Energy consumption, tariffs and Home Mini telemetry (Energy tab).
+  # The API key is set from Settings → APIs → Octopus and is not shipped here.
+  enabled: false
+  account_number: ""          # A-XXXXXXXX
+  gas_calorific_value: 39.5   # MJ/m³, for converting m³ to kWh. Your bill shows
+                              # the value for your area.
+  gas_unit: auto              # auto | kwh | m3: the unit the gas meter reports.
+                              # auto assumes m³ (SMETS2); set kwh for SMETS1.
+  consumption_poll_minutes: 30  # at least 5
+  rates_poll_minutes: 60      # at least 15
+  backfill_days: 90           # history fetched on first start (max 730)
+  home_mini: false            # live demand from an Octopus Home Mini
+  telemetry_poll_minutes: 5   # Home Mini reads, when home_mini is on
+  retention_days: 400         # over a year, so year-on-year comparison works
+                              # (at least 7)
 
 fuel:
   # Cheapest-fuel lookups for the Drive tab and the Android Auto screen.

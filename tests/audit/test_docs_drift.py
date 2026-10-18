@@ -75,9 +75,9 @@ def run() -> Checker:
                 any("design.md §3.4" in d for d in details), details)
         c.check("a cite to a missing doc is reported",
                 any("gone.md" in d for d in details), details)
-        c.check("a heading numbered below its predecessor is reported",
-                any("section 2.9 comes after section 4" in d for d in kinds.get("doc", [])),
-                kinds.get("doc"))
+        c.check("a subsection placed outside its section is reported",
+                any("section 2.9 sits under '4. Later', not section 2" in d
+                    for d in kinds.get("doc", [])), kinds.get("doc"))
 
         c.section("paths and symbols")
         c.check("a doc naming a missing file is reported, an existing one is not",
