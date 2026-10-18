@@ -160,6 +160,11 @@ def _get_db():
             os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
             db = _connect_local_db(DB_PATH)
             _init_tables(db)
+            try:
+                _migrate_tick_timestamps(db)
+            except Exception as e:
+                # Unmigrated ticks only misalign the anomaly gate; never block the open.
+                logger.warning(f"Heating tick re-stamp failed, will retry next open: {e}")
             _db = db
             _finish_db_init()
     return _db
@@ -594,7 +599,88 @@ def _init_tables(db):
             )
         """)
 
+    # Applied once-only data migrations. Schema, not data: a rebuild copies only
+    # tables created here, so a migrated database keeps its marker.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS telemetry_migrations (
+            name        VARCHAR PRIMARY KEY,
+            applied_at  TIMESTAMP NOT NULL DEFAULT now()
+        )
+    """)
+
     logger.debug("Telemetry tables initialised")
+
+
+HEATING_TICK_TABLES = ("heating_tick_rooms", "heating_tick_boiler")
+_TICK_ZONE_MIGRATION = "heating_ticks_session_zone"
+
+
+def _session_zone_of(db):
+    try:
+        return ZoneInfo(db.execute("SELECT current_setting('TimeZone')").fetchone()[0])
+    except Exception:
+        return timezone.utc
+
+
+_tick_zone_cached = None
+
+
+def _tick_zone():
+    """The session zone, read once: it is fixed for the life of the connection."""
+    global _tick_zone_cached
+    if _tick_zone_cached is None:
+        _tick_zone_cached = session_zone()
+    return _tick_zone_cached
+
+
+def _local_to_session_offsets(lo: datetime, hi: datetime, zone) -> List[Tuple[datetime, int]]:
+    """Piecewise (range end, seconds) taking Python-local wall time in [lo, hi]
+    to wall time in `zone`. Hourly steps find every clock change in between."""
+    ranges: List[Tuple[datetime, int]] = []
+    t = lo.replace(minute=0, second=0, microsecond=0)
+    while t <= hi + timedelta(hours=1):
+        session = datetime.fromtimestamp(t.timestamp(), zone).replace(tzinfo=None)
+        offset = int((t - session).total_seconds())
+        if ranges and ranges[-1][1] == offset:
+            ranges[-1] = (t + timedelta(hours=1), offset)
+        else:
+            ranges.append((t + timedelta(hours=1), offset))
+        t += timedelta(hours=1)
+    return ranges
+
+
+def _migrate_tick_timestamps(db) -> None:
+    """Re-stamp heating ticks written as Python local time into session wall
+    time, once. Runs at open, under _db_lock, before this process writes a tick.
+
+    The zone name isn't available in SQL (the container gets /etc/localtime as
+    a file, not a TZ name), so Python's own local rules give the offset per
+    stretch between clock changes, applied in one UPDATE so no row moves twice.
+    """
+    if db.execute("SELECT 1 FROM telemetry_migrations WHERE name = ?",
+                  [_TICK_ZONE_MIGRATION]).fetchone():
+        return
+    zone = _session_zone_of(db)
+    db.execute("BEGIN TRANSACTION")
+    try:
+        for table in HEATING_TICK_TABLES:
+            lo, hi = db.execute(f"SELECT min(ts), max(ts) FROM {table}").fetchone()
+            if lo is None:
+                continue
+            ranges = _local_to_session_offsets(lo, hi, zone)
+            if all(offset == 0 for _, offset in ranges):
+                continue
+            arms = " ".join(
+                f"WHEN ts < TIMESTAMP '{end:%Y-%m-%d %H:%M:%S}' THEN ts - INTERVAL {offset} SECOND"
+                for end, offset in ranges)
+            db.execute(f"UPDATE {table} SET ts = CASE {arms} ELSE ts END")
+            logger.info(f"Telemetry: {table} re-stamped from local time to {zone}")
+        db.execute("INSERT INTO telemetry_migrations (name) VALUES (?)",
+                   [_TICK_ZONE_MIGRATION])
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
 
 
 # Octopus database (separate file)
@@ -1076,8 +1162,8 @@ def write_heating_tick(
     # Prepare flat row tuples in one pass. Shape is the same regardless of
     # backend — the branch below decides whether to call the Rust appender
     # or fall back to Python INSERT.
-    import datetime as _dt
-    tick_dt = _dt.datetime.fromtimestamp(ts)
+    # Session wall time, like every DEFAULT now() row (see session_zone()).
+    tick_dt = datetime.fromtimestamp(ts, _tick_zone()).replace(tzinfo=None)
 
     room_rows = []
     boiler_rows = []
@@ -1501,7 +1587,8 @@ def get_db_stats() -> Dict[str, Any]:
     """Get database size and row counts per table."""
     db = _rcursor()
     stats = {}
-    for table in ["packet_stats", "device_states", "spectrum_scans"]:
+    for table in ["packet_stats", "device_states", "spectrum_scans",
+                  *HEATING_TICK_TABLES]:
         count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = count
 
@@ -1995,7 +2082,8 @@ def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
     with _db_lock:
         db = _get_db().cursor()           # brief: cursor creation only
     try:
-        for table in ["packet_stats", "device_states", "spectrum_scans"]:
+        for table in ["packet_stats", "device_states", "spectrum_scans",
+                      *HEATING_TICK_TABLES]:
             db.execute(
                 f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
             )

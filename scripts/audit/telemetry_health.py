@@ -14,6 +14,8 @@ copy again or stop the app first. Checks, per table with a ``ts``:
   values    numeric_val NULL where value parses as a number; readings outside
             the physical range their attribute name implies
   silence   ieee whose newest row is older than --silent-hours
+  tables    tables whose newest rows sit a whole number of hours apart: one
+            writer stamps local time, another UTC
 
     python scripts/audit/telemetry_health.py SNAPSHOT.duckdb [--json]
 """
@@ -24,16 +26,27 @@ import json
 import os
 import sys
 
+import re
+
 import duckdb
 
-# Physical bounds by attribute-name keyword; first match wins.
+# Physical bounds by the attribute's final name part (voltage_1 is a voltage;
+# temperature_reporting_interval and color_temperature are not temperatures).
 BOUNDS = [
     ("humidity", 0, 100), ("battery_percentage", 0, 100), ("battery", 0, 100),
     ("valve", 0, 100), ("temperature", -40, 85), ("pressure", 300, 1200),
     ("linkquality", 0, 255), ("lqi", 0, 255), ("illuminance", 0, 150000),
     ("voltage", 0, 500), ("power", -25000, 25000),
 ]
+NOT_PHYSICAL = ("color_", "_interval", "_period", "_duration")
 RETENTION = {"octopus_": 400}
+
+
+def bound_for(attribute):
+    name = re.sub(r"_\d+$", "", attribute.lower())
+    if any(part in name for part in NOT_PHYSICAL):
+        return None
+    return next(((lo, hi) for k, lo, hi in BOUNDS if name == k or name.endswith("_" + k)), None)
 DEFAULT_RETENTION = 90
 
 
@@ -95,7 +108,7 @@ def check_table(con, table, silent_hours, now_sql):
     if {"attribute", "numeric_val"} <= cols.keys():
         attrs = [r[0] for r in con.execute(f"SELECT DISTINCT attribute FROM {t}").fetchall()]
         for attr in attrs:
-            bound = next(((lo, hi) for k, lo, hi in BOUNDS if k in attr.lower()), None)
+            bound = bound_for(attr)
             if not bound:
                 continue
             bad, mn, mx = con.execute(f"""
@@ -115,6 +128,21 @@ def check_table(con, table, silent_hours, now_sql):
     return out
 
 
+def clock_split(con, tables):
+    """Groups of live tables whose newest rows differ by whole hours."""
+    newest = {}
+    for t in tables:
+        if t.get("last") and t["rows"]:
+            newest[t["table"]] = con.execute(
+                f"SELECT epoch(max(ts)) FROM {q(t['table'])}").fetchone()[0]
+    if len(newest) < 2:
+        return None
+    latest = max(newest.values())
+    offsets = {name: round((latest - ts) / 3600, 2) for name, ts in newest.items()}
+    hours = {round(o) for o in offsets.values() if abs(o - round(o)) < 0.1}
+    return offsets if len(hours) > 1 else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("db")
@@ -129,12 +157,18 @@ def main():
               "wal_bytes": os.path.getsize(args.db + ".wal") if os.path.exists(args.db + ".wal") else 0,
               "timezone": con.execute("SELECT current_setting('TimeZone')").fetchone()[0],
               "tables": [check_table(con, t, args.silent_hours, now_sql) for t in tables(con)]}
+    report["clock_split"] = clock_split(con, report["tables"])
     if args.json:
         json.dump(report, sys.stdout, indent=2, default=str)
         print()
         return
     print(f"{report['file']}  {report['bytes'] / 1e6:.1f} MB, WAL {report['wal_bytes'] / 1e6:.1f} MB, "
           f"session tz {report['timezone']}")
+    if report["clock_split"]:
+        print("\n! tables: newest rows a whole number of hours apart, so writers disagree "
+              "on the timezone (hours behind the newest table):")
+        for name, hours in sorted(report["clock_split"].items(), key=lambda x: x[1]):
+            print(f"    {name}: {hours:+g} h")
     for t in report["tables"]:
         span = f"  {t.get('first', '')} .. {t.get('last', '')}" if t.get("first") else ""
         print(f"\n{t['table']}: {t['rows']} rows{span}")

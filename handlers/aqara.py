@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 import asyncio
 import zigpy.types as t
 
-from .base import ClusterHandler, discover_attribute_ids, register_handler
+from .base import ClusterHandler, device_temperature_c, discover_attribute_ids, register_handler
 
 # ZCL data-type IDs for raw writes that bypass cluster schema lookup
 _ZCL_DATATYPE_ID = {
@@ -108,7 +108,7 @@ def parse_xiaomi_struct(data: bytes) -> dict:
 # Map sub-attribute IDs to meaningful names and converters
 XIAOMI_ATTR_MAP = {
     0x01: ("battery_voltage_mV", lambda v: v),  # mV
-    0x03: ("device_temperature", lambda v: v),  # Celsius
+    0x03: ("device_temperature", device_temperature_c),
     0x04: ("power", lambda v: v / 10.0),  # 0.1W units
     0x05: ("voltage", lambda v: v / 10.0),  # 0.1V units
     0x06: ("current", lambda v: v / 1000.0),  # mA to A

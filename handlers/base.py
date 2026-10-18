@@ -91,6 +91,16 @@ def register_handler(cluster_id: int):
 INVALID_DATA_TYPE = 0x8D
 
 
+
+def device_temperature_c(raw: Any) -> Optional[float]:
+    """Device temperature in °C. ZCL 0x0002 and Aqara heartbeats send whole
+    degrees (±200 range), but some Xiaomi/Aqara models send centidegrees, so
+    a reading past 200 is taken as centidegrees (2371 -> 23.71)."""
+    if raw is None:
+        return None
+    value = float(raw)
+    return round(value / 100, 2) if abs(value) > 200 else value
+
 class ClusterHandler:
     """
     Base class for handling a specific Zigbee Cluster.

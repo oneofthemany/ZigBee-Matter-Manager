@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, Optional, List
 from zigpy.zcl.clusters.measurement import IlluminanceMeasurement, TemperatureMeasurement
 import asyncio
-from .base import ClusterHandler, register_handler
+from .base import ClusterHandler, device_temperature_c, register_handler
 
 try:
     # New zigpy versions (0.60+)
@@ -494,14 +494,7 @@ class DeviceTemperatureHandler(ClusterHandler):
             # However, some Xiaomi/Aqara devices incorrectly report in centidegrees (e.g. 3000 = 30.00C)
             if value is not None:
                 try:
-                    val = float(value)
-
-                    # Heuristic: ZCL says range is -200 to 200.
-                    # If value > 200, assume it's centidegrees (Xiaomi quirk).
-                    if val > 200:
-                        temp_c = round(val / 100, 2)
-                    else:
-                        temp_c = val
+                    temp_c = device_temperature_c(value)
 
                     # Updates state with specific key 'device_temperature'
                     self.device.update_state({"device_temperature": temp_c})
@@ -692,10 +685,15 @@ class RelativeHumidityHandler(ClusterHandler, SensorReportingMixin):
         if attrid == self.ATTR_MEASURED_VALUE:
             if hasattr(value, 'value'):
                 value = value.value
-            # Humidity is in centipercent
-            humidity = round(float(value) / 100, 1) if value is not None else None
+            humidity = self.parse_value(attrid, value)
             self.device.update_state({"humidity": humidity})
             logger.debug(f"[{self.device.ieee}] Humidity: {humidity}%")
+
+    # Reports and polls share this: a poll stores parse_value's result as-is.
+    def parse_value(self, attrid: int, value: Any) -> Any:
+        if attrid == self.ATTR_MEASURED_VALUE:
+            return round(float(value) / 100, 1) if value is not None else None  # centipercent
+        return value
 
     def get_attr_name(self, attrid: int) -> str:
         if attrid == self.ATTR_MEASURED_VALUE:
