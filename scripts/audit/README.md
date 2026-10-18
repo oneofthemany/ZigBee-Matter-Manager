@@ -26,6 +26,9 @@ that function chooses its path at runtime. A clean run means no path was
 found, not that none exists.
 
 `telemetry_health.py` must run on a copy. The app holds the DuckDB write lock,
-so copy the `.duckdb` file and its `.wal` together.
+so copy the `.duckdb` file and its `.wal` together. For an evidence-grade look
+at the same copy (hashes, storage, per-column statistics), the rene fork has
+`rea inspect-duckdb-database COPY.duckdb --table device_states --summarize`.
+It needs a DuckDB 1.x CLI in `REA_DUCKDB_COMMAND`.
 
 Tests: `tests/audit/run_all.py`.
