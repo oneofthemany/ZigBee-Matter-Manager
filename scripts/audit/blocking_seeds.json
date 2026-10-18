@@ -1,0 +1,17 @@
+{
+  "blocking": [
+    { "name": "modules.telemetry_db._get_db", "reason": "telemetry DB (_db_lock)" },
+    { "name": "modules.telemetry_db._get_octopus_db", "reason": "octopus DB lock" },
+    { "name": "modules.telemetry_db._get_system_db", "reason": "system DB lock" }
+  ],
+  "accepted": [
+    { "name": "modules.zigbee_cache._get_db", "reason": "zigbee cache query on the loop (zigbee_cache.py, FACTS)" }
+  ],
+  "loop_methods": [
+    "attribute_updated", "cluster_command", "device_joined", "device_initialized",
+    "raw_device_initialized", "device_left", "device_removed", "handle_message",
+    "general_command"
+  ],
+  "loop_probes": ["_on_event_loop", "on_event_loop"],
+  "skip_dirs": ["tests", "android", "frontend", "static", "logs", "data", "zmm_telemetry", "screenshots"]
+}

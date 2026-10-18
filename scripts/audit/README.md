@@ -18,6 +18,15 @@ app, so they run on the dev box; the DuckDB ones need the lockfile venv
 
 Each prints `file:line` findings, and `--json` gives the same as a list.
 
+The blocking-call check also runs as an evidence-producing tool in the rene
+fork. It finds the same paths, given ZMM's seeds, accepted paths and zigpy
+listener names from `blocking_seeds.json`:
+
+    rea inspect-python-blocking-calls . --seeds scripts/audit/blocking_seeds.json --json
+
+Keep the two in step: a seed added to `blocking_calls.py` belongs in
+`blocking_seeds.json` too.
+
 ## Limits
 
 Static reachability can't see a callable that was injected (a `telemetry_query=`
