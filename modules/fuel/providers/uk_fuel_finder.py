@@ -23,8 +23,9 @@ import logging
 import os
 import statistics
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from modules import secrets_file
 
 import aiohttp
 
@@ -58,16 +59,9 @@ def _resolve_credentials(config: Dict[str, Any]) -> tuple[str, str]:
     if client_id and client_secret:
         return client_id, client_secret
 
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            secrets = (yaml.safe_load(fh) or {}).get("fuel_finder") or {}
-        client_id = client_id or str(secrets.get("client_id") or "").strip()
-        client_secret = client_secret or str(secrets.get("client_secret") or "").strip()
-    except FileNotFoundError:
-        pass
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
+    secrets = secrets_file.read_section("fuel_finder", SECRETS_FILE)
+    client_id = client_id or str(secrets.get("client_id") or "").strip()
+    client_secret = client_secret or str(secrets.get("client_secret") or "").strip()
 
     if client_id and client_secret:
         return client_id, client_secret
@@ -181,39 +175,14 @@ def credentials_status(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def save_credentials(client_id: str, client_secret: str) -> None:
-    """
-    Persist credentials to the gitignored secrets file, 0600.
-
-    Written before the file is populated, not after: a secrets file that is
-    briefly world-readable is briefly readable by every process on the box.
-    """
-    import yaml
-
+    """Persist credentials to the gitignored secrets file (modules/secrets_file.py)."""
     client_id = (client_id or "").strip()
     client_secret = (client_secret or "").strip()
     if not client_id or not client_secret:
         raise ValueError("Both client_id and client_secret are required")
-
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing: Dict[str, Any] = {}
-    if path.exists():
-        try:
-            existing = yaml.safe_load(path.read_text()) or {}
-        except Exception:                                 # noqa: BLE001
-            existing = {}
-
-    existing["fuel_finder"] = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }
-
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
-    logger.info("Fuel Finder credentials saved to %s", path)
+    secrets_file.write_section(
+        "fuel_finder", {"client_id": client_id, "client_secret": client_secret}, SECRETS_FILE)
+    logger.info("Fuel Finder credentials saved to %s", SECRETS_FILE)
 
 
 class FuelFinderClient(BulkSnapshotProvider):

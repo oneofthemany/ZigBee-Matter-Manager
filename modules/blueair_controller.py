@@ -30,8 +30,9 @@ import asyncio
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from modules import secrets_file
 
 logger = logging.getLogger("zbm.blueair")
 
@@ -55,15 +56,7 @@ class BlueairError(Exception):
 # Credentials
 
 def _read_secrets() -> Dict[str, Any]:
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            return (yaml.safe_load(fh) or {}).get("blueair") or {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
-        return {}
+    return secrets_file.read_section("blueair", SECRETS_FILE)
 
 
 def resolve_credentials() -> tuple[str, str]:
@@ -90,29 +83,13 @@ def credentials_status() -> Dict[str, Any]:
 
 
 def save_credentials(username: str, password: str) -> None:
-    """Persist to the gitignored secrets file. The file is opened 0600 before
-    anything is written, so it is never briefly readable by other users."""
-    import yaml
-
+    """Persist to the gitignored secrets file (modules/secrets_file.py)."""
     username, password = (username or "").strip(), (password or "").strip()
     if not username or not password:
         raise ValueError("Both username and password are required")
-
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing: Dict[str, Any] = {}
-    if path.exists():
-        try:
-            existing = yaml.safe_load(path.read_text()) or {}
-        except Exception:                                 # noqa: BLE001
-            existing = {}
-    existing["blueair"] = {"username": username, "password": password}
-
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
-    logger.info("Blueair credentials saved to %s", path)
+    secrets_file.write_section("blueair", {"username": username, "password": password},
+                               SECRETS_FILE)
+    logger.info("Blueair credentials saved to %s", SECRETS_FILE)
 
 
 def _new_session():

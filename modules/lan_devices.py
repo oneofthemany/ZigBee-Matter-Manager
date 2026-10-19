@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from modules import secrets_file
+
 logger = logging.getLogger("lan_devices")
 
 SECRETS_FILE = os.environ.get("ZMM_SECRETS_FILE", "./config/secrets.yaml")
@@ -41,30 +43,7 @@ def check_host(host: str) -> str:
     return host
 
 
-# Credentials (config/secrets.yaml, one section per kind)
-
-def _read_secrets() -> Dict[str, Any]:
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            return yaml.safe_load(fh) or {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
-        return {}
-
-
-def _write_section(name: str, value: Dict[str, Any]) -> None:
-    import yaml
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_secrets()
-    existing[name] = value
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
+# Credentials: config/secrets.yaml, one section per kind (modules/secrets_file.py).
 
 
 # Devices
@@ -187,10 +166,10 @@ class LanDeviceHub:
         os.replace(tmp, self.path)
 
     def creds(self, dev_id: str) -> Dict[str, str]:
-        return dict((_read_secrets().get(self.kind) or {}).get(dev_id) or {})
+        return dict(secrets_file.read_section(self.kind, SECRETS_FILE).get(dev_id) or {})
 
     def _set_creds(self, dev_id: str, data: Dict[str, Any], keep: bool = True) -> None:
-        all_creds = dict(_read_secrets().get(self.kind) or {})
+        all_creds = secrets_file.read_section(self.kind, SECRETS_FILE)
         cur = dict(all_creds.get(dev_id) or {})
         for f in self.secret_fields + ("username",):
             if f in data:
@@ -206,7 +185,7 @@ class LanDeviceHub:
             all_creds[dev_id] = cur
         else:
             all_creds.pop(dev_id, None)
-        _write_section(self.kind, all_creds)
+        secrets_file.write_section(self.kind, all_creds, SECRETS_FILE)
 
     def public(self, dev: LanDevice) -> Dict[str, Any]:
         c = self.creds(dev.cfg["id"])

@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-PY_MODULES = ["test_backup", "test_backup_routes"]
+PY_MODULES = ["test_backup", "test_backup_routes", "test_secrets_writers"]
 
 
 def main() -> int:

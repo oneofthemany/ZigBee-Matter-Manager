@@ -17,6 +17,8 @@ import os
 import secrets
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+
+from modules import secrets_file
 from urllib.parse import urlparse
 
 logger = logging.getLogger("go2rtc")
@@ -45,32 +47,8 @@ def _mask(text: str) -> str:
 
 # Settings: where go2rtc is and the API credentials ZMM generated for it.
 
-def _read_secrets() -> Dict[str, Any]:
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            return yaml.safe_load(fh) or {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
-        return {}
-
-
-def _write_secrets_section(name: str, value: Any) -> None:
-    import yaml
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_secrets()
-    existing[name] = value
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
-
-
 def load_settings() -> Dict[str, Any]:
-    raw = _read_secrets().get("go2rtc") or {}
+    raw = secrets_file.read_section("go2rtc", SECRETS_FILE)
     return {"url": str(raw.get("url") or f"http://127.0.0.1:{PORT}").rstrip("/"),
             "listen": str(raw.get("listen") or f"127.0.0.1:{PORT}"),
             "username": str(raw.get("username") or ""),
@@ -92,7 +70,7 @@ def save_settings(changes: Dict[str, Any]) -> Dict[str, Any]:
     for k in ("username", "password"):
         if changes.get(k):
             s[k] = str(changes[k])
-    _write_secrets_section("go2rtc", s)
+    secrets_file.write_section("go2rtc", s, SECRETS_FILE)
     return s
 
 
@@ -101,7 +79,7 @@ def ensure_credentials() -> Dict[str, Any]:
     if not s["username"] or not s["password"]:
         s["username"] = s["username"] or "zmm"
         s["password"] = s["password"] or secrets.token_urlsafe(24)
-        _write_secrets_section("go2rtc", s)
+        secrets_file.write_section("go2rtc", s, SECRETS_FILE)
     return s
 
 

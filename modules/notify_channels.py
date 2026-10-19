@@ -21,6 +21,8 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+from modules import secrets_file
 from urllib.parse import urlparse
 
 logger = logging.getLogger("notify_channels")
@@ -72,34 +74,13 @@ def _no_newlines(name: str, value: str) -> str:
 
 # Hub settings
 
-def _read_secrets() -> Dict[str, Any]:
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            return yaml.safe_load(fh) or {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
-        return {}
-
-
 def load_hub() -> Dict[str, Any]:
-    raw = _read_secrets().get("notify_channels") or {}
+    raw = secrets_file.read_section("notify_channels", SECRETS_FILE)
     return {k: raw.get(k, v) if raw.get(k) is not None else v for k, v in HUB_DEFAULTS.items()}
 
 
 def _write_hub(hub: Dict[str, Any]) -> None:
-    """Opened 0600 before anything is written, as Blueair's credentials are."""
-    import yaml
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_secrets()
-    existing["notify_channels"] = hub
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
+    secrets_file.write_section("notify_channels", hub, SECRETS_FILE)
 
 
 def normalise_hub(changes: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:

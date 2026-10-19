@@ -15,7 +15,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 logger = logging.getLogger("modules.secrets_file")
 
@@ -27,8 +27,9 @@ def path() -> Path:
     return Path(os.environ.get("ZMM_SECRETS_FILE", "./config/secrets.yaml"))
 
 
-class SecretsUnreadable(Exception):
-    """The file exists but cannot be parsed; it must not be overwritten."""
+class SecretsUnreadable(ValueError):
+    """The file exists but cannot be parsed, so it must not be overwritten. A
+    ValueError so every save route already reports its message to the user."""
 
 
 def _load(file: Path) -> Dict[str, Any]:
@@ -40,27 +41,37 @@ def _load(file: Path) -> Dict[str, Any]:
     try:
         data = yaml.safe_load(text) or {}
     except yaml.YAMLError as e:
-        raise SecretsUnreadable(f"{file} does not parse: {e}") from e
+        raise SecretsUnreadable(f"{file} does not parse; fix it before saving credentials "
+                                f"(nothing was changed): {e}") from e
     if not isinstance(data, dict):
-        raise SecretsUnreadable(f"{file} is not a mapping")
+        raise SecretsUnreadable(f"{file} is not a YAML mapping; fix it before saving "
+                                f"credentials (nothing was changed)")
     return data
 
 
-def read_section(name: str) -> Dict[str, Any]:
+FileArg = Optional[Union[str, os.PathLike]]
+
+
+def _file(file: FileArg) -> Path:
+    # A module may keep its own SECRETS_FILE (tests repoint it); else the env.
+    return Path(file) if file is not None else path()
+
+
+def read_section(name: str, file: FileArg = None) -> Dict[str, Any]:
     """One integration's section, or {} when the file or section is absent or unreadable."""
     try:
-        section = _load(path()).get(name) or {}
+        section = _load(_file(file)).get(name) or {}
     except (SecretsUnreadable, OSError) as e:
         logger.warning(f"Could not read secrets: {e}")
         return {}
     return section if isinstance(section, dict) else {}
 
 
-def write_section(name: str, values: Dict[str, Any]) -> None:
+def write_section(name: str, values: Dict[str, Any], file: FileArg = None) -> None:
     """Replace one section, keeping every other. Raises SecretsUnreadable
     rather than overwrite a file it cannot parse."""
     import yaml
-    file = path()
+    file = _file(file)
     with _lock:
         data = _load(file)
         data[name] = values

@@ -27,6 +27,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+from modules import secrets_file
+
 import pyatv  # ImportError here is caught by MediaService (optional dep)
 from pyatv.const import PairingRequirement, Protocol
 from pyatv.interface import MediaMetadata
@@ -119,43 +121,23 @@ class CredentialStore:
 class SecretsCredentialStore(CredentialStore):
     """Pairing credentials in the gitignored secrets file under
     `airplay.credentials`, never config.yaml — they authenticate this host to
-    the receiver. The file is opened 0600 before anything is written."""
+    the receiver. See modules/secrets_file.py."""
 
     def __init__(self, path: str):
         super().__init__()
         self._path = path
-        try:
-            import yaml
-            with open(path, "r") as fh:
-                data = (yaml.safe_load(fh) or {}).get("airplay") or {}
-            self._creds = {str(k): str(v) for k, v in (data.get("credentials") or {}).items()}
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning(f"Could not read AirPlay credentials from {path}: {e}")
+        data = secrets_file.read_section("airplay", path)
+        self._creds = {str(k): str(v) for k, v in (data.get("credentials") or {}).items()}
 
     async def set(self, identifier: str, credentials: str) -> None:
         await super().set(identifier, credentials)
         await asyncio.to_thread(self._write)
 
     def _write(self) -> None:
-        import os
-        import yaml
-        from pathlib import Path
-
-        path = Path(self._path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        existing = {}
-        if path.exists():
-            try:
-                existing = yaml.safe_load(path.read_text()) or {}
-            except Exception:
-                existing = {}
-        existing.setdefault("airplay", {})["credentials"] = dict(self._creds)
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-        os.chmod(path, 0o600)
+        # Merged into the section: other airplay settings stay as they are.
+        section = secrets_file.read_section("airplay", self._path)
+        secrets_file.write_section("airplay", {**section, "credentials": dict(self._creds)},
+                                   self._path)
 
 
 class AirPlayPlayerProvider(PlayerProvider):

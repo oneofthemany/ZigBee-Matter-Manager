@@ -20,6 +20,8 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+from modules import secrets_file
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from modules.go2rtc import Go2rtc, Go2rtcError
@@ -102,28 +104,8 @@ def _zones(raw: Any, labels: List[str], existing: List[Dict[str, Any]]) -> List[
 
 # Credentials
 
-def _read_secrets() -> Dict[str, Any]:
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            return yaml.safe_load(fh) or {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
-        return {}
-
-
 def _write_credentials(creds: Dict[str, Dict[str, str]]) -> None:
-    import yaml
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_secrets()
-    existing["cameras"] = creds
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
+    secrets_file.write_section("cameras", creds, SECRETS_FILE)
 
 
 def split_url(url: str) -> Dict[str, str]:
@@ -246,7 +228,7 @@ class CameraManager:
         os.replace(tmp, self.path)
 
     def _creds(self) -> Dict[str, Dict[str, str]]:
-        return dict(_read_secrets().get("cameras") or {})
+        return secrets_file.read_section("cameras", SECRETS_FILE)
 
     def public(self, cam: Dict[str, Any]) -> Dict[str, Any]:
         dev = self.devices.get(cam["id"])

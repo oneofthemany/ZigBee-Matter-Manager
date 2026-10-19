@@ -100,6 +100,17 @@ def run() -> Checker:
         c.check("a blank password keeps the stored one",
                 r.status_code == 200 and B.resolve_credentials() == ("me@example.com", "hunter2"))
 
+        secrets = Path(B.SECRETS_FILE)
+        good = secrets.read_text()
+        secrets.write_text("fuel_finder: [unclosed\n")
+        r = client.post("/api/blueair/config", headers=admin,
+                        json={"username": "me@example.com", "password": "new-pass"})
+        c.check("a secrets.yaml that does not parse refuses the save with the reason",
+                r.status_code == 400 and "does not parse" in r.text, r.text)
+        c.check("and leaves the file as it was, not rebuilt from nothing",
+                secrets.read_text() == "fuel_finder: [unclosed\n")
+        secrets.write_text(good)
+
         r = client.post("/api/blueair/test", headers=admin, json={})
         c.check("test login falls back to the stored account",
                 r.json().get("success") and r.json()["devices"][0]["id"] == "P1", r.text)

@@ -24,6 +24,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+from modules import secrets_file
 from urllib.parse import parse_qsl, quote, urlparse
 
 logger = logging.getLogger("backup")
@@ -451,30 +453,6 @@ SECRET_KEYS = ("passphrase", "webdav_password", "s3_secret_key")
 STALE_AFTER_S = 2 * 86400
 
 
-def _read_secrets() -> Dict[str, Any]:
-    try:
-        import yaml
-        with open(SECRETS_FILE, "r") as fh:
-            return yaml.safe_load(fh) or {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:                                # noqa: BLE001
-        logger.warning(f"Could not read {SECRETS_FILE}: {e}")
-        return {}
-
-
-def _write_secrets(section: Dict[str, Any]) -> None:
-    import yaml
-    path = Path(SECRETS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_secrets()
-    existing["backup"] = section
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        yaml.dump(existing, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
-
-
 def normalise_schedule(data: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
     cfg = json.loads(json.dumps(current))
     for k in ("enabled", "include_telemetry", "encrypt"):
@@ -549,7 +527,7 @@ class BackupScheduler:
         os.replace(tmp, path)
 
     def secrets(self) -> Dict[str, str]:
-        return {k: str(v) for k, v in (_read_secrets().get("backup") or {}).items() if v}
+        return {k: str(v) for k, v in secrets_file.read_section("backup", SECRETS_FILE).items() if v}
 
     def public(self) -> Dict[str, Any]:
         s = self.secrets()
@@ -570,7 +548,7 @@ class BackupScheduler:
         if cfg["encrypt"] and not s.get("passphrase"):
             raise ValueError("Enter a passphrase to encrypt backups with")
         self.make_target(cfg, s)                     # refuse a target that can't be built
-        _write_secrets(s)
+        secrets_file.write_section("backup", s, SECRETS_FILE)
         self.config = cfg
         self._write_json(self.schedule_path, cfg)
         return self.public()
