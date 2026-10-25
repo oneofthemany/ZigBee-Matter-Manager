@@ -189,14 +189,18 @@ class Go2rtc:
             raise Go2rtcError("go2rtc returned no image (is the camera reachable?)")
         return bytes(body)
 
-    def stream_url(self, name: str) -> str:
-        """A stream as fMP4 over the authenticated API, credentials included:
-        what another local process is given so it shares go2rtc's connection
-        to the camera rather than opening its own."""
+    def stream_url(self, name: str, container: str = "mp4") -> str:
+        """A stream over the authenticated API, credentials included: what
+        another local process is given so it shares go2rtc's connection to the
+        camera rather than opening its own. `container` is "mp4" (fMP4) or
+        "ts" (MPEG-TS, for readers that run for days: ffmpeg's MP4 demuxer
+        keeps an index entry per fragment, so its memory grows without end)."""
         from urllib.parse import quote
+        if container not in ("mp4", "ts"):
+            raise ValueError(f"unknown stream container {container!r}")
         u = urlparse(self.settings["url"])
         auth = f"{quote(self._auth[0], safe='')}:{quote(self._auth[1], safe='')}@" if self._auth else ""
-        return f"{u.scheme}://{auth}{u.netloc}/api/stream.mp4?src={quote(name, safe='')}"
+        return f"{u.scheme}://{auth}{u.netloc}/api/stream.{container}?src={quote(name, safe='')}"
 
     def ws_target(self, name: str) -> Tuple[str, Dict[str, str]]:
         """URL and headers for go2rtc's stream websocket."""

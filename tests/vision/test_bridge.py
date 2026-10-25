@@ -34,8 +34,8 @@ class FakeGo2rtc:
             raise C.Go2rtcError("go2rtc unreachable")
         return b"\xff\xd8live"
 
-    def stream_url(self, name):
-        return f"http://zmm:apipw@127.0.0.1:1984/api/stream.mp4?src={name}"
+    def stream_url(self, name, container="mp4"):
+        return f"http://zmm:apipw@127.0.0.1:1984/api/stream.{container}?src={name}"
 
 
 class FakeSidecar:
@@ -106,7 +106,7 @@ def run() -> Checker:
             cfg = m.detect_config()
             c.check("with no sub-stream, detection shares go2rtc's copy of the main stream",
                     cfg == [{"id": "front", "labels": ["person", "animal"], "threshold": 0.5, "zones": [], "zones_only": False,
-                             "url": "http://zmm:apipw@127.0.0.1:1984/api/stream.mp4?src=zmm_front"}], cfg)
+                             "url": "http://zmm:apipw@127.0.0.1:1984/api/stream.ts?src=zmm_front"}], cfg)
             c.check("…so the camera's own login is never sent to the sidecar", "secret" not in str(cfg))
             c.check("…and go2rtc holds one stream for it", set(g.streams_) == {"zmm_front"}, g.streams_)
             await m.update("front", {"detect": {"enabled": True, "labels": ["person"], "url": "rtsp://192.168.1.50/sub",

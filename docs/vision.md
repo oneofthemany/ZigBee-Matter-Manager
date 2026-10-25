@@ -147,8 +147,10 @@ The card appears only once detection has run.
 ## One connection per camera
 
 go2rtc already holds a connection to each camera for live view. Detection
-reads the same stream from go2rtc's API (`/api/stream.mp4`), which asks for
-the API password even from the hub itself, so:
+reads the same stream from go2rtc's API as MPEG-TS (`/api/stream.ts`), which
+asks for the API password even from the hub itself. It's TS rather than fMP4
+because the decoder runs for days, and ffmpeg's MP4 demuxer keeps an index
+entry per fragment, so its memory only grows. So:
 
 - the camera is connected to once, however many viewers and whether or not
   detection is on;

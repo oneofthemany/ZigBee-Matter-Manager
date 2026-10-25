@@ -137,6 +137,9 @@ def run() -> Checker:
             c.check("another local reader is given the authenticated API stream, not RTSP",
                     shared.startswith("http://") and "@127.0.0.1:1984/api/stream.mp4?src=zmm_front%20door" in shared
                     and g.settings["password"] in shared, shared)
+            ts = g.stream_url("zmm_front door", "ts")
+            c.check("a long-running reader can take the stream as MPEG-TS instead",
+                    "@127.0.0.1:1984/api/stream.ts?src=zmm_front%20door" in ts, ts)
         finally:
             G.SECRETS_FILE, G.CONFIG_DIR = saved
     return c

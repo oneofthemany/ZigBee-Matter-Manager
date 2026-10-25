@@ -523,7 +523,7 @@ class CameraManager:
                 continue
             name = (DETECT_PREFIX if d.get("url") else STREAM_PREFIX) + cid
             out.append({"id": cid, "labels": list(d.get("labels") or []), "threshold": d.get("threshold", 0.5),
-                        "url": self.go2rtc.stream_url(name),
+                        "url": self.go2rtc.stream_url(name, "ts"),   # detection decodes for days
                         "zones": [{"id": z["id"], "points": z["points"], "labels": z["labels"]}
                                   for z in d.get("zones") or []],
                         "zones_only": bool(d.get("zones_only"))})
