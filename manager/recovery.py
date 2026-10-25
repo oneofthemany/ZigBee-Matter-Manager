@@ -28,6 +28,8 @@ DATA_DIR = os.environ.get("ZMM_DATA_DIR") or os.environ.get("DATA_DIR") \
     or "/opt/.zigbee-matter-manager"
 HOST_DATA = Path(DATA_DIR) / "data"
 CRASH_FILE = HOST_DATA / "last_crash.json"
+# Written by modules/safe_deploy.py after the first boot following a deploy.
+DEPLOY_CHECK_FILE = HOST_DATA / "last_deploy_check.json"
 ACTIVE_MARKER = HOST_DATA / ".recovery_active"
 RESUME_MARKER = HOST_DATA / ".recovery_resume"
 PENDING_FILES = (".test_pending", ".boot_failures")
@@ -123,6 +125,7 @@ def state(app_ok: Optional[bool] = None) -> Dict[str, Any]:
         "stale_marker": ACTIVE_MARKER.is_file() and not active,
         "marker": _read_json(ACTIVE_MARKER) if active else None,
         "crash": _read_json(CRASH_FILE),
+        "deploy_check": _read_json(DEPLOY_CHECK_FILE),
         "pending_markers": pending,
         "test_deploy": _test_deploy_detail(),
     }

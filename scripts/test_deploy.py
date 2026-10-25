@@ -34,6 +34,12 @@ REPO = Path(__file__).resolve().parents[1]
 SKIP = ("tests/", "scripts/", "VERSION")
 
 
+def skipped(path: str) -> bool:
+    # Top-level dot paths are local tooling (.rene/, .codegraph/, .github/),
+    # untracked and never ignored, and .rene/ holds a live API token.
+    return path.startswith(SKIP) or path in SKIP or path.startswith(".")
+
+
 def changed(ref: str):
     out = subprocess.run(["git", "-C", str(REPO), "diff", "--name-status", ref, "--"],
                          capture_output=True, text=True, check=True).stdout
@@ -41,12 +47,12 @@ def changed(ref: str):
     for line in out.splitlines():
         status, *paths = line.split("\t")
         path = paths[-1]
-        if path.startswith(SKIP) or path in SKIP:
+        if skipped(path):
             continue
         (deleted if status.startswith("D") else keep).append(path)
     untracked = subprocess.run(["git", "-C", str(REPO), "ls-files", "--others", "--exclude-standard"],
                                capture_output=True, text=True, check=True).stdout.split()
-    keep += [p for p in untracked if not p.startswith(SKIP) and p not in keep]
+    keep += [p for p in untracked if not skipped(p) and p not in keep]
     return sorted(keep), deleted
 
 
@@ -80,18 +86,24 @@ class Api:
             except ValueError:
                 return e.code, {}
 
-    def up(self) -> bool:
+    def bringup(self):
+        """(state, error): "ready" or "failed" once settled, "starting" while
+        services come up, None while the app doesn't answer. Health is 200
+        while starting, so a 200 alone doesn't mean it booted."""
         try:
-            return self.call("GET", "/api/system/health", timeout=5)[0] == 200
-        except (OSError, urllib.error.URLError):
-            return False
+            code, h = self.call("GET", "/api/system/health", timeout=5)
+        except (OSError, urllib.error.URLError, ValueError):
+            return None, None
+        if code not in (200, 503):
+            return None, None
+        return h.get("bringup") or ("ready" if code == 200 else "failed"), h.get("error")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[1])
     ap.add_argument("ref", help="what the hub is running, e.g. v10.02.10.2026 or a commit")
     ap.add_argument("--url", default=os.environ.get("ZMM_URL", "https://192.168.1.1:8000"))
-    ap.add_argument("--yes", action="store_true", help="confirm automatically once the app is healthy")
+    ap.add_argument("--yes", action="store_true", help="confirm automatically once bring-up is ready")
     a = ap.parse_args()
     token = os.environ.get("ZMM_TOKEN")
     if not token:
@@ -160,15 +172,23 @@ def main() -> int:
             return 1
         print("Restarting", end="", flush=True)
         time.sleep(5)
+        state = error = None
         for _ in range(60):
-            if api.up():
+            state, error = api.bringup()
+            if state in ("ready", "failed"):
                 break
-            print(".", end="", flush=True)
+            print("." if state is None else "+", end="", flush=True)
             time.sleep(3)
-        else:
-            print("\nNo answer after 3 minutes. The boot guard rolls back a batch that won't start.")
+        if state == "failed":
+            # Keeping a batch whose services never came up is never right.
+            print(f"\nBring-up failed: {error or 'see the app logs'}. Rolling back.")
+            code, rb = api.call("POST", "/api/editor/test-rollback")
+            print(rb.get("message") or f"Rollback: HTTP {code}")
             return 1
-        print(" up.")
+        if state != "ready":
+            print("\nNot booted after 3 minutes. Unconfirmed, the batch rolls back by itself.")
+            return 1
+        print(" booted.")
 
     code, st = api.call("GET", "/api/editor/test-status")
     if not st.get("pending"):

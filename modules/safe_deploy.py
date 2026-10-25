@@ -428,13 +428,35 @@ def _remove_deploy_marker():
         pass
 
 
-async def check_deploy_on_startup():
-    """
-    Called during app startup. If a deploy marker exists, this is a
-    freshly-restarted process after a deploy. Run self-health-check
-    and rollback if we're broken.
+BRINGUP_WAIT_S = 600
+# The ZMM Manager's recovery console reads this beside last_crash.json.
+DEPLOY_CHECK_FILE = os.path.join(APP_DIR, "data", "last_deploy_check.json")
 
-    Wire this into main.py lifespan AFTER all services are initialised.
+
+def _record_deploy_check(**fields) -> None:
+    rec = {"timestamp": datetime.utcnow().isoformat() + "Z", **fields}
+    try:
+        tmp = DEPLOY_CHECK_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f, indent=2)
+        os.replace(tmp, DEPLOY_CHECK_FILE)
+    except OSError as e:
+        logger.warning(f"Could not record the post-deploy check: {e}")
+
+
+async def check_deploy_on_startup(bringup_status: Optional[Callable[[], Optional[str]]] = None,
+                                  rollback_on_bringup_failure: bool = False,
+                                  bringup_error: Optional[Callable[[], Optional[str]]] = None):
+    """
+    If a deploy marker exists, this is the first process after a deploy:
+    self-check, record the outcome for the ZMM Manager, and roll back if broken.
+
+    Start it outside the bring-up task: a deploy that breaks bring-up must
+    still reach this. `bringup_status` reads app.state.bringup_status; the
+    check waits for it to leave "starting". A bring-up that fails or never
+    finishes rolls back only with `rollback_on_bringup_failure`: it can fail
+    for reasons the deploy didn't cause (a radio not ready, a broker down).
+    Bring-up finished but /api/devices unanswered always rolls back.
     """
     marker = _read_deploy_marker()
     if not marker:
@@ -446,23 +468,49 @@ async def check_deploy_on_startup():
     # Give everything a moment to fully initialise
     await asyncio.sleep(3)
 
-    # Self-check: can we serve /api/devices?
+    status = None
+    if bringup_status is not None:
+        deadline = time.monotonic() + BRINGUP_WAIT_S
+        while (status := bringup_status()) == "starting" and time.monotonic() < deadline:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
+    # Self-check: did bring-up finish, and can we serve /api/devices?
     healthy = False
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(HEALTH_CHECK_URL,
-                                   timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                healthy = (resp.status == 200)
-    except Exception as e:
-        logger.error(f"Post-deploy self-check failed: {e}")
+    if status in ("failed", "starting"):
+        error = (bringup_error() if bringup_error else None) or (
+            "bring-up still starting after %ds" % BRINGUP_WAIT_S if status == "starting" else None)
+        logger.error(f"Post-deploy bring-up {status}: {error}")
+        if not rollback_on_bringup_failure:
+            logger.critical("Post-deploy bring-up failed — deploy kept "
+                            "(deploy.rollback_on_bringup_failure is off)")
+            _remove_deploy_marker()
+            _record_deploy_check(backup_id=backup_id, bringup=status, error=error,
+                                 outcome="kept", rollback_on_bringup_failure=False)
+            return
+    else:
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(HEALTH_CHECK_URL,
+                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    healthy = (resp.status == 200)
+        except Exception as e:
+            logger.error(f"Post-deploy self-check failed: {e}")
 
     if healthy:
         logger.info("Post-deploy health check PASSED — deploy successful")
         _remove_deploy_marker()
+        _record_deploy_check(backup_id=backup_id, bringup=status, error=None, outcome="ok")
     else:
         logger.critical(f"Post-deploy health check FAILED — rolling back to {backup_id}")
         _remove_deploy_marker()  # Remove first to prevent rollback loop
+        failed_bringup = status in ("failed", "starting")
+        _record_deploy_check(
+            backup_id=backup_id, bringup=status,
+            error=((bringup_error() if bringup_error else None) if failed_bringup
+                   else "bring-up finished but /api/devices did not answer"),
+            outcome="rolled_back" if backup_id else "failed_no_backup",
+            rollback_on_bringup_failure=rollback_on_bringup_failure)
 
         if backup_id:
             result = _restore_backup(backup_id)

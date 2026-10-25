@@ -53,12 +53,18 @@ jobs:
     steps:
       # The build set from build.sh's runtime stage: some lockfile packages
       # (netifaces) have no 3.12 wheel and compile. git before checkout.
+      # ffmpeg is in the shipped image (build.sh:660); the OpenZone receiver
+      # test decodes real media with it.
       - name: Install build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential pkg-config libffi-dev libssl-dev git
+            build-essential pkg-config libffi-dev libssl-dev git ffmpeg
       - uses: actions/checkout@v4
+      # The checkout belongs to the runner's uid, not the container's root, so
+      # git refuses it as dubious ownership; the deploy test lists tracked files.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Confirm the runtime
         run: |
           . /etc/os-release && echo "$PRETTY_NAME"

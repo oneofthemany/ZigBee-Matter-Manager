@@ -82,6 +82,10 @@ SECURITY_DEFAULTS = {
     },
 }
 
+DEPLOY_DEFAULTS = {
+    "rollback_on_bringup_failure": False,
+}
+
 # api_key is deliberately absent: it lives in config/secrets.yaml, is never
 # echoed back to the frontend (the GET handler sends api_key="" + api_key_set),
 # and the save path only replaces it when a non-blank value arrives.
@@ -228,6 +232,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                                 **_home_fields()},
                     "media": _with_defaults(cfg.get("media"), MEDIA_DEFAULTS),
                     "security": _with_defaults(cfg.get("security"), SECURITY_DEFAULTS),
+                    "deploy": _with_defaults(cfg.get("deploy"), DEPLOY_DEFAULTS),
                     "octopus": {
                         **_with_defaults(
                             {k: v for k, v in (cfg.get("octopus") or {}).items()

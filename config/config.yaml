@@ -190,6 +190,12 @@ web:
     cert_file: ./data/certs/cert.pem
     key_file: ./data/certs/key.pem
 
+deploy:
+  # After an in-app deploy, roll back if bring-up fails on the first boot.
+  # Off because bring-up can fail for reasons the deploy didn't cause (radio
+  # not ready, broker down); the reason is shown in the ZMM Manager either way.
+  rollback_on_bringup_failure: false
+
 ota:
   enabled: false
   extra_providers:

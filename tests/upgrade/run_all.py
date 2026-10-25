@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-MODULES = ["test_ordering", "test_manager_info", "test_static_fingerprint", "test_deploy_binary"]
+MODULES = ["test_ordering", "test_manager_info", "test_static_fingerprint", "test_deploy_binary", "test_deploy_rollback", "test_deploy_script"]
 
 
 def main() -> int:

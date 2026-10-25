@@ -1617,7 +1617,13 @@ async function loadRecovery(){
   if(!r.ok)throw 0;const d=await r.json();
   const c=d.crash||{};
   const suspect=c.suspect_file_rel||c.suspect_file||'';
-  $('crashBox').innerHTML=(!c.exc_type&&!c.traceback)
+  const dc=d.deploy_check||{};
+  const dcLabel={ok:'kept, healthy',kept:'kept although bring-up failed (auto-rollback off)',
+   rolled_back:'rolled back',failed_no_backup:'failed, no backup to roll back to'}[dc.outcome]||dc.outcome;
+  const deployLine=dc.outcome?('<div class="suspect"><div><span class="muted">last deploy</span> <strong>'+
+   esc(dcLabel)+'</strong>'+(dc.error?(': '+esc(dc.error)):'')+'</div><div class="muted">'+
+   esc(dc.timestamp||'')+(dc.bringup?(' &middot; bring-up '+esc(dc.bringup)):'')+'</div></div>'):'';
+  $('crashBox').innerHTML=deployLine+((!c.exc_type&&!c.traceback)
    ?'<span class="muted">No crash record found.</span>'
    :('<div class="suspect"><div><span class="muted">exception</span> '+
      '<strong>'+esc(c.exc_type||'?')+'</strong>'+
@@ -1627,7 +1633,7 @@ async function loadRecovery(){
      '<div class="muted">'+esc(c.timestamp||'')+' &middot; exit '+esc(c.exit_code??'?')+'</div>'+
      '</div>'+
      '<details class="trace"><summary>traceback</summary><pre>'+
-     esc(c.traceback||'(none captured)')+'</pre></details>');
+     esc(c.traceback||'(none captured)')+'</pre></details>'));
   if(suspect&&!$('recTarget').value){$('recTarget').value=suspect;
    if(!$('bkFilter').value)$('bkFilter').value=suspect;}
   const rows=d.backups||[];

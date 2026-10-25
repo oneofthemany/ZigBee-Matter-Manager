@@ -68,7 +68,7 @@ logging.getLogger("zigpy.types").addFilter(_zigpy_dep_filter)
 # any handler that uvicorn or your own setup configures later.
 logging.getLogger().addFilter(_zigpy_dep_filter)
 
-def _zmm_record_crash(exc_type, exc_value, tb):
+def _zmm_record_crash(exc_type, exc_value, tb, source="main_excepthook"):
     try:
         _os.makedirs(_os.path.dirname(_CRASH_FILE), exist_ok=True)
         frames = _tb.extract_tb(tb) if tb else []
@@ -95,7 +95,7 @@ def _zmm_record_crash(exc_type, exc_value, tb):
                 "suspect_line": suspect_line,
                 "traceback": "".join(_tb.format_exception(exc_type, exc_value, tb))[-12000:],
                 "exit_code": 1,
-                "source": "main_excepthook",
+                "source": source,
             }, f, indent=2)
     except Exception:
         pass
@@ -1100,9 +1100,6 @@ async def lifespan(app: FastAPI):
         register_deploy_routes(app, service_name="zigbee_matter_manager")
         logger.info("Safe deploy routes registered")
 
-        # Check if we're recovering from a deploy
-        asyncio.create_task(check_deploy_on_startup())
-
         # Upgrade manager background loops
         try:
             from modules.upgrade_manager import periodic_check_loop, status_watcher_loop
@@ -1164,11 +1161,20 @@ async def lifespan(app: FastAPI):
             app.state.bringup_status = "failed"
             app.state.bringup_error = f"{type(task.exception()).__name__}: {task.exception()}"
             logger.error(f"Background bring-up failed: {task.exception()!r}")
+            # The process lives on, so the excepthook never records it: write
+            # the crash file here so the ZMM Manager's recovery console shows why.
+            exc = task.exception()
+            _zmm_record_crash(type(exc), exc, exc.__traceback__, source="bringup")
 
     app.state.bringup_status = "starting"
     app.state.bringup_error = None
     app.state.bringup_task = asyncio.create_task(_background_bringup())
     app.state.bringup_task.add_done_callback(_bringup_done)
+    # Outside bring-up, so a deploy that breaks bring-up is still checked.
+    app.state.deploy_check_task = asyncio.create_task(check_deploy_on_startup(
+        lambda: app.state.bringup_status,
+        rollback_on_bringup_failure=bool(get_conf("deploy", "rollback_on_bringup_failure", False)),
+        bringup_error=lambda: app.state.bringup_error))
     logger.info("Web UI starting — service bring-up continues in background")
 
 
