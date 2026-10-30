@@ -45,3 +45,6 @@ ai-edge-litert==1.2.0
 # Decoding stills and enrolment photos in the vision sidecar: ffmpeg per image
 # costs ~450 ms of process start on the hub (docs/vision.md, Cost on the hub).
 pillow
+# Speaker serial panel: chip info, flash backup and flashing (docs/esp-serial.md).
+# Exact pin: the reset sequences in modules/esp_serial.py rely on 5.x options.
+esptool==5.1.0

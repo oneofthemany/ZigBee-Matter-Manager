@@ -1484,6 +1484,11 @@ from modules.shelly import get_shelly_hub
 from modules.esphome import get_esphome_hub
 register_lan_device_routes(app, "shelly", get_shelly_hub)
 register_lan_device_routes(app, "esphome", get_esphome_hub)
+from routes.esp_serial_routes import register_esp_serial_routes
+from modules.esp_serial import EspSerialManager, get_esp_serial_manager, set_esp_serial_manager
+# zigbee.port is read on every use, so the radio is never offered after a config change.
+set_esp_serial_manager(EspSerialManager(lambda: (CONFIG.get("zigbee") or {}).get("port")))
+register_esp_serial_routes(app, get_esp_serial_manager)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
 register_wiki_routes(app)

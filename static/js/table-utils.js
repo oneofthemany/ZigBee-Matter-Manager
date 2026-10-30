@@ -114,6 +114,24 @@ function onHeaderClick(e) {
     const same = parseInt(table.dataset.sortIndex ?? '-1', 10) === idx;
     const dir = (same && table.dataset.sortDir === 'asc') ? 'desc' : 'asc';
     sortTableByIndex(table, idx, dir);
+    // Only a user's click announces itself, so a listener can save it without
+    // hearing its own re-applies.
+    table.dispatchEvent(new CustomEvent('tbl-sort', {
+        bubbles: true,
+        detail: { index: idx, dir, col: th.dataset.col },
+    }));
+}
+
+/**
+ * Sort by the header whose data-col is `col`; false if no header has it.
+ * Keyed by data-col, not position, so a saved sort survives columns moving.
+ * @param {HTMLTableElement} table @param {string} col @param {'asc'|'desc'} dir
+ */
+export function sortTableByCol(table, col, dir) {
+    const idx = headerCells(table).findIndex(c => c.dataset.col === col);
+    if (idx < 0) return false;
+    sortTableByIndex(table, idx, dir === 'desc' ? 'desc' : 'asc');
+    return true;
 }
 
 // Delegated text filter

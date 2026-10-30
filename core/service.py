@@ -98,6 +98,9 @@ from core.lifecycle import DeviceLifecycleMixin
 VALVE_CONTROL_SETTINGS = ("window_detection", "child_lock", "valve_detection",
                           "motor_calibration", "sensor_type", "external_temp")
 
+# A device-list build longer than this logs where its time went.
+DEVICE_LIST_SLOW_S = 0.5
+
 class ZigbeeService(
     ConfigBuilderMixin,
     MQTTHandlerMixin,
@@ -2119,16 +2122,32 @@ class ZigbeeService(
 
     def get_device_list(self):
         """Get list of all devices with their current state - JSON-safe."""
-        from modules.zigbee_cache import facts_snapshot
+        from modules.zigbee_cache import facts_snapshot, get_facts
+        # Runs on the event loop, so a slow build stalls every request: time it
+        # by section and by device, and say so only when it is slow.
+        spent: Dict[str, float] = {}
+        per_device: Dict[str, float] = {}
+
+        def timed(section, fn):
+            t0 = time.perf_counter()
+            try:
+                return fn()
+            finally:
+                spent[section] = spent.get(section, 0.0) + time.perf_counter() - t0
+
+        started = time.perf_counter()
         # Each device's settings re-read its facts; one table read serves them all.
         with facts_snapshot():
+            timed("facts_table", lambda: get_facts(""))
             res = []
             for ieee, zdev in self.devices.items():
+                dev_started = time.perf_counter()
                 try:
                     d = zdev.zigpy_dev
-                    caps = sorted(list(zdev.capabilities.get_capabilities())) if hasattr(zdev, 'capabilities') else []
+                    caps = timed("capability_list", lambda: sorted(list(zdev.capabilities.get_capabilities())) if hasattr(zdev, 'capabilities') else [])
 
                     # Build endpoint info
+                    ep_started = time.perf_counter()
                     endpoints = []
                     for ep_id, ep in d.endpoints.items():
                         if ep_id == 0:
@@ -2154,12 +2173,13 @@ class ZigbeeService(
                             "outputs": [{"id": c.cluster_id, "name": c.name} for c in ep.out_clusters.values()],
                             "component_type": component_type
                         })
+                    spent["endpoints"] = spent.get("endpoints", 0.0) + time.perf_counter() - ep_started
 
                     res.append({
                         "ieee": ieee,
                         "nwk": hex(d.nwk),
                         # What the device is, decided once (modules/device_class.py).
-                        "device_class": device_class.describe(zdev),
+                        "device_class": timed("device_class", lambda: device_class.describe(zdev)),
                         "friendly_name": self.friendly_names.get(ieee, ieee),
                         "model": str(d.model) if d.model else "Unknown",
                         "manufacturer": str(d.manufacturer) if d.manufacturer else "Unknown",
@@ -2167,26 +2187,35 @@ class ZigbeeService(
                         "rssi": getattr(d, 'rssi', None),
                         "last_seen_ts": zdev.last_seen,
                         "state": zdev.state,
-                        "type": zdev.get_role(),
-                        "quirk": quirk_name_of(d),
+                        "type": timed("role", zdev.get_role),
+                        "quirk": timed("quirk", lambda: quirk_name_of(d)),
                         "capabilities": endpoints,
                         "capability_list": caps,
                         "settings": self.device_settings.get(ieee, {}),
-                        "available": zdev.is_available(),
-                        "config_schema": zdev.get_device_config_schema() if hasattr(zdev, 'get_device_config_schema') else [],
+                        "available": timed("available", zdev.is_available),
+                        "config_schema": timed("config_schema", lambda: zdev.get_device_config_schema() if hasattr(zdev, 'get_device_config_schema') else []),
                         # Raw keys its entry names: shown under their name, not twice.
-                        "named_raw_keys": _named_raw_keys(zdev),
+                        "named_raw_keys": timed("named_raw_keys", lambda: _named_raw_keys(zdev)),
                         # Which valve controls the Control tab may draw: asked of
                         # the device, never inferred from who made it.
-                        "valve_settings": [n for n in VALVE_CONTROL_SETTINGS
-                                           if hasattr(zdev, 'supports_setting') and zdev.supports_setting(n)],
+                        "valve_settings": timed("valve_settings", lambda: [
+                            n for n in VALVE_CONTROL_SETTINGS
+                            if hasattr(zdev, 'supports_setting') and zdev.supports_setting(n)]),
                         "polling_interval": self.polling_scheduler._intervals.get(ieee, 0)
                     })
 
                 except Exception as e:
                     logger.error(f"[{ieee}] Failed to build device info: {e}")
+                per_device[ieee] = time.perf_counter() - dev_started
 
-        return prepare_for_json(res)
+        out = timed("prepare_for_json", lambda: prepare_for_json(res))
+        total = time.perf_counter() - started
+        if total > DEVICE_LIST_SLOW_S:
+            sections = ", ".join(f"{k}={v * 1000:.0f}ms" for k, v in sorted(spent.items(), key=lambda kv: -kv[1]))
+            slowest = ", ".join(f"{i}={v * 1000:.0f}ms" for i, v in sorted(per_device.items(), key=lambda kv: -kv[1])[:5])
+            logger.warning(f"Device list took {total * 1000:.0f}ms for {len(res)} devices: "
+                           f"{sections}; slowest devices: {slowest}")
+        return out
 
     def get_join_history(self):
         return self.join_history

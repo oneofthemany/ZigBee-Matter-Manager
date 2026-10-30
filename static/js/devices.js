@@ -8,12 +8,45 @@ import { getTypeIcon, getLqiBadge, timeAgo, escapeHtml } from './utils.js';
 import { renamePrompt } from './actions.js';
 import { refreshModalState } from './device-modal.js';
 import { openDeviceModal } from './device-modal.js';
-import { reapplySort } from './table-utils.js';
+import { reapplySort, sortTableByCol } from './table-utils.js';
 import { dismissKnownDevices } from './join-progress.js';
 import { confirmDialog } from './dialogs.js';
 
 
 const log = zmmLog('devices');
+
+/** The account preference holding the device table's sort: { col, dir }. */
+export const DEVICE_SORT_PREF = 'devices.sort';
+
+/**
+ * Keep the device table's sort with the account, not the browser.
+ *
+ * Applying only sets the table's sort, which renderDeviceTable re-applies on
+ * every rebuild, so it doesn't matter whether the rows or the pref land first.
+ */
+export async function initDeviceSortPref(fetchFn = fetch) {
+    const table = document.getElementById('deviceTableBody')?.closest('table');
+    if (!table) return;
+
+    table.addEventListener('tbl-sort', e => {
+        const { col, dir } = e.detail || {};
+        if (!col) return;
+        fetchFn(`/api/auth/prefs/${DEVICE_SORT_PREF}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: { col, dir } }),
+        }).catch(err => log.warn('saving the device sort failed:', err?.message));
+    });
+
+    try {
+        const res = await fetchFn('/api/auth/prefs');
+        if (!res.ok) return;                    // auth off, or signed out
+        const saved = (await res.json())?.prefs?.[DEVICE_SORT_PREF];
+        if (saved?.col) sortTableByCol(table, saved.col, saved.dir);
+    } catch (err) {
+        log.warn('loading the device sort failed:', err?.message);
+    }
+}
 
 /**
  * Adopt a fresh /api/devices payload into the cache.

@@ -53,6 +53,8 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/logbook",           {"GET": "system:read", "*": "admin"}),
     ("/api/shelly",            {"*": "admin"}),
     ("/api/esphome",           {"*": "admin"}),
+    # Restarts and reflashes hardware; backups hold Wi-Fi credentials.
+    ("/api/esp-serial",        {"*": "admin"}),
     ("/api/wiki",              {"*": AUTHENTICATED}),
     ("/api/therapy",           {"*": AUTHENTICATED}),
     # Anonymous in practice (ANONYMOUS_PATHS); mapped so coverage sees intent.

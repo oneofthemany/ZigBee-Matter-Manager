@@ -11,6 +11,7 @@ const log = zmmLog('settings');
  import { confirmDialog } from './dialogs.js';
  import { jsArg } from './utils.js';
  import { lanSectionHtml, loadLanSection } from './lan-devices-settings.js';
+import { espSerialSectionHtml, loadEspSerialSection } from './esp-serial-settings.js';
  import { initBackupSchedule } from './backup-schedule.js';
  import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard,
           startRestartGuardWatch, stopRestartGuardWatch } from './restart-guard.js';
@@ -748,6 +749,15 @@ const API_PROVIDERS = [
         collect: () => ({}),
         disablePatch: null,
         isConfigured: () => null,
+    },
+    {
+        // Own endpoints, nothing in config.yaml; shown only once picked under Add API.
+        id: 'speakers', label: 'Speakers', icon: 'fa-microphone-lines',
+        render: () => espSerialSectionHtml(),
+        onShow: () => loadEspSerialSection(),
+        collect: () => ({}),
+        disablePatch: null,
+        isConfigured: () => false,
     },
     {
         id: 'fuel', label: 'Fuel', icon: 'fa-gas-pump',

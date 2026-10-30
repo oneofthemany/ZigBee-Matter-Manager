@@ -7,6 +7,7 @@ Login is two-step when MFA is enabled. Full status/response table: docs/auth.md.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Callable, List, Optional
@@ -23,6 +24,7 @@ from modules.auth_secure import (
     SecureAuthManager, LAN_ONLY_SCOPE, require_presence_mfa, user_has_mfa,
 )
 from modules.auth_network import NetworkResolver
+from modules import user_prefs
 
 logger = logging.getLogger("routes.auth")
 
@@ -33,6 +35,10 @@ class LoginRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=32)
     password: str = Field(..., min_length=1, max_length=200)
     remember: bool = True
+
+
+class PrefValue(BaseModel):
+    value: Any = None
 
 
 class MFALoginRequest(BaseModel):
@@ -751,5 +757,25 @@ def register_auth_routes(
         except KeyError:
             raise HTTPException(404, "Token not found")
         return {"success": True}
+
+    # Per-account UI preferences: the caller's own only, so no scope beyond sign-in.
+
+    @app.get("/api/auth/prefs")
+    async def get_prefs(principal: Principal = Depends(require_authenticated)):
+        prefs = await asyncio.to_thread(user_prefs.get_all, principal.user.username)
+        return {"prefs": prefs}
+
+    @app.put("/api/auth/prefs/{key}")
+    async def put_pref(
+            key: str,
+            body: PrefValue,
+            principal: Principal = Depends(require_authenticated),
+    ):
+        try:
+            prefs = await asyncio.to_thread(
+                user_prefs.set_pref, principal.user.username, key, body.value)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"prefs": prefs}
 
     logger.info("Auth routes registered (MFA + lockout + LAN-aware)")

@@ -33,6 +33,11 @@ const log = zmmLog('frames-page');
 
 let socket = null;
 let reconnectDelay = 1000;
+let reconnectTimer = null;
+let hadSocket = false;
+let hiddenAt = 0;
+// A full device load stalls the hub, so a brief app switch doesn't earn one.
+const RESYNC_AFTER_HIDDEN_MS = 60000;
 
 // devices
 
@@ -119,6 +124,9 @@ function initWS() {
     socket.onopen = () => {
         reconnectDelay = 1000;
         setConnected(true);
+        // Updates sent while the socket was down are never replayed.
+        if (hadSocket) resync();
+        hadSocket = true;
     };
 
     socket.onmessage = ev => {
@@ -143,11 +151,42 @@ function initWS() {
     socket.onclose = () => {
         setConnected(false);
         // Back off to 30s: a phone in a pocket shouldn't hammer the hub.
-        setTimeout(initWS, reconnectDelay);
+        reconnectTimer = setTimeout(initWS, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     };
 
     socket.onerror = () => setConnected(false);
+}
+
+/** Replace the device cache with the hub's current state and redraw. */
+async function resync() {
+    try {
+        await loadDevices();
+        renderFrame();
+    } catch (e) {
+        log.warn('resync failed:', e?.message);
+    }
+}
+
+/**
+ * A phone resuming the page may hold a socket that died while asleep, and may
+ * be inside a 30s backoff: reconnect now. A long sleep can drop updates on a
+ * socket that still reads open, so that resyncs too.
+ */
+function onVisible() {
+    if (document.visibilityState !== 'visible') {
+        hiddenAt = Date.now();
+        return;
+    }
+    const away = hiddenAt ? Date.now() - hiddenAt : 0;
+    hiddenAt = 0;
+    if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        clearTimeout(reconnectTimer);
+        reconnectDelay = 1000;
+        initWS();
+    } else if (away > RESYNC_AFTER_HIDDEN_MS) {
+        resync();
+    }
 }
 
 
@@ -172,6 +211,7 @@ async function start() {
     // The frame may have landed before the devices did.
     if (drawn.value) renderFrame();
     initWS();
+    document.addEventListener('visibilitychange', onVisible);
     // Header presence badge — same gating as the manager (main.js).
     if (window.initPresenceBadge) window.initPresenceBadge();
 }

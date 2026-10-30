@@ -9,7 +9,7 @@ import { state } from './state.js';
 import './manager-link.js';      // data-zmm-manager links
 import { updateLastSeenTimes, whileVisible } from './utils.js';
 import { initWS } from './websocket.js';
-import { fetchAllDevices, filterByStatus, renderLastDevices } from './devices.js';
+import { fetchAllDevices, filterByStatus, renderLastDevices, initDeviceSortPref } from './devices.js';
 import { initTabRouting } from './tab-routing.js';
 import { initGroups } from './groups.js';
 import { initMQTTExplorer, handleMQTTMessage, startMQTTStats, stopMQTTStats } from './mqtt-explorer.js';
@@ -399,6 +399,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // inits below each fire their own requests.
         renderLastDevices();
         fetchAllDevices();
+        initDeviceSortPref();
 
         // WebSocket
         if (!state.socket) initWS();

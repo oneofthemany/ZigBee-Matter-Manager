@@ -97,19 +97,37 @@ function optimisticDeltaFor(command, value, endpoint) {
 
  /**
   * Apply an optimistic delta to the in-memory device and refresh visible UI.
+  * Returns an undo that puts back the keys the delta overwrote.
   */
  function applyOptimisticUpdate(ieee, delta) {
-     if (!delta) return;
+     if (!delta) return () => {};
      const normIeee = String(ieee).toLowerCase();
      const devIndex = state.devices.findIndex(
          d => String(d.ieee).toLowerCase() === normIeee
      );
-     if (devIndex === -1) return;
+     if (devIndex === -1) return () => {};
 
      const dev = state.devices[devIndex];
+     const before = {};
+     for (const k of Object.keys(delta)) before[k] = dev.state?.[k];
      dev.state = { ...(dev.state || {}), ...delta };
      dev.last_seen_ts = Date.now();
      state.deviceCache[dev.ieee] = dev;
+     refreshVisibleDevice(dev);
+
+     return () => {
+         const st = { ...(dev.state || {}) };
+         for (const [k, v] of Object.entries(before)) {
+             if (v === undefined) delete st[k];
+             else st[k] = v;
+         }
+         dev.state = st;
+         refreshVisibleDevice(dev);
+     };
+ }
+
+ function refreshVisibleDevice(dev) {
+     const normIeee = String(dev.ieee).toLowerCase();
 
      // Refresh the table row (if device-status.js or devices.js exposes it)
      if (window._enhanceDeviceTable) {
@@ -157,6 +175,20 @@ export async function checkPairingStatus() {
 export async function sendCommand(ieee, command, value = null, endpoint = null) {
     const epLabel = endpoint ? ` (EP${endpoint})` : '';
 
+    // Shown before the request: the reply waits for the radio's ACK and its
+    // retries, so updating only on success makes every tap feel seconds late.
+    let expected = command;
+    if (command === 'toggle') {
+        const normIeee = String(ieee).toLowerCase();
+        const dev = state.devices.find(d => String(d.ieee).toLowerCase() === normIeee);
+        const ep = endpoint || 1;
+        const currentOn = dev?.state?.[`on_${ep}`] !== undefined ? dev.state[`on_${ep}`] : dev?.state?.on;
+        expected = dev?.state ? (currentOn ? 'off' : 'on') : null;
+    }
+    const undo = expected
+        ? applyOptimisticUpdate(ieee, optimisticDeltaFor(expected, value, endpoint))
+        : () => {};
+
     try {
         const body = { ieee, command, value };
         if (endpoint) body.endpoint = endpoint;
@@ -169,30 +201,6 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
         const data = await res.json();
 
         if (data.success) {
-            // OPTIMISTIC UI UPDATE
-            // Compute the expected state change from the command and apply
-            // it to the local device state immediately, then refresh the
-            // visible UI. We do not wait for the WebSocket echo.
-
-            if (command === 'toggle') {
-                // Flip based on current known state
-                const normIeee = String(ieee).toLowerCase();
-                const dev = state.devices.find(
-                    d => String(d.ieee).toLowerCase() === normIeee
-                );
-                if (dev && dev.state) {
-                    const ep = endpoint || 1;
-                    const currentOn =
-                        dev.state[`on_${ep}`] !== undefined
-                            ? dev.state[`on_${ep}`]
-                            : dev.state.on;
-                    const flipCommand = currentOn ? 'off' : 'on';
-                    applyOptimisticUpdate(ieee, optimisticDeltaFor(flipCommand, null, endpoint));
-                }
-            } else {
-                applyOptimisticUpdate(ieee, optimisticDeltaFor(command, value, endpoint));
-            }
-
             addLogEntry({
                 timestamp: getTimestamp(),
                 level: 'INFO',
@@ -200,7 +208,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
             });
             return data;
         } else {
-            // FAILURE: toast the user
+            undo();
             const errMsg = data.error || 'Device did not respond';
             window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
             addLogEntry({
@@ -211,6 +219,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
             return data;
         }
     } catch (e) {
+        undo();
         const errMsg = e?.message || 'Network error';
         window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
         addLogEntry({
