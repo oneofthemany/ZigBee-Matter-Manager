@@ -28,10 +28,16 @@
     }
   },
   "reporting": [
+    { "ep": 1, "cluster": "0x0012", "attr": "0x0055", "min": 0, "max": 65535, "delta": 1 },
+    { "ep": 1, "cluster": "0x0001", "attr": "0x0021", "min": 0, "max": 65535, "delta": 1 },
     { "ep": 1, "cluster": "0xFCC0", "attr": "0x0142", "min": 0, "max": 300, "delta": 1, "mfr": "0x115F", "type": "uint8" },
-    { "ep": 1, "cluster": "0xFCC0", "attr": "0x014D", "min": 0, "max": 300, "delta": 1, "mfr": "0x115F", "type": "uint8" }
+    { "ep": 1, "cluster": "0xFCC0", "attr": "0x014D", "min": 0, "max": 300, "delta": 1, "mfr": "0x115F", "type": "uint8" },
+    { "ep": 1, "cluster": "0x0402", "attr": "0x0000", "min": 10, "max": 3600, "delta": 50 },
+    { "ep": 1, "cluster": "0x0405", "attr": "0x0000", "min": 10, "max": 3600, "delta": 100 },
+    { "ep": 1, "cluster": "0x0400", "attr": "0x0000", "min": 10, "max": 3600, "delta": 500 }
   ],
   "zmm": {
+    "reporting_only": true,
     "struct_tags": {
       "0x17": { "name": "battery_voltage", "scale": 0.001 },
       "0x18": { "name": "battery" },
@@ -47,7 +53,7 @@
         "description": "Zones the sensor watches; switch one off to ignore that part of the room" },
       { "id": "motion_sensitivity", "label": "Motion sensitivity", "type": "uint8",
         "ep": 1, "cluster": "0xFCC0", "attr": "0x010C", "mfr": "0x115F",
-        "values": { "0": "low", "1": "medium", "2": "high" } },
+        "values": { "1": "low", "2": "medium", "3": "high" } },
       { "id": "absence_delay", "label": "Absence delay", "type": "uint32",
         "ep": 1, "cluster": "0xFCC0", "attr": "0x0197", "mfr": "0x115F",
         "min": 1, "max": 300, "step": 1, "unit": "sec",

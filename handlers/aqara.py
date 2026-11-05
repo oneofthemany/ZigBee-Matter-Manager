@@ -274,6 +274,7 @@ class AqaraManufacturerCluster(ClusterHandler):
     """
     CLUSTER_ID = 0xFCC0
     MANUFACTURER_CODE = 0x115F  # LUMI/Aqara manufacturer code
+    CONFIGURE_SETS_REPORTING = False    # discovery and TRV baseline writes only
 
     # Common Attributes (multiple device types)
     ATTR_MODE = 0x0009                  # uint8 - Device mode
@@ -358,8 +359,12 @@ class AqaraManufacturerCluster(ClusterHandler):
 
         updates = {}
 
+        # An entry setting's value map names it: decoding it here too would clash.
+        if attrid in self._entry_owned():
+            updates[f"opple_0x{attrid:04x}"] = value.hex() if isinstance(value, (bytes, bytearray)) else value
+
         # Thermostat/TRV Attributes
-        if attrid == self.ATTR_WINDOW_DETECTION:
+        elif attrid == self.ATTR_WINDOW_DETECTION:
             updates["window_detection"] = bool(value)
             logger.info(f"[{self.device.ieee}] Window detection: {'enabled' if value else 'disabled'}")
 
@@ -620,6 +625,14 @@ class AqaraManufacturerCluster(ClusterHandler):
     # Its answered, scaled reading outranks an undocumented tag (device-profiles.md §4).
     _CLUSTER_MEASURES = {"energy": (0x0702, None), "power": (0x0B04, 0x050B),
                          "voltage": (0x0B04, 0x0505), "current": (0x0B04, 0x0508)}
+
+    def _entry_owned(self) -> set:
+        """0xFCC0 attributes the model's entry declares as settings. The entry
+        decodes, offers and writes them; this handler leaves them alone."""
+        from modules.device_profiles import profile_for_device, _to_int
+        settings = ((profile_for_device(self.device) or {}).get("zmm") or {}).get("settings") or []
+        return {_to_int(s.get("attr")) for s in settings
+                if _to_int(s.get("cluster")) == self.CLUSTER_ID and _to_int(s.get("attr")) is not None}
 
     def _struct_tags(self, blob: Optional[int] = None):
         """(tag -> (name or None, converter), tags the model's entry set), for
@@ -1050,8 +1063,9 @@ class AqaraManufacturerCluster(ClusterHandler):
             'indicator_light': self.ATTR_INDICATOR_LIGHT,
         }
 
+        owned = self._entry_owned()
         for key, attr_id in config_map.items():
-            if key in updates:
+            if key in updates and attr_id not in owned:
                 try:
                     success = await self.write_attribute(attr_id, int(updates[key]))
                     if not success:
@@ -1097,7 +1111,8 @@ class AqaraManufacturerCluster(ClusterHandler):
                 self.ATTR_INDICATOR_LIGHT: "indicator_light",
             })
 
-        return {a: n for a, n in base_attrs.items() if self.supports(a)}
+        owned = self._entry_owned()
+        return {a: n for a, n in base_attrs.items() if self.supports(a) and a not in owned}
 
 
     async def set_window_detection(self, enabled: bool):
@@ -1505,8 +1520,10 @@ class AqaraManufacturerCluster(ClusterHandler):
             "manufacturer_code": self.MANUFACTURER_CODE
         })
 
+        owned = self._entry_owned()
         return [o for o in options
-                if o.get("attribute_id") is None or self.supports(o["attribute_id"])]
+                if o.get("attribute_id") is None
+                or (self.supports(o["attribute_id"]) and o["attribute_id"] not in owned)]
 
 
     async def discover_attributes(self):

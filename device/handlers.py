@@ -154,13 +154,27 @@ class DeviceHandlerManagerMixin:
                 self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
             return {"failed": failed, "queued": queued}
 
-        stats = {'configured': 0, 'skipped_not_configurable': 0, 'skipped_controller': 0, 'failed': 0}
+        stats = {'configured': 0, 'skipped_not_configurable': 0, 'skipped_controller': 0, 'failed': 0,
+                 'skipped_entry': 0}
+        # A small reporting table fills with whatever comes first; an entry that
+        # lists the device's whole setup gets every slot (device-profiles.md §4).
+        try:
+            from modules.device_profiles_apply import entry_owns_reporting
+            entry_owned = entry_owns_reporting(self)
+        except Exception as e:
+            logger.debug(f"[{self.ieee}] entry reporting ownership unknown: {e}")
+            entry_owned = False
 
         # handlers stores each handler under both its (ep, cluster) key and a
         # bare cluster-id alias — dedupe so skip counts aren't doubled.
         for h in dict.fromkeys(self.handlers.values()):
             ep_id = h.endpoint.endpoint_id
             cluster_id = h.cluster_id
+
+            if entry_owned and getattr(h, 'CONFIGURE_SETS_REPORTING', True) \
+                    and not getattr(h, 'ALWAYS_CONFIGURE', False):
+                stats['skipped_entry'] += 1
+                continue
 
             # Command-driven clusters (Poll Control) opt out of the
             # reportable-cluster gate — they have no reporting to configure but
@@ -191,6 +205,7 @@ class DeviceHandlerManagerMixin:
         logger.info(f"[{self.ieee}] Config: {stats['configured']} configured, "
                     f"{stats['skipped_controller']} skipped (controller EP), "
                     f"{stats['skipped_not_configurable']} skipped (not reportable), "
+                    f"{stats['skipped_entry']} left to the entry, "
                     f"{stats['failed']} failed")
 
     async def interview(self):

@@ -102,7 +102,10 @@ export function renderOverviewTab(device) {
         // Explicitly allow Tuya _TZE manufacturers
         const isTuyaSensor = (device.manufacturer || '').startsWith('_TZE') || (device.manufacturer || '').startsWith('_TZ3');
 
-        return hasOccupancyCluster || hasIASZone || hasOnOff || hasTuya || isTuyaSensor;
+        // A vendor cluster carries some (Aqara 0xFCC0 radar): its entry names them.
+        const hasEntryReadings = (device.occupancy_readings || []).length > 0;
+
+        return hasOccupancyCluster || hasIASZone || hasOnOff || hasTuya || isTuyaSensor || hasEntryReadings;
     };
 
     const hasContactSensing = () => {

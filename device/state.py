@@ -49,10 +49,23 @@ class DeviceStateManagerMixin:
         """Restore device state from cache."""
         if cached_state:
             self.state.update(cached_state)
-            if any(k in cached_state for k in ['occupancy', 'motion', 'presence']):
-                self.state['occupancy'] = False
-                self.state['motion'] = False
-                self.state['presence'] = False
+            occ = ('occupancy', 'motion', 'presence')
+            if any(k in cached_state for k in occ):
+                # An entry that names its own readings owns them: a key it does not
+                # name would be a placeholder nothing ever updates.
+                try:
+                    from modules.device_profiles_apply import occupancy_readings
+                    named = {r['name'] for r in occupancy_readings(self)}
+                except Exception:
+                    named = set()
+                for k in occ:
+                    if named and k not in named:
+                        self.state.pop(k, None)
+                    else:
+                        self.state[k] = False
+                for k in named:
+                    if k in cached_state:
+                        self.state[k] = False
 
             if self.zigpy_dev.manufacturer and ('manufacturer' not in self.state or self.state['manufacturer'] == 'Unknown'):
                 self.state['manufacturer'] = str(self.zigpy_dev.manufacturer)

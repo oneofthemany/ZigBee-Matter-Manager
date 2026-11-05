@@ -1368,7 +1368,32 @@ export function renderControlTab(device) {
             </div>`;
     }
 
-    if (isMotionSensor && !isContactSensor) {
+    // An entry naming its readings (radar presence, PIR motion) gets a tile for each.
+    const occReadings = (device.occupancy_readings || []).filter(r => r.name in s);
+    if (isMotionSensor && !isContactSensor && occReadings.length) {
+        controlsFound = true;
+        const wide = occReadings.length > 1 ? 'col-12 col-sm-6' : 'col-12';
+        occReadings.forEach(r => {
+            const on = s[r.name] === true;
+            const isMotion = r.device_class === 'motion';
+            const title = isMotion ? 'Motion' : 'Presence';
+            const statusText = on ? (isMotion ? 'MOTION' : 'PRESENT') : 'CLEAR';
+            const icon = on ? (isMotion ? 'fa-running' : 'fa-user') : 'fa-shield-alt';
+            html += `
+            <div class="${wide}" data-occupancy-reading="${escapeHtml(r.name)}">
+                <div class="card">
+                    <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                        <strong><i class="fas ${isMotion ? 'fa-eye' : 'fa-broadcast-tower'}"></i> ${title}</strong>
+                        <span class="badge ${on ? 'bg-danger' : 'bg-success'}">${statusText}</span>
+                    </div>
+                    <div class="card-body text-center">
+                        <i class="fas ${icon} fa-3x mb-2 ${on ? 'text-danger' : 'text-success'}"></i>
+                        <p class="mb-0 fw-bold">${statusText}</p>
+                    </div>
+                </div>
+            </div>`;
+        });
+    } else if (isMotionSensor && !isContactSensor) {
         controlsFound = true;
         const occupied = s.occupancy === true || s.motion === true || s.presence === true;
         const statusText = occupied ? 'MOTION' : 'CLEAR';

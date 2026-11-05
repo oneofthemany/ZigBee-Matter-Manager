@@ -100,6 +100,34 @@ def run() -> Checker:
         DeviceStateManagerMixin.sanitise_state(fp300)
         c.check("so a boot restore keeps its occupancy", "occupancy" in fp300.state, fp300.state)
 
+        c.section("an entry's occupancy readings: one tile each, and no placeholders")
+        from modules.device_profiles_apply import occupancy_readings
+        c.check("radar presence and PIR motion are listed apart, in entry order",
+                occupancy_readings(fp300) == [{"name": "occupancy", "device_class": "occupancy"},
+                                              {"name": "pir_detection", "device_class": "motion"}],
+                occupancy_readings(fp300))
+        fp300.state, fp300.manufacturer, fp300.model = {}, "Aqara", "lumi.sensor_occupy.agl8"
+        fp300.service = NS(state_cache={}, _cache_dirty=False)
+        fp300.is_available = lambda: True
+        fp300.sanitise_state = lambda: DeviceStateManagerMixin.sanitise_state(fp300)
+        DeviceStateManagerMixin.restore_state(fp300, {
+            "occupancy": True, "pir_detection": True, "motion": False, "presence": False,
+            "temperature": 21.0, "last_seen": 1})
+        c.check("a restore drops motion and presence, which nothing updates for it",
+                "motion" not in fp300.state and "presence" not in fp300.state
+                and "motion" not in fp300.service.state_cache[fp300.ieee], fp300.state)
+        c.check("and clears the readings it does report until they report again",
+                fp300.state.get("occupancy") is False and fp300.state.get("pir_detection") is False,
+                fp300.state)
+        sml = _sml()
+        sml.capabilities, sml.manufacturer, sml.model = DeviceCapabilities(sml), "Philips", "SML001"
+        sml.service, sml.is_available = NS(state_cache={}, _cache_dirty=False), (lambda: True)
+        sml.sanitise_state = lambda: DeviceStateManagerMixin.sanitise_state(sml)
+        DeviceStateManagerMixin.restore_state(sml, {"occupancy": True})
+        c.check("a sensor whose entry names no readings is restored as before",
+                {k: sml.state.get(k) for k in ("occupancy", "motion", "presence")}
+                == {"occupancy": False, "motion": False, "presence": False}, sml.state)
+
         c.section("a controller EP does not strip a real actuator")
         zdir = tmp / "z2"
         zdir.mkdir()

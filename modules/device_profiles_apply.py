@@ -245,6 +245,24 @@ def _binary_names(device) -> set:
             and m.get("device_class") in BINARY_CLASSES}
 
 
+OCCUPANCY_CLASSES = frozenset({"occupancy", "presence", "motion"})
+
+
+def occupancy_readings(device) -> List[Dict[str, str]]:
+    """The occupancy-type readings the device's entry names, [{name, device_class}],
+    in entry order: a sensor with radar and PIR has one of each, shown apart."""
+    profile = resolve_profile_for_device(device) or {}
+    out, seen = [], set()
+    for ep in (profile.get("endpoints") or {}).values():
+        for cl in (ep.get("clusters") or {}).values():
+            for m in (cl.get("attributes") or {}).values():
+                name = (m or {}).get("name")
+                if name and m.get("device_class") in OCCUPANCY_CLASSES and name not in seen:
+                    seen.add(name)
+                    out.append({"name": name, "device_class": m["device_class"]})
+    return out
+
+
 # Home Assistant binary_sensor classes: a reading of one is true or false.
 BINARY_CLASSES = frozenset({"occupancy", "motion", "presence", "door", "window", "opening",
                             "garage_door", "moisture", "smoke", "gas", "vibration", "tamper",
@@ -358,6 +376,16 @@ def _answered_type(device, ep_id: int, cid: int, aid: int, mfr: Optional[int]) -
     return None
 
 
+REPORTING_DELETE = 0xFFFF      # a row's max interval that removes it (ZCL configure reporting)
+
+
+def entry_owns_reporting(device) -> bool:
+    """Whether the device's entry sets `zmm.reporting_only`: its rows are the
+    device's whole reporting setup and handlers add none."""
+    profile = resolve_profile_for_device(device) or {}
+    return bool((profile.get("zmm") or {}).get("reporting_only"))
+
+
 async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
     """
     Push the profile's reporting rows to the device. Idempotent.
@@ -395,14 +423,16 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
             if attr_def is None:
                 results.append({**r, "ok": False, "error": "type unknown: run Find everything first"})
                 continue
-            try:
-                async with asyncio.timeout(8.0):
-                    bound = await cluster.bind()
-                device_ops.step_status(f"Bind 0x{cid:04X}", next(iter(bound or []), 0))
-            except Exception as e:
-                # Without the bind a maker's cluster sends no reports at all.
-                logger.warning(f"[{device.ieee}] Bind 0x{cid:04X} failed: {device_ops.reason_of(e)}")
-                device_ops.step(f"Bind 0x{cid:04X}", False, device_ops.reason_of(e))
+            # max 0xFFFF deletes the device's row: nothing will be sent, so no bind.
+            if int(r.get("max") or 0) != REPORTING_DELETE:
+                try:
+                    async with asyncio.timeout(8.0):
+                        bound = await cluster.bind()
+                    device_ops.step_status(f"Bind 0x{cid:04X}", next(iter(bound or []), 0))
+                except Exception as e:
+                    # Without the bind a maker's cluster sends no reports at all.
+                    logger.warning(f"[{device.ieee}] Bind 0x{cid:04X} failed: {device_ops.reason_of(e)}")
+                    device_ops.step(f"Bind 0x{cid:04X}", False, device_ops.reason_of(e))
             from zigpy.zcl.helpers import ReportingConfig
             async with asyncio.timeout(8.0):
                 rsp = await cluster.configure_reporting_multiple({attr_def: ReportingConfig(

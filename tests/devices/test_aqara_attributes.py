@@ -225,10 +225,24 @@ def run() -> Checker:
         names = [o["name"] for o in h.get_configuration_options()]
         c.check("before it has reported its sensitivity, that setting is not offered",
                 "motion_sensitivity" not in names, names)
-        h.attribute_updated(0x010C, 2)
+        h.attribute_updated(0x010C, 3)
         names = [o["name"] for o in h.get_configuration_options()]
-        c.check("once reported, sensitivity can be set, though the device has no Occupancy Sensing cluster",
-                "motion_sensitivity" in names, names)
+        c.check("its entry owns sensitivity: the report is kept raw for the entry to name",
+                dev.state.get("opple_0x010c") == 3 and "motion_sensitivity" not in dev.state, dev.state)
+        c.check("and the handler offers no second sensitivity control", "motion_sensitivity" not in names, names)
+        c.check("nor polls or writes it", 0x010C not in h.get_pollable_attributes(),
+                h.get_pollable_attributes())
+        asyncio.run(h.apply_configuration({"motion_sensitivity": 3}))
+        c.check("a config update leaves the write to the entry", not any(s[0] == "write" for s in cl.sent), cl.sent)
+        from modules import zmm_settings
+        from modules.device_profiles_apply import transform_state_with_profile
+        st = next(s for s in device_profiles.profile_for_device(dev)["zmm"]["settings"]
+                  if s["id"] == "motion_sensitivity")
+        c.check("the entry numbers it as the device does: 1 low, 2 medium, 3 high",
+                [zmm_settings._to_raw(st, w) for w in ("low", "medium", "high")] == [1, 2, 3], st)
+        c.check("and names the reported 3 as high",
+                transform_state_with_profile(dev, dict(dev.state)).get("motion_sensitivity") == 3
+                and st["values"]["3"] == "high", dev.state)
         c.check("settings of other motion sensors it never reported are not offered",
                 "detection_interval" not in names and "trigger_indicator" not in names, names)
 

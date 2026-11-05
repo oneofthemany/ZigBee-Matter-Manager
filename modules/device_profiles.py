@@ -456,6 +456,9 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
     if presses:
         out["press_names"] = presses          # button value -> action name, per model
 
+    if z.get("reporting_only") is True:
+        out["reporting_only"] = True        # the entry's rows are the whole setup (device-profiles.md §4)
+
     ev = z.get("evidence") or {}
     evidence = {k: [str(x) for x in ev.get(k) or [] if x] for k in ("probes", "verified_fw")
                 if isinstance(ev.get(k), list)}

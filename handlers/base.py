@@ -113,6 +113,9 @@ class ClusterHandler:
     # so the configure loop would skip them. Handlers that still need configure()
     # at join time — to bind, write intervals — set this to opt out of that gate.
     ALWAYS_CONFIGURE: bool = False
+    # False where configure() sends no reporting rows, so it still runs for a
+    # device whose entry owns its reporting (zmm.reporting_only).
+    CONFIGURE_SETS_REPORTING: bool = True
 
     def __init__(self, device, cluster: 'Cluster'):
         self.device = device

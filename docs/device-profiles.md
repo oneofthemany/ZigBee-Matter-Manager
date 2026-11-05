@@ -339,6 +339,14 @@ that device.
   `device.supports_setting(name)` says whether it can. A report of the
   attribute is filed under the setting's id, and a write moves the raw value
   with it, so only a later report of that attribute replaces what was written.
+- **Reporting only.** `zmm.reporting_only: true` makes the entry's `reporting`
+  rows the device's whole reporting setup: setup sends them and no handler adds
+  its generic rows (a handler whose `configure()` sets no reporting, flagged
+  `CONFIGURE_SETS_REPORTING = False`, still runs). It is for a device with a
+  small reporting table, where a quantity without a row is never reported: the
+  FP300 keeps about five, and the generic rows took the slots temperature or
+  presence needed. A row with `max: 65535` deletes that row on the device to
+  free its slot, and is sent without a bind; list deletes first.
 - **Sleepy devices.** A battery device listens only just after it sends
   something, so a write while it sleeps times out. That write is not failed
   but held (`zmm_settings._PENDING`): a newer value for the same setting

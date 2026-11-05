@@ -371,7 +371,19 @@
                 }
 
                 // Motion sensor status
-                if (capList.indexOf('motion_sensor') !== -1 || capList.indexOf('occupancy_sensing') !== -1) {
+                var occReadings = (device.occupancy_readings || []).filter(function (r) { return r.name in s; });
+                if (occReadings.length && (capList.indexOf('motion_sensor') !== -1 || capList.indexOf('occupancy_sensing') !== -1)) {
+                    // One badge per reading its entry names: radar presence and PIR motion apart.
+                    occReadings.forEach(function (r) {
+                        var on = s[r.name] === true;
+                        var isMotion = r.device_class === 'motion';
+                        var label = on ? (isMotion ? 'MOTION' : 'PRESENT') : 'CLEAR';
+                        extras += ' <span class="' + (on ? 'zbm-motion-active' : 'zbm-motion-clear') +
+                                  '" title="' + (isMotion ? 'Motion' : 'Presence') + ': ' + label + '">' +
+                                  '<i class="fas ' + (on ? (isMotion ? 'fa-running' : 'fa-user') :
+                                  (isMotion ? 'fa-shield-alt' : 'fa-broadcast-tower')) + '"></i> ' + label + '</span>';
+                    });
+                } else if (capList.indexOf('motion_sensor') !== -1 || capList.indexOf('occupancy_sensing') !== -1) {
                     var motion = s.occupancy === true || s.motion === true || s.presence === true;
                     var motionLabel = motion ? 'MOTION' : 'CLEAR';
                     var motionClass = motion ? 'zbm-motion-active' : 'zbm-motion-clear';
