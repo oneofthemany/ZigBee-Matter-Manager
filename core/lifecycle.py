@@ -177,8 +177,11 @@ class DeviceLifecycleMixin:
         if ieee in self.devices:
             # Refresh in place — preserves listeners/state across re-inits
             wrapper = self.devices[ieee]
+            # A quirk arrives as a new device object with replaced endpoints; handlers
+            # built from the raw one would serve clusters the device no longer has.
+            replaced = wrapper.zigpy_dev is not device
             wrapper.zigpy_dev = device
-            if not just_inited:
+            if replaced or not just_inited:
                 wrapper._identify_handlers()
                 if hasattr(wrapper, 'capabilities'):
                     wrapper.capabilities._detect_capabilities()

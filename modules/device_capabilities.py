@@ -426,16 +426,14 @@ class DeviceCapabilities:
 
         if self.IAS_ZONE in self._cluster_ids:
             self._capabilities.add('ias_zone')
-            # The zone's own type says what it senses. Only a zone that never
-            # gave one falls back to the old assumption of motion.
+            # Only the zone's own type, or a person, says what it senses; one
+            # that hasn't given its type yet stays a bare zone.
             zone_caps = {self.IAS_ZONE_CAPABILITY[z] for z in self._ias_zone_types()
                          if z in self.IAS_ZONE_CAPABILITY}
             if zone_caps:
                 self._capabilities |= zone_caps
             elif pinned in ('contact_sensor', 'motion_sensor'):
                 self._capabilities.add(pinned)
-            elif not self._ias_zone_types():
-                self._capabilities.add('motion_sensor')
 
         if self.TEMPERATURE_MEASUREMENT in self._cluster_ids:
             self._capabilities.add('temperature_sensor')

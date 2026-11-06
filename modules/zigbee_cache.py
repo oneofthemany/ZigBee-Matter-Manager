@@ -55,6 +55,7 @@ def warm():
     """
     db = _get_db()
     _init_schema()
+    read_facts_table()      # the first device list after a restart reads it all; warm its pages
     # DuckDB imports pandas on the first execute that binds parameters: seconds
     # from a cold disk, and process-wide, so paying it here spares the loop.
     db.execute("SELECT ?", [0]).fetchall()
@@ -680,15 +681,39 @@ _facts_snapshot: ContextVar[Optional[Dict[str, List[Dict[str, Any]]]]] = \
     ContextVar("facts_snapshot", default=None)
 
 
+_FACTS_ALL_SQL = ("SELECT ieee, endpoint_id, subject, source, value, first_seen, last_seen "
+                  "FROM device_facts ORDER BY ieee, endpoint_id, subject, source")
+
+
+def read_facts_table() -> Dict[Optional[str], List[Dict[str, Any]]]:
+    """Every device's facts as a facts_snapshot holds them. Runs on a cursor of
+    its own, so it is safe in a worker thread: the read is seconds long on a cold
+    cache, and on the loop it stalls every request."""
+    _init_schema()
+    out: Dict[Optional[str], List[Dict[str, Any]]] = {None: []}     # loaded marker
+    cur = _get_db().cursor()
+    try:
+        rows = cur.execute(_FACTS_ALL_SQL).fetchall()
+    except Exception as e:
+        logger.error(f"zigbee_cache read device_facts (all, worker) failed: {e}")
+        rows = []
+    finally:
+        cur.close()
+    for r in rows:
+        out.setdefault(r[0], []).append(dict(zip(_FACT_COLS, r[1:])))
+    return out
+
+
 @contextmanager
-def facts_snapshot():
+def facts_snapshot(preloaded: Optional[Dict[Optional[str], List[Dict[str, Any]]]] = None):
     """Serve get_facts from one read of the whole table for the block's length.
 
     For building a view of every device synchronously: each device's settings
     ask for its facts several times, and every DuckDB query costs a millisecond
     or more on the event loop. Rows are shared, so callers must not mutate them.
+    `preloaded` (from read_facts_table) serves the block with no query at all.
     """
-    token = _facts_snapshot.set({})
+    token = _facts_snapshot.set(preloaded if preloaded is not None else {})
     try:
         yield
     finally:
@@ -701,10 +726,7 @@ def get_facts(ieee) -> List[Dict[str, Any]]:
     if snap is not None:
         if not snap:
             snap[None] = []                     # loaded marker: an empty table stays loaded
-            cur = _safe_execute(
-                "SELECT ieee, endpoint_id, subject, source, value, first_seen, last_seen "
-                "FROM device_facts ORDER BY ieee, endpoint_id, subject, source",
-                context="read device_facts (all)")
+            cur = _safe_execute(_FACTS_ALL_SQL, context="read device_facts (all)")
             for r in (cur.fetchall() if cur else []):
                 snap.setdefault(r[0], []).append(dict(zip(_FACT_COLS, r[1:])))
         return snap.get(str(ieee), [])

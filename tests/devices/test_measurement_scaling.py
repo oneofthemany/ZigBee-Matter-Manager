@@ -16,7 +16,7 @@ from types import SimpleNamespace as NS
 from harness import Checker
 
 from handlers.aqara import AqaraManufacturerCluster
-from handlers.sensors import RelativeHumidityHandler
+from handlers.sensors import IlluminanceMeasurementHandler, RelativeHumidityHandler
 
 
 class _Device:
@@ -48,6 +48,10 @@ class _HumidityCluster:
         return ({a: self.raw for a in attrs if a == 0x0000}, {})
 
 
+class _IlluminanceCluster(_HumidityCluster):
+    cluster_id = 0x0400
+
+
 class _AqaraCluster:
     cluster_id = 0xFCC0
 
@@ -75,6 +79,16 @@ def run() -> Checker:
             polled.get("humidity_raw") == 5150, polled)
     handler.attribute_updated(0x0000, 5150)
     c.check("a reported 5150 is 51.5 % too", dev.state.get("humidity") == 51.5, dev.state)
+
+    c.section("illuminance: a poll and a report give the same lux")
+    dev = _Device()
+    handler = IlluminanceMeasurementHandler(dev, _IlluminanceCluster(7782))
+    polled = asyncio.run(handler.poll())
+    c.check("a polled 7782 is stored as 6.0 lx", polled.get("illuminance") == 6.0, polled)
+    handler.attribute_updated(0x0000, 7782)
+    c.check("a reported 7782 is 6.0 lx too", dev.state.get("illuminance") == 6.0, dev.state)
+    for raw in (0, 0xFFFF):
+        c.check(f"raw {raw:#x} reads as 0 lx", handler.parse_value(0x0000, raw) == 0)
 
     c.section("Aqara heartbeat device temperature")
     for raw, expected in ((2371, 23.71), (23, 23.0)):

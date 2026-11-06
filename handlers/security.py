@@ -30,7 +30,7 @@ class ZoneStatus:
     BATTERY_DEFECT = 0x0200  # Battery defect
 
 
-# IAS Zone Types
+# IAS Zone Types (ZCL 8.2.2.2.1.3)
 ZONE_TYPES = {
     0x0000: "standard_cie",
     0x000D: "motion_sensor",
@@ -38,13 +38,14 @@ ZONE_TYPES = {
     0x0028: "fire_sensor",
     0x002A: "water_sensor",
     0x002B: "co_sensor",
-    0x002C: "vibration_sensor",
-    0x002D: "remote_control",
-    0x010F: "key_fob",
-    0x0115: "keypad",
-    0x021D: "standard_warning",
-    0x0225: "glass_break",
-    0x0226: "security_repeater",
+    0x002C: "personal_emergency",
+    0x002D: "vibration_sensor",
+    0x010F: "remote_control",
+    0x0115: "key_fob",
+    0x021D: "keypad",
+    0x0225: "standard_warning",
+    0x0226: "glass_break",
+    0x0229: "security_repeater",
 }
 
 
@@ -80,8 +81,48 @@ class IASZoneHandler(ClusterHandler):
         self._zone_type = None
         self._zone_id = None
         self._last_status = 0
+        self._zone_type_read = None
         
         logger.info(f"[{self.device.ieee}] IAS Zone handler initialized")
+
+    def _known_zone_type(self) -> Optional[int]:
+        """The zone's own statement of what it senses, or None until it gives one."""
+        if self._zone_type is None:
+            try:
+                zt = self.cluster.get(self.ATTR_ZONE_TYPE)
+            except Exception:
+                zt = None    # a cluster stub without a cache
+            if zt is not None:
+                self._zone_type = int(getattr(zt, "value", zt))
+        return self._zone_type
+
+    def _learn_zone_type(self, value) -> None:
+        zt = int(getattr(value, "value", value))
+        changed = zt != self._zone_type
+        self._zone_type = zt
+        type_name = ZONE_TYPES.get(zt, f"unknown_0x{zt:04x}")
+        self.device.update_state({"zone_type": type_name})
+        if changed:
+            logger.info(f"[{self.device.ieee}] IAS Zone Type: {type_name}")
+            # The device's class follows its zone type (modules/device_class.py).
+            if hasattr(self.device, "capabilities"):
+                self.device.capabilities._detect_capabilities()
+
+    def _request_zone_type(self) -> None:
+        """Read the zone type now: a sleepy device that just sent a frame is awake."""
+        if self._zone_type_read is None:
+            self._zone_type_read = asyncio.create_task(self._read_zone_type())
+
+    async def _read_zone_type(self) -> None:
+        try:
+            result = await self.cluster.read_attributes([self.ATTR_ZONE_TYPE])
+            zt = (result[0] or {}).get(self.ATTR_ZONE_TYPE) if result else None
+            if zt is not None:
+                self._learn_zone_type(zt)
+        except Exception as e:
+            logger.info(f"[{self.device.ieee}] Zone type read failed: {e}")
+        finally:
+            self._zone_type_read = None
 
     def cluster_command(self, tsn: int, command_id: int, args):
         """
@@ -103,6 +144,12 @@ class IASZoneHandler(ClusterHandler):
         elif command_id == 0x01:
             # Zone Enroll Request — MUST respond or device won't enrol
             logger.info(f"[{self.device.ieee}] IAS Zone Enroll Request received — responding")
+            # Its first argument is the zone type: the device stating what it senses.
+            if args:
+                try:
+                    self._learn_zone_type(args[0])
+                except Exception as e:
+                    logger.debug(f"[{self.device.ieee}] Enroll request zone type unusable: {e}")
             asyncio.create_task(self._send_enroll_response())
             
         else:
@@ -162,8 +209,11 @@ class IASZoneHandler(ClusterHandler):
                 "trouble": trouble,
             }
 
-            # Determine device type and set appropriate state keys
-            zone_type = self._zone_type or 0x000D  # Default to motion sensor
+            # Only the zone's own type says what Alarm1 means; until it gives one,
+            # the alarm is reported as itself and the type is read while it's awake.
+            zone_type = self._known_zone_type()
+            if zone_type is None:
+                self._request_zone_type()
 
             if zone_type == 0x0015:
                 # Contact switch (door/window sensor)
@@ -172,8 +222,7 @@ class IASZoneHandler(ClusterHandler):
                 updates["is_open"] = alarm1
                 log_msg = f"OPEN" if alarm1 else "CLOSED"
                 
-            elif zone_type in [0x000D, 0x0000]:
-                # Motion sensor or standard CIE
+            elif zone_type == 0x000D:
                 # Alarm1 = True means MOTION DETECTED
                 updates["occupancy"] = alarm1
                 updates["motion"] = alarm1
@@ -195,16 +244,13 @@ class IASZoneHandler(ClusterHandler):
                 updates["co_detected"] = alarm1
                 log_msg = "CO DETECTED" if alarm1 else "CO cleared"
                 
-            elif zone_type == 0x002C:
+            elif zone_type == 0x002D:
                 # Vibration sensor
                 updates["vibration"] = alarm1
                 log_msg = "VIBRATION" if alarm1 else "Vibration stopped"
                 
             else:
-                # Generic fallback
                 updates["alarm"] = alarm1
-                updates["occupancy"] = alarm1
-                updates["motion"] = alarm1
                 log_msg = f"Alarm: {alarm1}"
 
             # Update device state
@@ -245,11 +291,7 @@ class IASZoneHandler(ClusterHandler):
                 value = value.value
 
             if attrid == self.ATTR_ZONE_TYPE:
-                # Zone type tells us what kind of sensor this is
-                self._zone_type = value
-                type_name = ZONE_TYPES.get(value, f"unknown_0x{value:04x}")
-                self.device.update_state({"zone_type": type_name})
-                logger.info(f"[{self.device.ieee}] IAS Zone Type: {type_name}")
+                self._learn_zone_type(value)
                 
             elif attrid == self.ATTR_ZONE_STATUS:
                 # Zone status reported as attribute (some devices do this)
@@ -305,11 +347,7 @@ class IASZoneHandler(ClusterHandler):
                 ])
                 if result and result[0]:
                     if self.ATTR_ZONE_TYPE in result[0]:
-                        self._zone_type = result[0][self.ATTR_ZONE_TYPE]
-                        if hasattr(self._zone_type, 'value'):
-                            self._zone_type = self._zone_type.value
-                        type_name = ZONE_TYPES.get(self._zone_type, f"unknown")
-                        logger.info(f"[{self.device.ieee}] Zone type: {type_name}")
+                        self._learn_zone_type(result[0][self.ATTR_ZONE_TYPE])
             except Exception as e:
                 logger.warning(f"[{self.device.ieee}] Failed to read zone type: {e}")
 

@@ -26,7 +26,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Get list of all devices with their current state."""
         zigbee_service = get_zigbee_service()
         matter_bridge = get_matter_bridge()
-        devices = zigbee_service.get_device_list()
+        devices = await zigbee_service.get_device_list_async()
         if matter_bridge and matter_bridge.is_connected:
             devices.extend(matter_bridge.get_device_list())
         # WiFi AC units (gree/midea) — provider registered by ac_routes

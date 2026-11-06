@@ -89,18 +89,41 @@ def run() -> Checker:
         svc3 = _Svc(dev2)
         svc3._full_init_ts = {IEEE: time.time()}
         svc3.interview_status = NS(emit_for=lambda _i: None)
-        asyncio.run(_again(svc3))
+        asyncio.run(_again(svc3, same=True))
         c.check("is still skipped, so the device list does not flash",
                 dev2.built == 1 and svc3.pipelines == 0, (dev2.built, svc3.pipelines))
+
+        c.section("zigpy's initialised call bringing the quirked device, just after a run")
+        raw = NS(ieee=IEEE, model="lumi.magnet.agl02",
+                 endpoints={0: NS(), 1: NS(in_clusters={0x0000: object(), 0x0500: object()},
+                                           out_clusters={})})
+        dev4 = _Dev(raw)
+        dev4._identify_handlers()
+        svc4 = _Svc(dev4)
+        svc4._full_init_ts = {IEEE: time.time()}
+        svc4.interview_status = NS(emit_for=lambda _i: None)
+        quirked = NS(ieee=IEEE, model="lumi.magnet.agl02",
+                     endpoints={0: NS(), 1: NS(in_clusters={0x0000: object(), 0xFCC0: object()},
+                                               out_clusters={0x0006: object()})})
+        svc4.device_initialized(quirked)
+        c.check("rebuilds the handlers from the quirked device",
+                dev4.zigpy_dev is quirked and dev4.built == 2
+                and set(dev4.handlers) == {(1, 0x0000), (1, 0xFCC0)}, (dev4.built, set(dev4.handlers)))
+        c.check("without running setup a second time", svc4.pipelines == 0, svc4.pipelines)
     finally:
         asyncio.sleep = sleep
     return c
 
 
-async def _again(svc):
-    """zigpy's call, carrying the device with its clusters."""
-    eps = svc.devices[IEEE].zigpy_dev.endpoints
-    svc.device_initialized(NS(ieee=IEEE, model="lumi.sensor_occupy.agl8", endpoints=eps))
+async def _again(svc, same=False):
+    """zigpy's call, carrying the device with its clusters: the same object
+    unless a quirk replaced it."""
+    zdev = svc.devices[IEEE].zigpy_dev
+    if same:
+        zdev.ieee, zdev.model = IEEE, "lumi.sensor_occupy.agl8"
+    else:
+        zdev = NS(ieee=IEEE, model="lumi.sensor_occupy.agl8", endpoints=zdev.endpoints)
+    svc.device_initialized(zdev)
     await asyncio.sleep(0)
 
 

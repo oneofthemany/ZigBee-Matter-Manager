@@ -70,7 +70,12 @@ export function renderOverviewTab(device) {
         'internal_temperature',
         'heating_setpoint',
         'target_temp', 'temperature_setpoint',
+        // Diagnostics: radio check-in, and the voltage battery % is read from
+        'checkin_interval', 'battery_voltage',
     ];
+    // Unnamed raw attributes stay in state for entry mapping, raw controls and
+    // learning; a reader only sees them once an entry names them.
+    const rawAttrKey = /^(opple_0x[0-9a-f]{4}|attr_[0-9a-f]{4}_[0-9a-f]{4}|cluster_[0-9a-f]{4}_attr_[0-9a-f]{4})(_\d+)?$/i;
 
     // Define sensor-specific keys that should only appear for devices with those capabilities
     const occupancySensorKeys = [
@@ -132,7 +137,7 @@ export function renderOverviewTab(device) {
 
     Object.keys(s).forEach(key => {
         if (configKeys.includes(key) || ignoredKeys.includes(key) || key.startsWith('dp_') || key.endsWith('_raw')) return;
-        if (namedRaw.has(key)) return;
+        if (namedRaw.has(key) || rawAttrKey.test(key)) return;
         if (key.startsWith('startup_behavior_')) return;
         if (multiEpPowerKeys.includes(key)) return;
 

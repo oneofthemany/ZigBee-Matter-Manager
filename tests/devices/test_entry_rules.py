@@ -86,6 +86,14 @@ def run() -> Checker:
         caps = DeviceCapabilities(_device("lumi.sensor_magnet.zz9", "LUMI", magnet))
         c.check("a model name alone does not",
                 "contact_sensor" not in caps.get_capabilities(), caps.get_capabilities())
+        t1 = {1: _ep(1, (0x0000, 0x0001, 0x0003, 0xFCC0), (0x0006, 0x0019), 0x0402)}
+        caps = DeviceCapabilities(_device("lumi.magnet.agl02", "LUMI", t1))
+        c.check("the T1's entry makes its quirked endpoint a contact sensor",
+                "contact_sensor" in caps.get_capabilities()
+                and not (caps.get_capabilities()
+                         & {"switch", "light", "motion_sensor", "temperature_sensor"})
+                and caps.allows_field("contact") and not caps.allows_field("motion"),
+                caps.get_capabilities())
 
         c.section("an entry's capabilities hold from detection")
         from device.state import DeviceStateManagerMixin

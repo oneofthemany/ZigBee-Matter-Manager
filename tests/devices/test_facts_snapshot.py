@@ -67,6 +67,28 @@ def run() -> Checker:
         c.check("a block whose first read finds nothing still loads only once",
                 len(queries) == 1, len(queries))
 
+        c.section("the table read moved off the event loop")
+        import asyncio
+        import threading
+        loop_thread = threading.get_ident()
+        on_loop = []
+        real_cursor_read = zigbee_cache.read_facts_table
+
+        def watched():
+            on_loop.append(threading.get_ident() == loop_thread)
+            return real_cursor_read()
+
+        async def build():
+            facts = await asyncio.to_thread(watched)
+            queries.clear()
+            with zigbee_cache.facts_snapshot(facts):
+                return {ieee: zigbee_cache.get_facts(ieee) for ieee in (A, B, NONE)}
+
+        pre = asyncio.run(build())
+        c.check("the worker reads the same rows as a live query", pre == live, pre)
+        c.check("that read ran off the loop thread", on_loop == [False], on_loop)
+        c.check("and a preloaded block makes no query of its own", queries == [], queries)
+
         zigbee_cache._safe_execute = real_execute
         zigbee_cache.purge_device(B)
         c.check("outside a block, reads are live again", zigbee_cache.get_facts(B) == [])

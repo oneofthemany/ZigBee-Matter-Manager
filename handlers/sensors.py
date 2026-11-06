@@ -639,16 +639,20 @@ class IlluminanceMeasurementHandler(ClusterHandler, SensorReportingMixin):
         if attrid == self.ATTR_MEASURED_VALUE:
             if hasattr(value, 'value'):
                 value = value.value
-            # Illuminance formula: 10^((value - 1) / 10000) lux
-            if value is not None and value != 0 and value != 0xFFFF:
-                try:
-                    lux = round(10 ** ((float(value) - 1) / 10000), 1)
-                except (ValueError, OverflowError):
-                    lux = 0
-            else:
-                lux = 0
+            lux = self.parse_value(attrid, value)
             self.device.update_state({"illuminance": lux})
             logger.debug(f"[{self.device.ieee}] Illuminance: {lux} lux (raw: {value})")
+
+    # Reports and polls share this: a poll stores parse_value's result as-is.
+    def parse_value(self, attrid: int, value: Any) -> Any:
+        if attrid != self.ATTR_MEASURED_VALUE:
+            return value
+        if value is None or value == 0 or value == 0xFFFF:  # 0 = too dark, 0xFFFF = invalid
+            return 0
+        try:
+            return round(10 ** ((float(value) - 1) / 10000), 1)
+        except (ValueError, OverflowError):
+            return 0
 
     def get_attr_name(self, attrid: int) -> str:
         if attrid == self.ATTR_MEASURED_VALUE:

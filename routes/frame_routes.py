@@ -85,11 +85,11 @@ def _save_frames(frames: List[dict]) -> None:
 def register_frame_routes(app: FastAPI, get_zigbee_service):
     """Register Frames layout routes."""
 
-    def _devices() -> List[Dict[str, Any]]:
+    async def _devices() -> List[Dict[str, Any]]:
         svc = get_zigbee_service()
         if svc is None:
             return []
-        return svc.get_device_list() or []
+        return await svc.get_device_list_async() or []
 
     def _device_groups() -> List[Dict[str, Any]]:
         """Zigbee groups, so a chamber-assigned one gets its own cell — [] if groups aren't wired up yet."""
@@ -116,7 +116,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
         try:
             cfg = _load_config()
             frame = build_auto_frame(
-                _devices(),
+                await _devices(),
                 split=split,
                 chambers=build_registry(cfg),
                 include_chambers=_csv(chambers),
@@ -139,7 +139,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
         of how any one frame is split.
         """
         try:
-            cells = [resolve_cell(d) for d in _devices() if is_zigbee(d)]
+            cells = [resolve_cell(d) for d in await _devices() if is_zigbee(d)]
             cells.sort(key=lambda c: c["name"].lower())
             return {"success": True, "cells": cells, "total": len(cells)}
         except Exception as e:
@@ -302,7 +302,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
                 return {"success": False, "error": f"no frame '{frame_id}'", "groups": [], "total": 0}
             cfg = _load_config()
             rendered = render_saved_frame(
-                frame, _devices(), build_registry(cfg), chamber_levels(),
+                frame, await _devices(), build_registry(cfg), chamber_levels(),
                 device_groups=_device_groups(), include_hidden=hidden,
             )
             return {"success": True, **rendered, "frame": frame}

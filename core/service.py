@@ -2120,8 +2120,16 @@ class ZigbeeService(
 
     # DEVICE LIST
 
-    def get_device_list(self):
-        """Get list of all devices with their current state - JSON-safe."""
+    async def get_device_list_async(self):
+        """get_device_list with its one table read, device_facts, done in a worker
+        thread: seconds on a cold cache, which on the loop stalls every request."""
+        from modules.zigbee_cache import read_facts_table
+        facts = await asyncio.to_thread(read_facts_table)
+        return self.get_device_list(facts=facts)
+
+    def get_device_list(self, facts=None):
+        """Get list of all devices with their current state - JSON-safe.
+        `facts`, from read_facts_table, spares the loop the table read."""
         from modules.zigbee_cache import facts_snapshot, get_facts
         # Runs on the event loop, so a slow build stalls every request: time it
         # by section and by device, and say so only when it is slow.
@@ -2137,8 +2145,9 @@ class ZigbeeService(
 
         started = time.perf_counter()
         # Each device's settings re-read its facts; one table read serves them all.
-        with facts_snapshot():
-            timed("facts_table", lambda: get_facts(""))
+        with facts_snapshot(facts):
+            if facts is None:
+                timed("facts_table", lambda: get_facts(""))
             res = []
             for ieee, zdev in self.devices.items():
                 dev_started = time.perf_counter()
