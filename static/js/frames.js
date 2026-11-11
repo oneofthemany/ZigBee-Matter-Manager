@@ -788,18 +788,63 @@ export function setFrameTab(id) {
  */
 let draggingCell = null;
 
+/**
+ * How long a cell stays untouched after its slider was last moved or released.
+ *
+ * Same figure as the control modal's INTERACTION_DEBOUNCE_MS, for the same
+ * reason: letting go fires `change`, the optimistic update and then a run of
+ * websocket echoes as the device ramps to the new level. Rebuilding the cell on
+ * each of those swaps the slider for a new one at whatever value the cache held
+ * at that instant, which reads as the thumb jumping about. Holding the cell
+ * still and rebuilding it once, from the settled state, doesn't.
+ */
+const SLIDER_HOLD_MS = 2000;
+
+/** Held cells by key, each with the timer that releases it. */
+const heldCells = new Map();
+
+function cellKey(cellEl) {
+    return cellEl.dataset.groupId ? `g:${cellEl.dataset.groupId}` : `d:${cellEl.dataset.ieee}`;
+}
+
+/** Start, or restart, a cell's hold. */
+function holdCell(cellEl) {
+    if (!cellEl) return;
+    const key = cellKey(cellEl);
+    clearTimeout(heldCells.get(key));
+    heldCells.set(key, setTimeout(() => releaseCell(key), SLIDER_HOLD_MS));
+}
+
+/** The hold ran out: catch the cell up with everything it sat out. */
+function releaseCell(key) {
+    heldCells.delete(key);
+    if (!frame) return;
+    const id = key.slice(2);
+    if (key.startsWith('d:')) {
+        framesHandleDeviceUpdate(id);
+        return;
+    }
+    const gc = frame.groups.flatMap(g => g.cells).find(c => c.is_group && String(c.group_id) === id);
+    if (gc?.members?.length) framesHandleDeviceUpdate(gc.members[0]);
+}
+
 function markDragging(el) {
     draggingCell = el.closest('.frame-cell');
+    holdCell(draggingCell);
 }
 
 function endDragging() {
+    // The hold runs from the release, not from the last movement, so a thumb
+    // held still for a while is as protected as one that just stopped.
+    holdCell(draggingCell);
     draggingCell = null;
 }
 
-/** Don't yank a slider out from under a finger mid-drag. */
+/** Don't yank a slider out from under a finger, mid-drag or just after it. */
 function sliderBeingDragged(el) {
     if (draggingCell && el.contains(draggingCell)) return true;
     if (el === draggingCell) return true;
+    if (heldCells.has(cellKey(el))) return true;
     return el.contains(document.activeElement) &&
         document.activeElement.matches('input[type="range"]');
 }
@@ -814,10 +859,11 @@ export function framesHandleDeviceUpdate(ieee) {
         const dev = devOf(cell);
         if (dev) cell.available = !!dev.available;
         for (const el of document.querySelectorAll(`.frame-cell[data-ieee="${CSS.escape(ieee)}"]`)) {
-            if (sliderBeingDragged(el)) continue;
+            // Classes are safe to flip under a finger; only the rebuild isn't.
             el.classList.toggle('is-offline', !cell.available);
             el.classList.toggle('is-hidden', !!cell.hidden);
             el.classList.toggle('is-active', cellIsActive(cell));
+            if (sliderBeingDragged(el)) continue;
             el.innerHTML = cellInnerHtml(cell);
         }
     }
@@ -827,8 +873,8 @@ export function framesHandleDeviceUpdate(ieee) {
     // devices just did, so refresh every group tile this ieee belongs to.
     for (const gc of allCells.filter(c => c.is_group && c.members?.includes(ieee))) {
         for (const el of document.querySelectorAll(`.frame-cell[data-group-id="${CSS.escape(String(gc.group_id))}"]`)) {
-            if (sliderBeingDragged(el)) continue;
             el.classList.toggle('is-active', cellIsActive(gc));
+            if (sliderBeingDragged(el)) continue;
             el.innerHTML = cellInnerHtml(gc);
         }
     }
