@@ -135,7 +135,7 @@ let historyLoaded = false;
 let historyExhausted = false;
 let lastRendered = '';
 
-function stamp(ts) {
+export function stamp(ts) {
     const d = new Date(ts * 1000);
     const pad = (n, w = 2) => String(n).padStart(w, '0');
     const day = d.toDateString() === new Date().toDateString() ? '' : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
@@ -238,8 +238,11 @@ function traceHtml(t) {
     return html;
 }
 
-async function openTrace(eventId) {
+/** Open the trace of one stored log line; also used by the device modal's History tab. */
+export async function openTrace(eventId) {
     document.getElementById('logTraceModal')?.remove();
+    // Opened over another modal (the device modal): stack above it and its backdrop.
+    const stacked = !!document.querySelector('.modal.show');
     document.body.insertAdjacentHTML('beforeend', `
         <div class="modal fade" id="logTraceModal" tabindex="-1" aria-labelledby="logTraceTitle">
           <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
@@ -249,7 +252,19 @@ async function openTrace(eventId) {
             <div class="modal-body" id="logTraceBody"><div class="text-muted small">Loading…</div></div>
           </div></div></div>`);
     const el = document.getElementById('logTraceModal');
-    el.addEventListener('hidden.bs.modal', () => el.remove());
+    el.addEventListener('hidden.bs.modal', () => {
+        el.remove();
+        // Bootstrap drops modal-open on any hide; the modal underneath still needs it to scroll.
+        if (document.querySelector('.modal.show')) document.body.classList.add('modal-open');
+    });
+    if (stacked) {
+        el.style.zIndex = '1070';
+        el.addEventListener('shown.bs.modal', () => {
+            const backdrops = document.querySelectorAll('.modal-backdrop');
+            const last = backdrops[backdrops.length - 1];
+            if (last) last.style.zIndex = '1065';
+        }, { once: true });
+    }
     bootstrap.Modal.getOrCreateInstance(el).show();
     const body = document.getElementById('logTraceBody');
     try {
