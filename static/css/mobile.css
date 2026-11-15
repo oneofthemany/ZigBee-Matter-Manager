@@ -1222,15 +1222,29 @@ body.controlling {
 
 @media (max-width: 767.98px) {
     /* Pill rows scroll rather than wrap into a two-storey tab bar. */
+    #mediaTabs,
     #mediaPlayers .zmm-group-tabs,
     #mediaGroupPane .nav-tabs {
         overflow-x: auto;
         scrollbar-width: none;
     }
 
+    #mediaTabs::-webkit-scrollbar,
     #mediaPlayers .zmm-group-tabs::-webkit-scrollbar,
     #mediaGroupPane .nav-tabs::-webkit-scrollbar {
         display: none;
+    }
+
+    /* All three header tabs must fit a 360px phone without scrolling. */
+    #mediaPanePlayers > .card > .card-header {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+
+    #mediaTabs .nav-link {
+        font-size: 0.9rem;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
     }
 
     /* Zone name on top, its controls on a full-width row underneath —

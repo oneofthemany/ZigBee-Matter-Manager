@@ -2130,13 +2130,10 @@ function _defaultGroupProvider() {
 // rebuilt only when the set of tabs changes; the pane is never touched here.
 function _mediaScaffold() {
     const host = document.getElementById('mediaPlayers');
-    if (!host) return null;
-    let bar = document.getElementById('mediaTabs');
-    if (!bar) {
-        host.innerHTML = `
-          <ul class="nav nav-pills mb-2 flex-nowrap zmm-group-tabs" id="mediaTabs"></ul>
-          <div id="mediaGroupPane"></div>`;
-        bar = document.getElementById('mediaTabs');
+    const bar = document.getElementById('mediaTabs');   // lives in the card header
+    if (!host || !bar) return null;
+    if (!document.getElementById('mediaGroupPane')) {
+        host.innerHTML = '<div id="mediaGroupPane"></div>';
     }
     const tabs = _visibleTabs();
     if (!tabs.some(t => t.id === _mediaTab)) _mediaTab = 'players';
