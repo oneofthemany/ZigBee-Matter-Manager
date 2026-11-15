@@ -167,6 +167,20 @@ def run() -> Checker:
         c.check("a refused write is reported, and the state left alone",
                 res == {"multi_click_2": False} and "multi_click_2" not in dev.state, (res, dev.state))
 
+        c.section("an accepted write is published like a report")
+        published = []
+        dev.update_state = lambda data: published.append(dict(data))
+        asyncio.run(zmm_settings.apply(dev, {"multi_click_3": 2}))
+        c.check("t1: the new value goes through update_state, so the browser hears of it",
+                published == [{"multi_click_3": 2}] and dev.state.get("multi_click_3") == 2, published)
+        published.clear()
+        asyncio.run(zmm_settings.apply(dev, {"multi_click_2": 1}))
+        c.check("t2: a refused write publishes nothing", published == [], published)
+        dev.update_state = lambda data: (_ for _ in ()).throw(RuntimeError("no service"))
+        asyncio.run(zmm_settings.apply(dev, {"multi_click_3": 1}))
+        c.check("a failing update_state still leaves the state set", dev.state.get("multi_click_3") == 1)
+        del dev.update_state
+
         c.section("a save says which settings the device did not take")
         from device.handlers import DeviceHandlerManagerMixin
         dev.handlers, dev.service = {}, NS(device_settings={})

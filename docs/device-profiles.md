@@ -339,6 +339,10 @@ that device.
   `device.supports_setting(name)` says whether it can. A report of the
   attribute is filed under the setting's id, and a write moves the raw value
   with it, so only a later report of that attribute replaces what was written.
+  An accepted write (and a value read at wake) goes through `update_state`
+  like a report, so the browser and MQTT hear of it at once; without that the
+  page kept its old copy and the next update redrew the control at the old
+  value.
 - **Reporting only.** `zmm.reporting_only: true` makes the entry's `reporting`
   rows the device's whole reporting setup: setup sends them and no handler adds
   its generic rows (a handler whose `configure()` sets no reporting, flagged

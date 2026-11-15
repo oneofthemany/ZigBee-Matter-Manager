@@ -152,7 +152,9 @@ async def read_settings(device, ids) -> Dict[str, Any]:
             st = by_attr.get(int(rec.attrid))
             if st is None or int(rec.status) != 0 or rec.value is None:
                 continue
-            device.state[st["id"]] = got[st["id"]] = _from_raw(st, rec.value.value)
+            got[st["id"]] = _from_raw(st, rec.value.value)
+    if got:
+        _publish(device, got)
     queue = _PENDING_READS.get(ieee)
     if queue is not None:
         queue -= set(got)
@@ -320,13 +322,24 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         if ok:
             # The raw key too: the profile recomputes the setting from it, and a
             # stale one would put the old value back on the next report.
-            if key:
-                device.state[key] = value
-            device.state[name] = _from_raw(st, value)
+            _publish(device, {**({key: value} if key else {}), name: _from_raw(st, value)})
             logger.info(f"[{device.ieee}] ZMM setting {name} = {device.state[name]}")
         elif outcome == "refused":
             logger.warning(f"[{device.ieee}] ZMM setting {name} refused by the device")
     return results
+
+
+def _publish(device, data: Dict[str, Any]) -> None:
+    """Record an accepted write as a report would be: through update_state, so
+    the browser and MQTT hear of it. The state is set either way, since
+    update_state may filter keys and a test stub has none."""
+    update = getattr(device, "update_state", None)
+    if callable(update):
+        try:
+            update(dict(data))
+        except Exception as e:
+            logger.debug(f"[{getattr(device, 'ieee', '?')}] publishing {sorted(data)} failed: {e}")
+    device.state.update(data)
 
 
 def typed_value(type_id: int, value: Any):
@@ -567,7 +580,7 @@ async def apply_raw(device, updates: Dict[str, Any]) -> Dict[str, bool]:
         if ok:
             key = _raw_state_key(device, a["cluster"], a["attr"])
             if key:
-                device.state[key] = value
+                _publish(device, {key: value})
             logger.info(f"[{device.ieee}] {name} = {value}")
         elif outcome == "refused":
             logger.warning(f"[{device.ieee}] {name} refused by the device")
