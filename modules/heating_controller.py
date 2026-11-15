@@ -422,6 +422,69 @@ def _room_freshness_threshold_sec(room: dict) -> float:
         else float(DEFAULT_FRESHNESS_THRESHOLD_SEC)
 
 
+# Stale = this many reports missed, plus grace (heating-controller.md, "Per-device freshness").
+STALE_MISSED_REPORTS = 2
+STALE_GRACE_SEC = 5 * 60
+
+# () -> {ieee: settings saved from the device modal}; set by the controller.
+_device_settings_getter: Optional[Callable[[], dict]] = None
+
+
+def _requested_report_max(ieee: str) -> Optional[float]:
+    if _device_settings_getter is None:
+        return None
+    try:
+        saved = (_device_settings_getter() or {}).get(ieee) or {}
+        return _as_float((saved.get("updates") or {}).get("reporting_max"))
+    except Exception:
+        return None
+
+
+def _device_freshness(room: dict, dev: Any, ieee: str) -> Dict[str, Any]:
+    """The staleness rule for one device's temperature in this room:
+    {threshold_sec, interval_sec, source, change_only}. A room override wins;
+    else the device's own report cadence, never below the default."""
+    override = _as_float(room.get("freshness_threshold_minutes"))
+    if override and override > 0:
+        return {"threshold_sec": override * 60.0, "interval_sec": None,
+                "source": "room", "change_only": False}
+    cad: Dict[str, Any] = {}
+    if dev is not None:
+        try:
+            from modules.device_profiles import report_cadence
+            cad = report_cadence(dev, "temperature", _requested_report_max(ieee))
+            if cad.get("unread"):
+                from modules import zmm_settings
+                zmm_settings.request_read(dev, cad["unread"])
+        except Exception as e:
+            logger.debug(f"report cadence for {ieee} unavailable: {e}")
+            cad = {}
+    if cad.get("change_only"):
+        # Silent while steady is normal: only no report in the lookback is stale.
+        return {"threshold_sec": FRESHNESS_LOOKBACK_HOURS * 3600.0, "interval_sec": None,
+                "source": "change_only", "change_only": True}
+    interval = cad.get("interval_sec")
+    if interval:
+        return {"threshold_sec": max(STALE_MISSED_REPORTS * interval + STALE_GRACE_SEC,
+                                      float(DEFAULT_FRESHNESS_THRESHOLD_SEC)),
+                "interval_sec": float(interval), "source": cad.get("source"),
+                "change_only": False}
+    return {"threshold_sec": float(DEFAULT_FRESHNESS_THRESHOLD_SEC), "interval_sec": None,
+            "source": "default", "change_only": False}
+
+
+def _stale_text(what: str, age: float, fr: Dict[str, Any]) -> str:
+    """Why a device counts as stale, and what to check."""
+    age_min = int(age / 60)
+    interval = fr.get("interval_sec")
+    if interval:
+        missed = int(age // interval)
+        return (f"{what} last reported {age_min} min ago; it should report every "
+                f"{int(interval / 60)} min, so {missed} reports are missed "
+                f"— check its battery and signal")
+    return f"{what} last reported {age_min} min ago (threshold {int(fr['threshold_sec'] / 60)} min)"
+
+
 def _last_temperature_ts(ieee: str) -> Optional[float]:
     """
     Return the unix timestamp of the most recent temperature report for this
@@ -469,13 +532,16 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
 
     Severity:
         ok       — every configured device is in the snapshot and reporting fresh
+        warning  — data is usable but a device's config needs attention
         critical — any failure: device missing, no temp keys, or stale per DuckDB
 
-    Per requirements all failures are critical (no warning tier). Returns
-    {"level": str, "reasons": [str], "stale_devices": [{ieee, age_sec}]}
+    Staleness is judged per device against its own report cadence
+    (`_device_freshness`). Returns {"level", "reasons", "warnings",
+    "stale_devices": [{ieee, age_sec, threshold_sec}], "threshold_minutes"}
     so the frontend can both badge and explain.
     """
     reasons: List[str] = []
+    warnings: List[str] = []
     stale: List[Dict[str, Any]] = []
     threshold_sec = _room_freshness_threshold_sec(room)
     now = time.time()
@@ -484,6 +550,15 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
     ext_mode = room.get("external_temp_mode", "off")
 
     if sensor_ieee and ext_mode != "off":
+        fr = _device_freshness(room, devices.get(sensor_ieee), sensor_ieee)
+        threshold_sec = fr["threshold_sec"]
+        if fr["change_only"]:
+            warnings.append(
+                f"Sensor {sensor_ieee} reports temperature only when it changes, "
+                f"so heating can't tell a steady room from a dead sensor until "
+                f"{FRESHNESS_LOOKBACK_HOURS}h pass — set its temperature reporting "
+                f"mode to include an interval"
+            )
         if not sensor_present_in_devices:
             reasons.append(
                 f"Sensor {sensor_ieee} not on the network "
@@ -502,13 +577,10 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
                 )
             else:
                 age = now - last_ts
-                if age > threshold_sec:
-                    age_min = int(age / 60)
-                    reasons.append(
-                        f"Sensor {sensor_ieee} last reported "
-                        f"{age_min} min ago (threshold {int(threshold_sec/60)} min)"
-                    )
+                if age > fr["threshold_sec"]:
+                    reasons.append(_stale_text(f"Sensor {sensor_ieee}", age, fr))
                     stale.append({"ieee": sensor_ieee, "age_sec": int(age),
+                                  "threshold_sec": int(fr["threshold_sec"]),
                                   "kind": "sensor"})
             if _is_flatlined(sensor_ieee):
                 reasons.append(
@@ -547,12 +619,11 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
                 pass
             else:
                 age = now - last_ts
-                if age > threshold_sec:
-                    age_min = int(age / 60)
-                    reasons.append(
-                        f"TRV {ieee} last reported temperature {age_min} min ago"
-                    )
-                    stale.append({"ieee": ieee, "age_sec": int(age), "kind": "trv"})
+                fr = _device_freshness(room, dev, ieee)
+                if age > fr["threshold_sec"]:
+                    reasons.append(_stale_text(f"TRV {ieee} temperature", age, fr))
+                    stale.append({"ieee": ieee, "age_sec": int(age),
+                                  "threshold_sec": int(fr["threshold_sec"]), "kind": "trv"})
 
         if trv_dec.get("valve_alarm"):
             reasons.append(f"TRV {trv_dec.get('name') or ieee}: valve alarm (stuck/seized)")
@@ -569,8 +640,9 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
         reasons.append("No temperature data available — room cannot be controlled")
 
     return {
-        "level": "critical" if reasons else "ok",
+        "level": "critical" if reasons else ("warning" if warnings else "ok"),
         "reasons": reasons,
+        "warnings": warnings,
         "stale_devices": stale,
         "threshold_minutes": int(threshold_sec / 60),
     }
@@ -637,7 +709,8 @@ class HeatingController:
                  command_sender: Callable, comfort_defaults: Optional[dict] = None,
                  weather_service: Any = None,
                  anomaly_getter: Optional[Callable] = None,
-                 telemetry_query: Optional[Callable] = None):
+                 telemetry_query: Optional[Callable] = None,
+                 device_settings_getter: Optional[Callable[[], dict]] = None):
         """
         Args:
             config: heating config block (will read 'circuits' and 'enabled')
@@ -653,6 +726,9 @@ class HeatingController:
         self.dry_run = bool(controller_cfg.get("dry_run", False))
 
         self._get_devices = device_getter
+        if device_settings_getter is not None:
+            global _device_settings_getter
+            _device_settings_getter = device_settings_getter
         # Raw sender; every caller goes through _throttled_send for the radio
         # lock and the resilience gate.
         self._send_command = command_sender
@@ -1799,7 +1875,7 @@ class HeatingController:
         # selection fall back to the TRV mean (or "none").
         if ext_temp is not None and _query_last_report_age is not None:
             last_ts = _last_temperature_ts(sensor_ieee)
-            threshold_sec = _room_freshness_threshold_sec(room)
+            threshold_sec = _device_freshness(room, devices.get(sensor_ieee), sensor_ieee)["threshold_sec"]
             now_ts = time.time()
             too_old = last_ts is None or (now_ts - last_ts) > threshold_sec
             flat = _is_flatlined(sensor_ieee)
@@ -1921,7 +1997,7 @@ class HeatingController:
                 sensor_present_in_devices=sensor_present_in_devices,
                 sensor_raw=sensor_raw,
             )
-            if decision.health["level"] != "ok":
+            if decision.health["level"] == "critical":
                 logger.warning(
                     f"Room '{decision.name}' health={decision.health['level']}: "
                     + "; ".join(decision.health["reasons"])
@@ -2485,7 +2561,8 @@ class HeatingController:
                     f"below min_temp {min_t:.1f}°C"
                 )
                 return out
-            if d.health and d.health.get("level") not in (None, "ok"):
+            # A config warning leaves the data trusted, so only critical blocks.
+            if d.health and d.health.get("level") == "critical":
                 out["active"] = False
                 out["reason"] += (
                     f"; OVERRIDE: room '{d.name}' health="
@@ -3221,7 +3298,7 @@ class HeatingController:
                 # on whatever was pushed last.
                 if _query_last_report_age is not None:
                     last_report_ts = _last_temperature_ts(sensor_ieee)
-                    threshold_sec = _room_freshness_threshold_sec(room)
+                    threshold_sec = _device_freshness(room, sensor_dev, sensor_ieee)["threshold_sec"]
                     if last_report_ts is None or (now_ts - last_report_ts) > threshold_sec:
                         last_warn = _push_stale_warned.get(sensor_ieee, 0.0)
                         if (now_ts - last_warn) >= _STALE_WARN_INTERVAL_SEC:

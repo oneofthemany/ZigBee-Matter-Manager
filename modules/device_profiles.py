@@ -423,6 +423,13 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
                 setting[k] = v
         if st.get("unit"):
             setting["unit"] = str(st["unit"])[:8]
+        # Which reading's report cadence this setting governs (device-profiles.md §4).
+        for k in ("report_interval", "report_mode"):
+            if re.fullmatch(r"[a-z][a-z_]{0,31}", str(st.get(k) or "")):
+                setting[k] = st[k]
+        if setting.get("report_mode"):
+            setting["timed_values"] = [str(v) for v in (st.get("timed_values") or [])
+                                       if _to_int(v) is not None]
         if typ == ZONES:
             setting["bits"] = bits
             for k in ("scale", "min", "max", "step", "unit"):
@@ -1014,6 +1021,69 @@ def profile_for_device(device) -> Optional[Dict[str, Any]]:
     pinned = getattr(store, "get_ieee_pin", lambda _: None)(ieee) == p.get("id")
     maker = (p.get("match") or {}).get("manufacturer")
     return p if pinned or not maker or maker == manufacturer else None
+
+
+# ZCL attributes a reading is reported on, for the profile's `reporting` rows.
+REPORT_ATTRS = {"temperature": {(0x0402, 0x0000), (0x0201, 0x0000)}}
+REPORTING_DELETE = 0xFFFF
+
+
+def _shown_value(st: Dict[str, Any], v: Any) -> Optional[str]:
+    """A select setting's state value as its raw key: state holds the raw
+    number, a handler may hold the label."""
+    if v is None:
+        return None
+    for raw, label in (st.get("values") or {}).items():
+        if str(v).strip().lower() == str(label).lower():
+            return raw
+    n = _to_int(v) if not isinstance(v, float) else int(v)
+    return None if n is None else str(n)
+
+
+def report_cadence(device, reading: str, requested_max: Optional[float] = None) -> Dict[str, Any]:
+    """How often `device` should report `reading`, from what it is configured
+    to do (device-profiles.md §4, "Report cadence").
+
+    {"interval_sec", "source", "change_only", "unread"}: `source` is setting,
+    setting_max (the setting is not read yet; its slowest value), requested
+    (the modal's reporting max), reporting (the entry's ZCL row) or None;
+    `unread` names settings to read when the device next wakes. No interval
+    and not change_only means nothing is known.
+    """
+    out: Dict[str, Any] = {"interval_sec": None, "source": None,
+                           "change_only": False, "unread": []}
+    p = profile_for_device(device) or {}
+    state = (device.get("state") if isinstance(device, dict) else getattr(device, "state", None)) or {}
+    settings = (p.get("zmm") or {}).get("settings") or []
+    mode_st = next((s for s in settings if s.get("report_mode") == reading), None)
+    every_st = next((s for s in settings if s.get("report_interval") == reading), None)
+
+    if mode_st:
+        mode = _shown_value(mode_st, state.get(mode_st["id"]))
+        if mode is None:
+            out["unread"].append(mode_st["id"])
+        elif mode not in (mode_st.get("timed_values") or []):
+            out["change_only"] = True
+            return out
+    if every_st:
+        v = state.get(every_st["id"])
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            out.update(interval_sec=float(v), source="setting")
+            return out
+        out["unread"].append(every_st["id"])
+        if isinstance(every_st.get("max"), (int, float)):
+            out.update(interval_sec=float(every_st["max"]), source="setting_max")
+            return out
+    if requested_max and 0 < requested_max < REPORTING_DELETE:
+        out.update(interval_sec=float(requested_max), source="requested")
+        return out
+    attrs = REPORT_ATTRS.get(reading) or set()
+    for r in p.get("reporting") or []:
+        if (_to_int(r.get("cluster")), _to_int(r.get("attr"))) in attrs \
+                and 0 < int(r.get("max") or 0) < REPORTING_DELETE:
+            out.update(interval_sec=float(r["max"]), source="reporting")
+            return out
+    return out
 
 
 def get_profile_store() -> ProfileStore:

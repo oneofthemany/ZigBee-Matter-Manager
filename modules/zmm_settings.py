@@ -25,7 +25,18 @@ OCTSTR = 0x41
 # sent the next time it is heard from (docs/device-profiles.md §4, "Sleepy devices").
 # In memory: a restart drops them, and the log says what was waiting.
 _PENDING: Dict[str, Dict[str, Any]] = {}
+# Entry settings to read at the next wake, {ieee: {setting id}}: values a
+# caller needs that the device has never reported.
+_PENDING_READS: Dict[str, set] = {}
+# A busy sensor wakes every few seconds: one read attempt per this long.
+_READ_RETRY_SEC = 600.0
+_READ_TRIED: Dict[str, float] = {}
 _FLUSHING: set = set()
+
+
+def _reads_due(ieee: str) -> bool:
+    import time
+    return bool(_PENDING_READS.get(ieee)) and time.time() - _READ_TRIED.get(ieee, 0.0) > _READ_RETRY_SEC
 
 
 def _undelivered(e: Exception) -> bool:
@@ -66,11 +77,23 @@ def _settle(device, name: str, outcome: str, shown: Any = None) -> None:
             _PENDING.pop(ieee, None)
 
 
+def request_read(device, setting_ids) -> None:
+    """Read these entry settings the next time the device is heard from."""
+    ids = {str(s) for s in (setting_ids or []) if s}
+    ieee = str(getattr(device, "ieee", "") or "")
+    if not ids or not ieee:
+        return
+    queue = _PENDING_READS.setdefault(ieee, set())
+    if not ids <= queue:
+        queue |= ids
+        logger.info(f"[{ieee}] Will read {sorted(queue)} when the device wakes")
+
+
 def on_heard(device) -> None:
     """The device just sent something, so it is awake for a moment: send what
     it missed. Called for every frame; does nothing unless something waits."""
     ieee = str(device.ieee)
-    if not _PENDING.get(ieee) or ieee in _FLUSHING:
+    if not (_PENDING.get(ieee) or _reads_due(ieee)) or ieee in _FLUSHING:
         return
     import asyncio
     _FLUSHING.add(ieee)
@@ -84,17 +107,60 @@ async def _flush(device) -> None:
     ieee = str(device.ieee)
     try:
         wanted = pending(device)
-        logger.info(f"[{ieee}] Awake: sending {len(wanted)} waiting setting(s): {sorted(wanted)}")
+        if wanted:
+            logger.info(f"[{ieee}] Awake: sending {len(wanted)} waiting setting(s): {sorted(wanted)}")
         entry = {k: v for k, v in wanted.items() if not str(k).startswith(RAW_PREFIX)}
         raw = {k: v for k, v in wanted.items() if str(k).startswith(RAW_PREFIX)}
         if entry:
             await apply(device, entry)
         if raw:
             await apply_raw(device, raw)
+        if _reads_due(ieee):
+            import time
+            _READ_TRIED[ieee] = time.time()
+            await read_settings(device, set(_PENDING_READS[ieee]))
     except Exception as e:
         logger.warning(f"[{ieee}] Sending waiting settings failed: {type(e).__name__}: {e}")
     finally:
         _FLUSHING.discard(ieee)
+
+
+async def read_settings(device, ids) -> Dict[str, Any]:
+    """Read entry settings by id into device.state, one request per
+    (ep, cluster, mfr) so a brief wake covers them. {id: value read}."""
+    import asyncio
+    ieee = str(device.ieee)
+    groups: Dict[Tuple[int, int, Optional[int]], List[Dict[str, Any]]] = {}
+    for st in _entry_settings(device):
+        if st["id"] in ids and st["ep"] != "each" and st["type"] != ZONES:
+            key = (int(st["ep"]), int(st["cluster"], 16), int(st["mfr"], 16) if st.get("mfr") else None)
+            groups.setdefault(key, []).append(st)
+    got: Dict[str, Any] = {}
+    for (ep, cid, mfr), sts in groups.items():
+        ep_obj = (device.zigpy_dev.endpoints or {}).get(ep)
+        cluster = (ep_obj.in_clusters or {}).get(cid) if ep_obj else None
+        if cluster is None:
+            continue
+        try:
+            async with asyncio.timeout(8.0):
+                rsp = await cluster.read_attributes_raw([int(s["attr"], 16) for s in sts], manufacturer=mfr)
+        except Exception as e:
+            logger.debug(f"[{ieee}] settings read of 0x{cid:04X} failed: {type(e).__name__}: {e}")
+            continue
+        by_attr = {int(s["attr"], 16): s for s in sts}
+        for rec in getattr(rsp, "status_records", None) or []:
+            st = by_attr.get(int(rec.attrid))
+            if st is None or int(rec.status) != 0 or rec.value is None:
+                continue
+            device.state[st["id"]] = got[st["id"]] = _from_raw(st, rec.value.value)
+    queue = _PENDING_READS.get(ieee)
+    if queue is not None:
+        queue -= set(got)
+        if not queue:
+            _PENDING_READS.pop(ieee, None)
+    if got:
+        logger.info(f"[{ieee}] Read settings at wake: {got}")
+    return got
 
 
 def _entry_settings(device) -> List[Dict[str, Any]]:

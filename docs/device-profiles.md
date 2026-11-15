@@ -354,7 +354,23 @@ that device.
   while it is awake. A refusal then drops it; a write that times out again
   waits for the next wake. The Configuration form shows the waiting value and
   says so, and a save lists queued settings apart from refused ones. The queue
-  is in memory, so a restart drops it.
+  is in memory, so a restart drops it. A caller can also ask for settings to
+  be *read* at the next wake (`zmm_settings.request_read`): one read per
+  cluster, at most once every `_READ_RETRY_SEC`, filed under the setting ids.
+- **Report cadence.** A setting that governs how often a reading is reported
+  says so, so a consumer can tell a quiet sensor from a dead one without a rule
+  per model. `"report_interval": "temperature"` marks the setting holding the
+  timed report interval for that reading (its value in seconds, after
+  `scale`); `"report_mode": "temperature"` with `"timed_values": ["2", "3"]`
+  marks the mode setting and the raw values that include a timer (any other
+  value is change-only reporting). `device_profiles.report_cadence(device,
+  reading, requested_max)` reads them in order: the marked setting from
+  device state; if it was never read, its `max` (the slowest the device
+  allows) with the setting queued for a read; the reporting max saved from the
+  device modal (`device_settings.json`, `updates.reporting_max`); the entry's
+  ZCL `reporting` row for the reading's attribute (`max` between 1 and 65534);
+  else nothing known. The heating controller judges staleness by it
+  (heating-controller.md, *Per-device freshness*).
 - **Zones.** A setting of type `zones` with `bits: N` (1 to 48) is an octet
   string whose last N bits are on/off zones: zone *i* is bit *i* of the
   trailing bytes read big-endian. It is shown and saved as that mask; a write

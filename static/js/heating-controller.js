@@ -97,7 +97,7 @@ function detectHealthTransitions(state) {
                 fireToast('error',
                     `Heating: ${circuit.name} → ${room.name}`,
                     summary, 8000);
-            } else if (prevLevel === 'critical' && newLevel === 'ok') {
+            } else if (prevLevel === 'critical') {
                 fireToast('success',
                     `Heating recovered: ${circuit.name} → ${room.name}`,
                     'Sensor and TRV data are fresh again.', 4000);
@@ -284,15 +284,21 @@ function renderCircuitStatusCard(c) {
         // Health chip — only renders when room is in trouble. Uses a Bootstrap
         // badge plus a tooltip-style reason list shown below the room.
         const health = r.health || {};
-        const healthChip = (health.level && health.level !== 'ok')
-            ? ` <span class="badge bg-danger ms-1" title="${escapeAttr((health.reasons || []).join(' • '))}">
+        const critical = health.level === 'critical';
+        const notes = critical ? (health.reasons || []) : (health.warnings || []);
+        const healthChip = critical
+            ? ` <span class="badge bg-danger ms-1" title="${escapeAttr(notes.join(' • '))}">
                    <i class="fas fa-exclamation-triangle me-1"></i>Unhealthy
                </span>`
+            : health.level === 'warning'
+            ? ` <span class="badge bg-warning text-dark ms-1" title="${escapeAttr(notes.join(' • '))}">
+                   <i class="fas fa-wrench me-1"></i>Check settings
+               </span>`
             : '';
-        const healthDetail = (health.level && health.level !== 'ok' && (health.reasons || []).length)
-            ? `<div class="small text-danger mt-1">
-                   <i class="fas fa-exclamation-triangle me-1"></i>
-                   ${(health.reasons || []).map(reason => escapeHtml(reason)).join('<br>')}
+        const healthDetail = (health.level && health.level !== 'ok' && notes.length)
+            ? `<div class="small ${critical ? 'text-danger' : 'text-warning-emphasis'} mt-1">
+                   <i class="fas ${critical ? 'fa-exclamation-triangle' : 'fa-wrench'} me-1"></i>
+                   ${notes.map(reason => escapeHtml(reason)).join('<br>')}
                </div>`
             : '';
 

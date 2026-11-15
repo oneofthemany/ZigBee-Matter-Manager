@@ -327,6 +327,34 @@ a sensor cost one query rather than four. The lookback window reaches well
 beyond the threshold so a sensor reporting every 20 minutes is not flagged just
 because nothing landed in the last 15.
 
+### Per-device freshness
+
+A battery sensor reports on its own schedule: an Aqara FP300 set to report on a
+0.5 °C change *or* hourly goes quiet for an hour in a steady room, and a fixed
+15-minute threshold called that a fault. So each device's temperature is judged
+against its own report cadence (`_device_freshness`), and an error on the
+heating page means someone needs to act.
+
+- A room's explicit `freshness_threshold_minutes` wins.
+- Otherwise the cadence comes from `device_profiles.report_cadence`
+  (device-profiles.md §4, *Report cadence*): the entry's marked interval
+  setting, its slowest value while unread (and the setting is read at the next
+  wake), the reporting max saved from the device modal, the entry's ZCL
+  reporting row.
+- Stale is silence longer than `STALE_MISSED_REPORTS` (2) intervals plus
+  `STALE_GRACE_SEC` (5 min), never less than `DEFAULT_FRESHNESS_THRESHOLD_SEC`
+  (15 min): an hourly sensor is stale after 125 min. A device with no
+  cadence keeps the 15-minute default.
+- A sensor set to report only on change has no timer to miss. It stays
+  trusted until `FRESHNESS_LOOKBACK_HOURS` pass with no report, and room health
+  shows a `warning` ("Check settings") asking for a mode that includes an
+  interval. A warning does not block solar suppression and is not logged each
+  tick; only `critical` does either.
+
+Room health, the stale-sensor fallback and the external-temp push all use the
+same threshold. The error text names the expected interval and how many
+reports are missed.
+
 Freshness is skipped entirely when `temp_source == "external"`: the TRV's own
 `local_temperature` is driving no decision, so its staleness is not a health
 signal for that room. A TRV reporting *no* temperature at all is still a
@@ -337,7 +365,8 @@ treated as a fresh install, not a fault.
 
 The cached state value outlives the sensor that produced it, so a dead sensor
 would otherwise steer a room on a reading weeks old. If DuckDB shows no
-temperature report inside the room's freshness threshold the external reading
+temperature report inside the sensor's freshness threshold (*Per-device
+freshness*) the external reading
 is discarded, and normal source selection falls back to the TRV mean — or
 `"none"`, which classifies the room as unknown. An unknown room never calls for
 heat; losing a sensor is an alert, not something the controller papers over.

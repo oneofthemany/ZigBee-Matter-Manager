@@ -373,6 +373,7 @@ heating_controller = HeatingController(
     telemetry_query=lambda ieee, attr, hours:
     __import__("modules.telemetry_db", fromlist=["query_device_state_history"])
     .query_device_state_history(ieee, attr, hours),
+    device_settings_getter=lambda: (zigbee_service.device_settings if zigbee_service else {}),
     )
 
 
