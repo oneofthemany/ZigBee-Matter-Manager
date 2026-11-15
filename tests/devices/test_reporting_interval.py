@@ -58,6 +58,7 @@ def run() -> Checker:
         _sleepy(c)
         _merge(c)
         _clear(c)
+        _settings_only(c)
     finally:
         dpa.entry_owns_reporting = saved_owns
         zmm_settings._PENDING.clear()
@@ -168,6 +169,40 @@ def _clear(c):
                 rows == [{"id": "entry"}] and h.configured == 0 and ri.stored(dev) is None, (rows, h.configured))
     finally:
         dpa.entry_owns_reporting, dpa.apply_reporting, dpa.resolve_profile_for_device = saved
+
+
+def _settings_only(c):
+    c.section("a save with no setting changes sends the device nothing")
+    h = _Measuring()
+    h.endpoint, h.cluster_id = NS(endpoint_id=1), 0x0402
+    dev, _ = _device(h)
+    dev.capabilities = NS(is_endpoint_configurable=lambda ep: True,
+                          is_cluster_configurable=lambda cid, ep: True,
+                          get_endpoint_role=lambda ep: "sensor")
+    from device.handlers import DeviceHandlerManagerMixin
+    out = asyncio.run(DeviceHandlerManagerMixin.configure(dev, {"qos": 2, "updates": {}}))
+    c.check("q1: QoS-only save (empty updates) runs no handler's setup",
+            h.configured == 0 and out == {"failed": [], "queued": []}, (h.configured, out))
+    asyncio.run(DeviceHandlerManagerMixin.configure(dev, {"qos": 1}))
+    c.check("q1: nor does a save with no updates key", h.configured == 0, h.configured)
+    c.check("q2: and QoS is kept", dev.service.device_settings[IEEE].get("qos") == 1, dev.service.device_settings)
+    asyncio.run(DeviceHandlerManagerMixin.configure(dev))
+    c.check("q3: configure() with no config still runs the full setup", h.configured == 1, h.configured)
+
+    try:
+        from core.service import ZigbeeService
+    except ImportError as e:
+        c.check(f"core.service imports ({e.name} missing)", False, e)
+        return
+    polled = []
+    svc = NS(devices={IEEE: dev}, device_settings=dev.service.device_settings,
+             _save_json=lambda path, data: None,
+             set_polling_interval=lambda ieee, s: polled.append((ieee, s)))
+    dev.configure = lambda config=None: _device_configure(dev, config)
+    asyncio.run(ZigbeeService.configure_device(svc, IEEE, {"ieee": IEEE, "qos": 0, "polling_interval": 60,
+                                                           "updates": {}}))
+    c.check("q2: a polling interval reaches the polling scheduler", polled == [(IEEE, 60)], polled)
+    c.check("q2: still without reconfiguring the device", h.configured == 1, h.configured)
 
 
 if __name__ == "__main__":

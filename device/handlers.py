@@ -128,13 +128,18 @@ class DeviceHandlerManagerMixin:
             self.sanitise_state()
 
     async def configure(self, config=None):
-        """Apply `config['updates']` (returning {"failed": [...], "queued": [...]}
-        setting names, for the caller to report; queued ones wait for a sleeping
-        device to wake), or with no config, configure every handler."""
+        """With a config, apply only its settings (returning {"failed": [...],
+        "queued": [...]} setting names, for the caller to report; queued ones
+        wait for a sleeping device to wake). Only with no config is every
+        handler configured: a QoS-only save must send the device nothing."""
         logger.info(f"[{self.ieee}] Configuring device...")
-        if config and config.get('updates'):
-            updates = config['updates']
+        if config is not None:
+            updates = config.get('updates') or {}
             failed, queued = [], []
+            if not updates:
+                if 'qos' in config:
+                    self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
+                return {"failed": failed, "queued": queued}
             try:
                 from modules import zmm_settings, reporting_interval
                 done = {**await zmm_settings.apply(self, updates),

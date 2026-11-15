@@ -1291,6 +1291,9 @@ class ZigbeeService(
             try:
                 outcome = await self.devices[ieee].configure(config)
                 outcome = outcome if isinstance(outcome, dict) else {}
+                # The scheduler is what polls; device_settings alone never did.
+                if config and config.get('polling_interval') is not None:
+                    self.set_polling_interval(ieee, int(config['polling_interval']))
                 failed, queued = outcome.get("failed") or [], outcome.get("queued") or []
                 if config:
                     # Merged key by key, so a later save keeps what it doesn't

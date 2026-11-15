@@ -372,6 +372,12 @@ that device.
   not resent. Clearing it forgets the value and re-runs the normal reporting
   setup: the entry's rows when the entry owns reporting, else each measuring
   handler's own configure.
+- **What a modal save sends.** A save sends the device only the settings it
+  changed; one that changes only QoS or polling sends it nothing. QoS is kept
+  in `device_settings.json`, and a polling interval goes to the polling
+  scheduler (`polling_config.json`), which is what polls. The device's whole
+  reporting setup runs only when asked for with no settings: the Configure
+  action and joining.
 - **Report cadence.** A setting that governs how often a reading is reported
   says so, so a consumer can tell a quiet sensor from a dead one without a rule
   per model. `"report_interval": "temperature"` marks the setting holding the
