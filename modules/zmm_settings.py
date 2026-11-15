@@ -109,12 +109,17 @@ async def _flush(device) -> None:
         wanted = pending(device)
         if wanted:
             logger.info(f"[{ieee}] Awake: sending {len(wanted)} waiting setting(s): {sorted(wanted)}")
+        from modules import reporting_interval
+        has_interval = reporting_interval.NAME in wanted
+        interval = wanted.pop(reporting_interval.NAME, None)
         entry = {k: v for k, v in wanted.items() if not str(k).startswith(RAW_PREFIX)}
         raw = {k: v for k, v in wanted.items() if str(k).startswith(RAW_PREFIX)}
         if entry:
             await apply(device, entry)
         if raw:
             await apply_raw(device, raw)
+        if has_interval:
+            await reporting_interval.apply(device, interval)
         if _reads_due(ieee):
             import time
             _READ_TRIED[ieee] = time.time()

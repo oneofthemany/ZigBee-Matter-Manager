@@ -10,6 +10,7 @@ export function renderOverviewTab(device) {
     const s = device.state || {};
     const qos = device.settings?.qos || 0;
     const pollingInterval = device.polling_interval !== undefined ? device.polling_interval : 0;
+    const reportingMax = device.settings?.updates?.reporting_max ?? '';
 
     // Determine power source for UI hints
     const isBattery = device.power_source === 'Battery' || device.type === 'EndDevice';
@@ -382,8 +383,9 @@ export function renderOverviewTab(device) {
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label x-small mb-0 fw-bold">Reporting (Dev Push)</label>
-                                    <input type="number" class="form-control form-control-sm" name="reporting_interval"
-                                           placeholder="Default" min="0" step="10">
+                                    <input type="number" class="form-control form-control-sm" name="reporting_max"
+                                           value="${reportingMax}" data-initial="${reportingMax}"
+                                           placeholder="Default" min="1" step="10">
                                     <div class="form-text x-small mt-0 text-truncate">
                                         Max Interval (s).
                                     </div>
@@ -418,17 +420,21 @@ export async function saveConfig(e) {
     let pollingInterval = null;
 
     for (let [key, value] of formData.entries()) {
+        const field = e.target.elements[key];
+        // A saved reporting interval cleared: back to the device's default reporting.
+        if (key === 'reporting_max' && value === '' && field?.dataset?.initial) {
+            updates.reporting_max = 'default';
+            continue;
+        }
         if (value === "") continue;
         // A device setting left as it was shown is not sent: saving QoS must not rewrite them all.
-        const field = e.target.elements[key];
         if (field?.dataset?.initial !== undefined && field.dataset.initial === value) continue;
 
         if (key === 'qos') { qos = parseInt(value); continue; }
         if (key === 'polling_interval') { pollingInterval = parseInt(value); continue; }
 
-        // Pass reporting_interval as a general update to be handled by sensors
-        if (key === 'reporting_interval') {
-            updates['reporting_max'] = parseInt(value);
+        if (key === 'reporting_max') {
+            updates.reporting_max = parseInt(value);
             continue;
         }
 
@@ -461,7 +467,7 @@ export async function saveConfig(e) {
         if (data.success && (failed.length || queued.length)) {
             // Only what the device answered is set. A sleeping device's settings
             // wait for it to wake; anything it refused keeps its old value.
-            const label = n => e.target.elements[n]?.closest('.col-md-6')?.querySelector('label')?.textContent.trim() || n;
+            const label = n => e.target.elements[n]?.closest('.col-md-6, .col-md-4')?.querySelector('label')?.textContent.trim() || n;
             if (queued.length) {
                 window.toast.info(`Will be set when the device next wakes: ${queued.map(label).join(', ')}.`
                     + ' It is asleep now; pressing its button wakes it sooner.');

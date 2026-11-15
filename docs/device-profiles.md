@@ -361,6 +361,17 @@ that device.
   is in memory, so a restart drops it. A caller can also ask for settings to
   be *read* at the next wake (`zmm_settings.request_read`): one read per
   cluster, at most once every `_READ_RETRY_SEC`, filed under the setting ids.
+- **Reporting interval.** The device modal's *Reporting (Dev Push)* field sets
+  the max report interval of the measured value on every measuring handler
+  (temperature, humidity, illuminance; `modules/reporting_interval.py`). It is
+  stored in `data/device_settings.json` as `updates.reporting_max` only once
+  the device accepts it; a battery device that misses it gets it from the
+  sleepy-device queue at its next wake, and the save says so. Saves merge
+  `updates` key by key, so a later save keeps it, and nothing refused or still
+  queued is stored. The field shows the stored value and an unchanged field is
+  not resent. Clearing it forgets the value and re-runs the normal reporting
+  setup: the entry's rows when the entry owns reporting, else each measuring
+  handler's own configure.
 - **Report cadence.** A setting that governs how often a reading is reported
   says so, so a consumer can tell a quiet sensor from a dead one without a rule
   per model. `"report_interval": "temperature"` marks the setting holding the
@@ -370,8 +381,8 @@ that device.
   value is change-only reporting). `device_profiles.report_cadence(device,
   reading, requested_max)` reads them in order: the marked setting from
   device state; if it was never read, its `max` (the slowest the device
-  allows) with the setting queued for a read; the reporting max saved from the
-  device modal (`device_settings.json`, `updates.reporting_max`); the entry's
+  allows) with the setting queued for a read; the reporting max the device
+  accepted from the modal (*Reporting interval*); the entry's
   ZCL `reporting` row for the reading's attribute (`max` between 1 and 65534);
   else nothing known. The heating controller judges staleness by it
   (heating-controller.md, *Per-device freshness*).

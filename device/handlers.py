@@ -136,9 +136,12 @@ class DeviceHandlerManagerMixin:
             updates = config['updates']
             failed, queued = [], []
             try:
-                from modules import zmm_settings
+                from modules import zmm_settings, reporting_interval
                 done = {**await zmm_settings.apply(self, updates),
                         **await zmm_settings.apply_raw(self, updates)}
+                if reporting_interval.NAME in updates:
+                    done[reporting_interval.NAME] = await reporting_interval.apply(
+                        self, updates[reporting_interval.NAME])
                 failed = sorted(name for name, ok in done.items() if not ok)
                 waiting = zmm_settings.pending(self)
                 queued = [n for n in failed if n in waiting]

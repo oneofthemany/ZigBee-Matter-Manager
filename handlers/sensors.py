@@ -40,41 +40,21 @@ TEMP_REPORTABLE_CHANGE = 25      # Report if the value changes by 0.25 degrees (
 
 # HELPER MIXIN FOR DYNAMIC CONFIGURATION
 class SensorReportingMixin:
-    """Mixin to handle generic reporting configuration from UI."""
-    async def apply_configuration(self, updates: Dict[str, Any]):
-        if 'reporting_max' in updates:
-            max_interval = int(updates['reporting_max'])
+    """The measured value's max report interval, as set from the device modal
+    (modules.reporting_interval drives it, device-profiles.md §4)."""
+    # cluster -> (min interval s, reportable change)
+    REPORTING_MIN_CHANGE = {0x0400: (5, 100), 0x0402: (30, 25), 0x0405: (30, 100)}
 
-            # Default fallback values
-            min_interval = 10
-            change = 10
-
-            # Customize based on Cluster ID to match your preferences
-            if self.CLUSTER_ID == 0x0400: # Illuminance
-                min_interval = 5   # Match your ILLUM_MIN_REPORT_INTERVAL
-                change = 100       # Match your ILLUM_REPORTABLE_CHANGE
-            elif self.CLUSTER_ID == 0x0402: # Temperature
-                min_interval = 30  # Match your TEMP_MIN_REPORT_INTERVAL
-                change = 25        # Match your TEMP_REPORTABLE_CHANGE (0.25 C)
-            elif self.CLUSTER_ID == 0x0405: # Humidity
-                min_interval = 30
-                change = 100       # 1% change
-
-            logger.info(f"[{self.device.ieee}] Updating reporting for 0x{self.CLUSTER_ID:04x}: Max={max_interval}s")
-
-            # Use the standard ZCL configure_reporting command
-            if hasattr(self, 'ATTR_MEASURED_VALUE'):
-                try:
-                    await self.cluster.bind()
-                    await self.cluster.configure_reporting(
-                        self.ATTR_MEASURED_VALUE,
-                        min_interval,
-                        max_interval,
-                        change
-                    )
-                    logger.info(f"[{self.device.ieee}] Reporting updated successfully")
-                except Exception as e:
-                    logger.error(f"[{self.device.ieee}] Failed to update reporting: {e}")
+    async def set_reporting_max(self, max_interval: int) -> bool:
+        """True when the device accepts. Raises when it can't be reached, so a
+        sleeping device's change can wait for it to wake."""
+        from modules.zmm_settings import _write_ok
+        min_interval, change = self.REPORTING_MIN_CHANGE.get(self.CLUSTER_ID, (10, 10))
+        logger.info(f"[{self.device.ieee}] Updating reporting for 0x{self.CLUSTER_ID:04x}: Max={max_interval}s")
+        await self.cluster.bind()
+        rsp = await self.cluster.configure_reporting(
+            self.ATTR_MEASURED_VALUE, min_interval, int(max_interval), change)
+        return _write_ok(rsp)
 
 async def configure_illuminance_reporting(device, endpoint_id: int):
     """

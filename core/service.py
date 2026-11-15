@@ -1293,8 +1293,16 @@ class ZigbeeService(
                 outcome = outcome if isinstance(outcome, dict) else {}
                 failed, queued = outcome.get("failed") or [], outcome.get("queued") or []
                 if config:
+                    # Merged key by key, so a later save keeps what it doesn't
+                    # name; the reporting interval stores itself once taken.
+                    from modules.reporting_interval import NAME as REPORTING_MAX
                     existing = self.device_settings.get(ieee, {})
-                    existing.update({k: v for k, v in config.items() if v is not None and k != 'ieee'})
+                    existing.update({k: v for k, v in config.items()
+                                     if v is not None and k not in ('ieee', 'updates')})
+                    taken = {k: v for k, v in (config.get('updates') or {}).items()
+                             if k not in failed and k not in queued and k != REPORTING_MAX}
+                    if taken:
+                        existing.setdefault('updates', {}).update(taken)
                     if existing:
                         self.device_settings[ieee] = existing
                         self._save_json("./data/device_settings.json", self.device_settings)
