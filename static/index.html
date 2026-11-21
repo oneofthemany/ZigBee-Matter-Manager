@@ -1973,7 +1973,6 @@
 <script src="/static/js/auth-settings.js"></script>
 <script src="/static/js/remote-access.js"></script>
 <script src="/static/js/my-account.js"></script>
-<script type="module" src="/static/js/drive.js"></script>
 <script src="/static/js/presence.js"></script>
 <script src="/static/js/presence-badge.js"></script>
 <script src="/static/js/house-badge.js"></script>
@@ -1992,8 +1991,8 @@
 <script src="/static/js/nav-sidebar.js"></script>
 <script src="/static/js/deploy-animation.js"></script>
 <script src="/static/js/adblock.js"></script>
-<script type="module" src="/static/js/floor-plan.js"></script>
-<script type="module" src="/static/js/heating-controller.js"></script>
+<!-- The only module entry point; tab modules load on their tab's first open
+     (tab-loader.js), floor-plan.js through import() from its two callers. -->
 <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

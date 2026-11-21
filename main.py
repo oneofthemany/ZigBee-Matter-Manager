@@ -1389,12 +1389,17 @@ async def service_worker():
     version and a fingerprint of static/."""
     import re
     from fastapi.responses import Response
-    from routes.system_routes import _APP_VERSION, static_fingerprint
+    import json
+    from routes.system_routes import _APP_VERSION, static_fingerprint, static_asset_hashes
 
     def _read():
         with open('static/sw.js') as f:
-            return f.read(), static_fingerprint()
-    body, fingerprint = await asyncio.to_thread(_read)
+            return f.read(), static_fingerprint(), static_asset_hashes()
+    body, fingerprint, hashes = await asyncio.to_thread(_read)
+    # Written by the same request as CACHE_NAME, so the name and the map the
+    # worker carries files over by can never disagree.
+    body = body.replace("var ASSET_HASHES = {};",
+                        f"var ASSET_HASHES = {json.dumps(hashes, separators=(',', ':'))};", 1)
     # Any change under static/ — a release, a test deploy, an editor save —
     # changes the worker's bytes, so the browser installs it and `activate`
     # purges the old cache. That is what lets sw.js serve /static cache-first.

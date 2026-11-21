@@ -18,20 +18,27 @@ function check(name, cond, extra) {
 
 const ORIGIN = 'https://hub.test';
 
-function worker({ online = true } = {}) {
+function worker({ online = true, hashes = null, stores = new Map() } = {}) {
   const handlers = {};
-  const stores = new Map();           // cache name -> Map(url -> body)
   const network = [];
+  const shellFetches = [];
+  const href = req => typeof req === 'string' ? new URL(req, ORIGIN).href : req.url;
+  const response = (body, ok = true) => ({
+    body, ok, clone() { return response(body, ok); }, json: async () => JSON.parse(body),
+  });
   const open = name => {
     if (!stores.has(name)) stores.set(name, new Map());
     const m = stores.get(name);
     return {
-      put: async (req, res) => { m.set(req.url, res.body); },
-      addAll: async urls => { for (const u of urls) m.set(new URL(u, ORIGIN).href, `shell:${u}`); },
+      put: async (req, res) => { m.set(href(req), res.body); },
+      match: async req => m.has(href(req)) ? response(m.get(href(req))) : undefined,
+      addAll: async urls => { for (const u of urls) { shellFetches.push(u); m.set(href(u), `shell:${u}`); } },
     };
   };
-  const response = (body, ok = true) => ({ body, ok, clone() { return response(body, ok); } });
+  // The /sw.js route's rewrite, as main.py does it.
+  const src = hashes ? SRC.replace('var ASSET_HASHES = {};', `var ASSET_HASHES = ${JSON.stringify(hashes)};`) : SRC;
   const scope = {
+    Response: function (body) { return response(body); },
     self: null,
     console: { log() {}, warn() {} },
     location: { origin: ORIGIN },
@@ -58,7 +65,7 @@ function worker({ online = true } = {}) {
     skipWaiting() {}, clients: { claim() {}, matchAll: async () => [] },
     location: { origin: ORIGIN },
   };
-  vm.runInNewContext(SRC, scope);
+  vm.runInNewContext(src, scope);
 
   async function request(p, method = 'GET') {
     let responded = null;
@@ -66,7 +73,7 @@ function worker({ online = true } = {}) {
     return responded ? await responded : 'passthrough';
   }
   const settle = () => new Promise(r => setTimeout(r, 0));
-  return { handlers, stores, network, request, settle, name: vm.runInNewContext('CACHE_NAME', scope) };
+  return { handlers, stores, network, shellFetches, request, settle, name: vm.runInNewContext('CACHE_NAME', scope) };
 }
 
 console.log('\n  static assets');
@@ -106,6 +113,60 @@ await w.settle();
 check("the new worker drops the old worker's cache", !w.stores.has(old), [...w.stores.keys()]);
 r = await w.request('/static/js/devices.js');
 check('so the changed file comes from the network', r.body === 'net:/static/js/devices.js', r.body);
+
+console.log('\n  a deploy that changes one file');
+{
+  const u = p => `${ORIGIN}${p}`;
+  const MANIFEST = u('/__zbm_asset_hashes__');
+  const stores = new Map([['zbm-old', new Map([
+    [MANIFEST, JSON.stringify({ '/static/js/a.js': 'h1', '/static/js/b.js': 'h1', '/static/js/gone.js': 'h1', '/static/css/table.css': 'h1' })],
+    [u('/static/js/a.js'), 'old:a'], [u('/static/js/b.js'), 'old:b'], [u('/static/js/gone.js'), 'old:gone'],
+    [u('/static/css/table.css'), 'old:table'],
+  ])]]);
+  const hashes = { '/static/js/a.js': 'h1', '/static/js/b.js': 'h2', '/static/css/table.css': 'h1' };
+  const w = worker({ hashes, stores });
+  let done;
+  w.handlers.install({ waitUntil: p => { done = p; } });
+  await done;
+  const fresh = w.stores.get(w.name);
+  check('an unchanged file is carried into the new cache', fresh.get(u('/static/js/a.js')) === 'old:a', [...fresh.keys()]);
+  check('a changed file is not', !fresh.has(u('/static/js/b.js')));
+  check('nor a file the deploy removed', !fresh.has(u('/static/js/gone.js')));
+  check('an unchanged shell file is carried, not fetched again',
+        fresh.get(u('/static/css/table.css')) === 'old:table' && !w.shellFetches.includes('/static/css/table.css'), w.shellFetches);
+  check('the pages themselves are still fetched', w.shellFetches.includes('/') && w.shellFetches.includes('/frames'));
+  check('the new cache records the map it was built against', fresh.get(MANIFEST) === JSON.stringify(hashes), fresh.get(MANIFEST));
+
+  let done2;
+  w.handlers.activate({ waitUntil: p => { done2 = p; } });
+  await done2;
+  check('activate still drops the old cache', !w.stores.has('zbm-old'), [...w.stores.keys()]);
+  w.network.length = 0;
+  let r = await w.request('/static/js/a.js');
+  check('the unchanged file is served with no network request', r.body === 'old:a' && w.network.length === 0, [r.body, w.network]);
+  r = await w.request('/static/js/b.js');
+  check('the changed file is fetched', r.body === 'net:/static/js/b.js' && w.network.length === 1, [r.body, w.network]);
+}
+{
+  // A cache built by a worker from before the map: nothing in it is known current.
+  const u = p => `${ORIGIN}${p}`;
+  const stores = new Map([['zbm-v12-legacy', new Map([[u('/static/js/a.js'), 'old:a']])]]);
+  const w = worker({ hashes: { '/static/js/a.js': 'h1' }, stores });
+  let done;
+  w.handlers.install({ waitUntil: p => { done = p; } });
+  await done;
+  check('a cache without a map carries nothing over', !w.stores.get(w.name).has(u('/static/js/a.js')));
+}
+{
+  const u = p => `${ORIGIN}${p}`;
+  const stores = new Map([['someone-else', new Map([
+    [u('/__zbm_asset_hashes__'), JSON.stringify({ '/static/js/a.js': 'h1' })], [u('/static/js/a.js'), 'foreign']])]]);
+  const w = worker({ hashes: { '/static/js/a.js': 'h1' }, stores });
+  let done;
+  w.handlers.install({ waitUntil: p => { done = p; } });
+  await done;
+  check("another app's cache on the origin is not read", !w.stores.get(w.name).has(u('/static/js/a.js')));
+}
 
 console.log(fails.length ? `\n  ${fails.length} FAILED` : '\n  all passed');
 process.exit(fails.length ? 1 : 0);

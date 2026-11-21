@@ -117,6 +117,7 @@
 │        ├── swarm-suggest.js
 │        ├── system.js
 │        ├── table-sort.js
+│        ├── tab-loader.js
 │        ├── utils.js
 │        ├── vendor-loader.js
 │        ├── websocket.js
@@ -141,8 +142,8 @@ Modules that every consumer is expected to go through.
 ### `static/js/vendor-loader.js`
 
 The heavy vendored libraries — ECharts (~1 MB) and Leaflet (~150 KB) — are
-not in the page; they load on first use. `zmmLoadECharts()` and
-`zmmLoadLeaflet()` return a promise of the library, appending one `<script>`
+not in the page; they load on first use. `window.zmmLoadECharts` and
+`window.zmmLoadLeaflet` each return a promise of the library, appending one `<script>`
 per library however many callers ask at once, and forgetting a failed load so
 the next use retries. A classic script, loaded right after Bootstrap in
 `index.html` and `frames.html`, so classic tabs and ES modules can both reach
@@ -155,6 +156,54 @@ caches them on first fetch like any other `/static` file.
 .svg .map .txt`) by `modules/static_compression.py`, which wraps only that
 mount: images, fonts, media and `Range` requests pass through untouched, and
 no other route (SSE, camera, audio streams) is compressed.
+
+### `static/sw.js` — the asset cache
+
+`/static` is served cache-first, so a page load costs no asset requests. The
+`/sw.js` route (in `main.py`) writes two things into the worker on each
+request: `CACHE_NAME`, suffixed with the app version and a fingerprint of
+`static/` (any change installs a new worker), and `ASSET_HASHES`, each
+`/static` file's content hash (`static_asset_hashes` in
+`routes/system_routes.py`, re-hashing a file only when its size or mtime
+moves). On install the new worker copies every file whose hash is unchanged
+from the previous `zbm-*` cache, so a deploy re-downloads only what it
+changed; each cache stores the map it was built against, and a cache without
+one (from an older worker) is not trusted. Hashes are of content, not mtime,
+because a deploy unpacks every file with a fresh mtime. Files are deliberately
+not bundled: a bundle would make any one-line patch a full re-download.
+
+### Lazy tabs — `static/js/tab-loader.js`
+
+`main.js` is the page's only module entry point. A tab's module is imported
+and started the first time its pane is shown, registered in `main.js`'s *LAZY
+TABS* block with `lazyTab(paneId, load, { globals })`: a spinner sits in the
+pane while it loads, a failed load says so with a Retry, and it loads once.
+Each module keeps attaching its own `shown.bs.tab` listeners in its init;
+because that init runs during the event that opened the tab, the loader
+replays `shown.bs.tab` once on the pane's active tab buttons (sub-tabs
+included, for a deep link). `globals` are the window functions `index.html`'s
+own markup calls on that module: each is a stand-in until the module loads,
+which then loads the tab and calls through.
+
+Lazy: Settings (with upgrade, alarm, Thread, speakers and AI settings), Media,
+Heating, Energy, Cameras, System, Drive, Groups, Zones, Topology,
+Automations (with workers and suggestions), Frames and the code editor. A
+lazy tab's background polling starts on its first open.
+
+Eager, because they work whatever tab is open: notifications and app alerts,
+the device list and its WebSocket handlers, and what those handlers feed while
+their tab is closed — the debug log (`logging.js`), the MQTT explorer and
+packet flow. The device-detail modal and its sub-modules are still eager,
+reached through `actions.js` and `websocket.js`. WebSocket handlers into a lazy
+module go through a `window` hook that is absent until it loads
+(`handleMediaState`, `updateMesh`, `framesHandleDeviceUpdate`), so an update for
+a closed tab is dropped and the tab fetches fresh state when opened.
+
+`tests/frontend/js/test_tab_loader.mjs` checks that no lazy module is reachable
+from the page's eager imports, and that every window function only a lazy
+module defines is either stubbed or called behind a guard.
+`scripts/audit/frontend_startup.mjs` prints what the page parses before first
+paint (`--importers` lists who pulls each module in).
 
 ### `static/js/chart-utils.js`
 

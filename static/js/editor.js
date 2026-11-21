@@ -11,6 +11,7 @@
 
 import { confirmDialog, promptDialog } from './dialogs.js';
 import { escapeHtml, jsArg } from './utils.js';
+import { hideTestRecoveryBanner } from './recovery-banner.js';
 
 const log = zmmLog('editor');
 
@@ -1284,13 +1285,7 @@ function buildBannerHTML(remaining) {
     `;
 }
 
-export function hideTestRecoveryBanner() {
-    const banner = document.getElementById('testRecoveryBanner');
-    if (banner) {
-        if (banner._interval) clearInterval(banner._interval);
-        banner.remove();
-    }
-}
+export { hideTestRecoveryBanner };
 
 // SEARCH
 

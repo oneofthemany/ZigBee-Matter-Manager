@@ -4,6 +4,13 @@
 // changed file gets a new name and `activate` purges the old cache.
 var CACHE_NAME = 'zbm-v12';
 
+// /static path -> content hash, written by the same route. Install carries each
+// file whose hash is unchanged over from the previous cache, so a deploy costs
+// a download of only what it changed. Each cache stores the map it was built
+// against under MANIFEST_URL; a cache without one is never trusted.
+var ASSET_HASHES = {};
+var MANIFEST_URL = '/__zbm_asset_hashes__';
+
 // App shell files to cache on install.
 //
 // Everything under /static/ is also cached opportunistically by the fetch
@@ -53,20 +60,55 @@ var APP_SHELL = [
     '/static/js/presence-settings.js'
 ];
 
-// Install: cache app shell
+// Install: carry unchanged files over, then fetch whatever of the shell is missing.
 self.addEventListener('install', function (event) {
     event.waitUntil(
         caches.open(CACHE_NAME).then(function (cache) {
-            console.log('[SW] Caching app shell');
-            return cache.addAll(APP_SHELL).catch(function (err) {
-                // Don't fail install if some assets can't be cached
-                console.warn('[SW] Some assets failed to cache:', err);
+            return carryOver(cache).then(function () {
+                return Promise.all(APP_SHELL.map(function (u) { return cache.match(u); }));
+            }).then(function (hits) {
+                var missing = APP_SHELL.filter(function (u, i) { return !hits[i]; });
+                console.log('[SW] Caching app shell:', missing.length, 'of', APP_SHELL.length);
+                return cache.addAll(missing).catch(function (err) {
+                    // Don't fail install if some assets can't be cached
+                    console.warn('[SW] Some assets failed to cache:', err);
+                });
+            }).then(function () {
+                return cache.put(MANIFEST_URL, new Response(JSON.stringify(ASSET_HASHES),
+                    { headers: { 'Content-Type': 'application/json' } }));
             });
         })
     );
     // Activate immediately
     self.skipWaiting();
 });
+
+// A failed carry-over only costs downloads, so it never fails the install.
+function carryOver(cache) {
+    return caches.keys().then(function (names) {
+        return names.filter(function (n) { return n !== CACHE_NAME && n.indexOf('zbm-') === 0; })
+            .reduce(function (p, name) {
+                return p.then(function () { return carryFrom(caches.open(name), cache); });
+            }, Promise.resolve());
+    }).catch(function (err) { console.warn('[SW] Carry-over skipped:', err); });
+}
+
+function carryFrom(opening, cache) {
+    return opening.then(function (old) {
+        return old.match(MANIFEST_URL).then(function (res) {
+            if (!res) return;
+            return res.json().then(function (prev) {
+                return Promise.all(Object.keys(ASSET_HASHES).map(function (path) {
+                    if (prev[path] !== ASSET_HASHES[path]) return;
+                    return cache.match(path).then(function (have) {
+                        if (have) return;
+                        return old.match(path).then(function (r) { if (r) return cache.put(path, r); });
+                    });
+                }));
+            });
+        });
+    });
+}
 
 // Activate: clean old caches
 self.addEventListener('activate', function (event) {
@@ -110,7 +152,7 @@ self.addEventListener('fetch', function (event) {
 
     // Static assets: cache-first, network only on a miss. No background refresh:
     // CACHE_NAME carries a fingerprint of static/, so a changed file arrives as
-    // a new worker with an empty cache, and a page load costs no asset requests.
+    // a new worker whose cache lacks it, and a page load costs no asset requests.
     if (url.pathname.startsWith('/static/')) {
         event.respondWith(
             caches.match(event.request).then(function (cached) {

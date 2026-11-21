@@ -10,7 +10,7 @@ import { handlePacketFlow } from './packet-flow.js';
 import { updatePairingUI, checkPairingStatus } from './actions.js';
 import { handleMQTTMessage } from './mqtt-explorer.js';
 import { handleOTAProgress } from './modal/ota.js';
-import { hideTestRecoveryBanner } from './editor.js'
+import { hideTestRecoveryBanner } from './recovery-banner.js';
 import { applyInterviewStatusUpdate } from './device-modal.js';
 import { handleSignalUpdate } from './modal/signals.js';
 import { applyPollResult, applyDeviceOp } from './modal/device-settings.js';

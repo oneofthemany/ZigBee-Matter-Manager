@@ -11,36 +11,16 @@ import { updateLastSeenTimes, whileVisible } from './utils.js';
 import { initWS } from './websocket.js';
 import { fetchAllDevices, filterByStatus, renderLastDevices, initDeviceSortPref } from './devices.js';
 import { initTabRouting } from './tab-routing.js';
-import { initGroups } from './groups.js';
 import { initMQTTExplorer, handleMQTTMessage, startMQTTStats, stopMQTTStats } from './mqtt-explorer.js';
-import { initEditor, getEditorInstance } from './editor.js';
-import { initOtbr, loadOtbrStatus } from './otbr.js';
+import { lazyTab } from './tab-loader.js';
+let editor = null;   // editor.js, once its tab has been opened
 let editorInitialised = false;
 
-import { initSettings } from './settings.js';
-initSettings();
-
-import { initMedia } from './media.js';
-initMedia();
-
-import { initAISettingsTab } from './ai-automations.js';
-initAISettingsTab();
-
-import { initSpeakerSyncTab } from './speaker-sync.js';
-initSpeakerSyncTab();
-
+// App-wide, so they start with the page rather than with a tab.
 import { initNotifications } from './notifications.js';
 initNotifications();
-import { initAlarmSettings } from './alarm-settings.js';
-initAlarmSettings();
-import { initCamerasPage } from './cameras-page.js';
-initCamerasPage();
-
 import { initAppAlerts } from './app-alerts.js';
 initAppAlerts();
-
-import { initUpgrade } from './upgrade.js';
-initUpgrade();
 
 import {
     loadTabs,
@@ -51,50 +31,6 @@ import {
     manageTabDevices,
     toggleDeviceInTab
 } from './tabs.js';
-
-import {
-    initAutomationsPage,
-    loadAutomationsPage
-} from './automations-page.js';
-import { initWorkersPage } from './workers-page.js';
-import { initSuggestionsPage } from './swarm-suggestions.js';
-
-import {
-    initZones,
-    recalibrateZone,
-    deleteZone,
-    viewZoneDetails
-} from './zones.js';
-
-import {
-    initFrames,
-    loadFrame,
-    setSplit,
-    selectFrame,
-    frameCommand,
-    frameSetpoint,
-    frameColor,
-    frameSliderInput,
-    frameGroupCommand,
-    frameGroupColor,
-    frameSetHidden,
-    frameSetGroupMembersHidden,
-    frameToggleVisibilityEdit,
-    framesHandleDeviceUpdate,
-    openFrameBuilder,
-    saveFrame,
-    deleteCurrentFrame,
-    frameToggleChamber,
-    frameToggleKind,
-    frameToggleDevice,
-    frameMoveDevice,
-    setFrameTab,
-    frameAddTab,
-    frameRenameTab,
-    frameRemoveTab,
-    frameMoveTab,
-    frameToggleTabGroup
-} from './frames.js';
 
 import {
     initChambers,
@@ -111,10 +47,6 @@ import {
     chooseChamber
 } from './chambers.js';
 
-import { initHeating } from './heating.js';
-import { initEnergy } from './energy.js';
-
-import { initSystemTab } from './system-telemetry.js';
 import { initTables } from './table-utils.js';
 
 import {
@@ -158,14 +90,6 @@ import {
     matterCommission,
     checkMatterStatus
 } from './actions.js';
-import {
-    initMesh,
-    loadMeshTopology,
-    dashboardMeshRefresh,
-    dashboardMeshReset,
-    dashboardMeshCenter,
-    toggleMeshLabels
-} from './mesh.js';
 
 import { renderOTATab, handleOTAProgress } from './modal/ota.js';
 import {
@@ -239,22 +163,12 @@ window.applyManualChannel = function() {
         `<span class="text-primary">Channel ${ch} set in config. Click Save on the Configuration tab.</span>`;
 };
 
-// Mesh Topology
-window.loadMeshTopology = loadMeshTopology;
-window.dashboardMeshRefresh = dashboardMeshRefresh;
-window.dashboardMeshReset = dashboardMeshReset;
-window.dashboardMeshCenter = dashboardMeshCenter;
-window.toggleMeshLabels = toggleMeshLabels;
-
 window.state = state;
 
 // Device Stuff
 window.bindDevices = bindDevices;
 window.openBannedModal = openBannedModal;
 window.handleUnbanClick = handleUnbanClick;
-
-// Automations Page
-window.loadAutomationsPage = loadAutomationsPage;
 
 // OTA
 window.renderOTATab = renderOTATab;
@@ -292,42 +206,93 @@ window.otaCheckAll = async function() {
     }
 };
 
-// Zones Management
-window.recalibrateZone = recalibrateZone;
-window.deleteZone = deleteZone;
-window.viewZoneDetails = viewZoneDetails;
+// LAZY TABS — each loads on its tab's first open (tab-loader.js). `globals` are
+// the window functions this page's own markup calls, stubbed until then.
 
-// Frames
-window.loadFrame = loadFrame;
-window.setFramesSplit = setSplit;
-window.selectFrame = selectFrame;
-window.frameCommand = frameCommand;
-window.frameSetpoint = frameSetpoint;
-window.frameColor = frameColor;
-window.frameSliderInput = frameSliderInput;
-window.frameGroupCommand = frameGroupCommand;
-window.frameGroupColor = frameGroupColor;
-// Visibility editing — hide a device's tile so a group tile can stand in for it.
-window.frameSetHidden = frameSetHidden;
-window.frameSetGroupMembersHidden = frameSetGroupMembersHidden;
-window.frameToggleVisibilityEdit = frameToggleVisibilityEdit;
-// Frame builder
-window.openFrameBuilder = openFrameBuilder;
-window.saveFrame = saveFrame;
-window.deleteCurrentFrame = deleteCurrentFrame;
-window.frameToggleChamber = frameToggleChamber;
-window.frameToggleKind = frameToggleKind;
-window.frameToggleDevice = frameToggleDevice;
-window.frameMoveDevice = frameMoveDevice;
-// Frame tabs
-window.setFrameTab = setFrameTab;
-window.frameAddTab = frameAddTab;
-window.frameRenameTab = frameRenameTab;
-window.frameRemoveTab = frameRemoveTab;
-window.frameMoveTab = frameMoveTab;
-window.frameToggleTabGroup = frameToggleTabGroup;
-// Hook read by devices.js:handleDeviceUpdate on every websocket state change.
-window.framesHandleDeviceUpdate = framesHandleDeviceUpdate;
+lazyTab('settings', async () => {
+    const [settings, upgrade, alarm, otbr, speakers, ai] = await Promise.all([
+        import('./settings.js'), import('./upgrade.js'), import('./alarm-settings.js'),
+        import('./otbr.js'), import('./speaker-sync.js'), import('./ai-automations.js'),
+    ]);
+    settings.initSettings();
+    upgrade.initUpgrade();
+    alarm.initAlarmSettings();
+    otbr.initOtbr();
+    speakers.initSpeakerSyncTab();
+    ai.initAISettingsTab();
+}, { globals: ['saveSettingsConfig', 'saveSettingsConfigAndRestart', 'loadSpectrumHistory',
+               'runSpectrumScan', 'autoSelectChannel'] });
+
+lazyTab('media', async () => (await import('./media.js')).initMedia(),
+    { globals: ['mediaSetSource', 'mediaSearch', 'mediaPane', 'mediaSetKaraoke', 'mediaRefresh'] });
+
+lazyTab('heating', async () => (await import('./heating.js')).initHeating());
+lazyTab('energy', async () => (await import('./energy.js')).initEnergy());
+lazyTab('cameras', async () => (await import('./cameras-page.js')).initCamerasPage());
+lazyTab('system', async () => (await import('./system-telemetry.js')).initSystemTab());
+// drive.js exposes window.initDriveTab, which the drive listener below calls.
+lazyTab('drive', () => import('./drive.js'));
+// The editor listener below starts it, on the replayed first show.
+lazyTab('editor-tab', async () => { editor = await import('./editor.js'); });
+
+// initGroups attaches its tab listener after its first fetch, so it is awaited.
+lazyTab('groups', async () => (await import('./groups.js')).initGroups(),
+    { globals: ['resetGroupCreation', 'onBaseDeviceSelected', 'deleteCurrentGroup',
+                'createGroup', 'addDeviceToGroup'] });
+
+lazyTab('zones', async () => {
+    const z = await import('./zones.js');
+    Object.assign(window, {
+        recalibrateZone: z.recalibrateZone, deleteZone: z.deleteZone, viewZoneDetails: z.viewZoneDetails,
+    });
+    z.initZones();
+});
+
+lazyTab('topology', async () => {
+    const m = await import('./mesh.js');
+    Object.assign(window, {
+        loadMeshTopology: m.loadMeshTopology, dashboardMeshRefresh: m.dashboardMeshRefresh,
+        dashboardMeshReset: m.dashboardMeshReset, dashboardMeshCenter: m.dashboardMeshCenter,
+        toggleMeshLabels: m.toggleMeshLabels,
+    });
+    m.initMesh();
+    // Reload on every show, so the force layout sizes against a visible container.
+    document.querySelector('button[data-bs-target="#topology"]')
+        ?.addEventListener('shown.bs.tab', () => m.loadMeshTopology());
+});
+
+lazyTab('automations', async () => {
+    const [page, workers, suggestions] = await Promise.all([
+        import('./automations-page.js'), import('./workers-page.js'), import('./swarm-suggestions.js'),
+    ]);
+    window.loadAutomationsPage = page.loadAutomationsPage;
+    page.initAutomationsPage();
+    workers.initWorkersPage();
+    suggestions.initSuggestionsPage();
+}, { globals: ['loadAutomationsPage'] });
+
+// Frames cells call these from their own markup, so none is needed before load.
+// framesHandleDeviceUpdate is deliberately absent until then: devices.js skips
+// a missing hook rather than loading Frames on every device update.
+lazyTab('frames', async () => {
+    const f = await import('./frames.js');
+    Object.assign(window, {
+        loadFrame: f.loadFrame, setFramesSplit: f.setSplit, selectFrame: f.selectFrame,
+        frameCommand: f.frameCommand, frameSetpoint: f.frameSetpoint, frameColor: f.frameColor,
+        frameSliderInput: f.frameSliderInput, frameGroupCommand: f.frameGroupCommand,
+        frameGroupColor: f.frameGroupColor, frameSetHidden: f.frameSetHidden,
+        frameSetGroupMembersHidden: f.frameSetGroupMembersHidden,
+        frameToggleVisibilityEdit: f.frameToggleVisibilityEdit, openFrameBuilder: f.openFrameBuilder,
+        saveFrame: f.saveFrame, deleteCurrentFrame: f.deleteCurrentFrame,
+        frameToggleChamber: f.frameToggleChamber, frameToggleKind: f.frameToggleKind,
+        frameToggleDevice: f.frameToggleDevice, frameMoveDevice: f.frameMoveDevice,
+        setFrameTab: f.setFrameTab, frameAddTab: f.frameAddTab, frameRenameTab: f.frameRenameTab,
+        frameRemoveTab: f.frameRemoveTab, frameMoveTab: f.frameMoveTab,
+        frameToggleTabGroup: f.frameToggleTabGroup,
+        framesHandleDeviceUpdate: f.framesHandleDeviceUpdate,
+    });
+    f.initFrames();
+});
 
 // Chambers (Frames room registry)
 window.openChamberManager = openChamberManager;
@@ -412,21 +377,12 @@ document.addEventListener('DOMContentLoaded', () => {
         setInterval(whileVisible(updateLastSeenTimes), 1000);
 
         // Module inits
+        // Only what the dashboard or every tab needs; the rest load with their
+        // tab (LAZY TABS above).
         initTables();          // delegated table sort/filter (once)
-        initOtbr();
         loadTabs();
         initChambers();
-        initFrames();
-        initMesh();
-        initGroups();
         initMQTTExplorer();
-        initAutomationsPage();
-        initWorkersPage();
-        initSuggestionsPage();
-        initZones();
-        initHeating();
-        initEnergy();
-        initSystemTab();
         initPacketFlow();
 
         // Initial data fetches
@@ -460,18 +416,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (window.initPresenceSettings) window.initPresenceSettings();
                 // Apiary moved to the Drive tab; drive.js initialises it there.
                 if (window.initRemoteAccess) window.initRemoteAccess();
-            });
-        }
-
-        // Topology tab listener
-        const topologyTab = document.querySelector('button[data-bs-target="#topology"]');
-        if (topologyTab) {
-            topologyTab.addEventListener('shown.bs.tab', () => {
-                // Ensures the D3 force simulation or SVG scales correctly once
-                // the container is actually visible.
-                if (typeof loadMeshTopology === 'function') {
-                    loadMeshTopology();
-                }
             });
         }
 
@@ -543,12 +487,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Editor tab listener
+        // The first show arrives before editor.js does; tab-loader replays it.
         document.querySelector('[data-bs-target="#editor-tab"]')?.addEventListener('shown.bs.tab', () => {
+            if (!editor) return;
             if (!editorInitialised) {
-                initEditor();
+                editor.initEditor();
                 editorInitialised = true;
             } else {
-                const inst = getEditorInstance();
+                const inst = editor.getEditorInstance();
                 if (inst) inst.layout();
             }
         });

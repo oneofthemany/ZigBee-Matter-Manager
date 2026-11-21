@@ -45,6 +45,41 @@ def static_fingerprint(root: str = "static") -> str:
     return h.hexdigest()[:10]
 
 
+# path -> (size, mtime_ns, hash): a file is re-read only when its stat moves.
+_asset_hash_memo: dict[str, tuple[int, int, str]] = {}
+
+
+def static_asset_hashes(root: str = "static") -> dict[str, str]:
+    """`/static/<path>` -> content hash of every file under `root`.
+
+    Content, not mtime: a deploy unpacks with fresh mtimes, and the worker
+    carries a file across deploys only while this hash is unchanged.
+    """
+    import hashlib
+    out: dict[str, str] = {}
+    for d, dirs, files in os.walk(root):
+        dirs.sort()
+        for name in sorted(files):
+            p = os.path.join(d, name)
+            try:
+                st = os.stat(p)
+                memo = _asset_hash_memo.get(p)
+                if memo and memo[0] == st.st_size and memo[1] == st.st_mtime_ns:
+                    digest = memo[2]
+                else:
+                    h = hashlib.sha1()
+                    with open(p, "rb") as f:
+                        for chunk in iter(lambda: f.read(1 << 16), b""):
+                            h.update(chunk)
+                    digest = h.hexdigest()[:12]
+                    _asset_hash_memo[p] = (st.st_size, st.st_mtime_ns, digest)
+            except OSError:
+                continue
+            rel = os.path.relpath(p, root).replace(os.sep, "/")
+            out["/static/" + rel] = digest
+    return out
+
+
 def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, get_manager):
     """Register system management routes."""
 
