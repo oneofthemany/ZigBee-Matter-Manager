@@ -11,11 +11,24 @@
  *   chart.setOption({ ... });
  *   chart.dispose();
  *
- * Requires the global `echarts`, vendored in index.html before the modules.
+ * ECharts loads on the first createChart (vendor-loader.js); the wrapper is
+ * returned at once and replays queued setOption calls when it arrives, so
+ * instance() is null until then.
  */
+
+let _ready = null;
+
+function loadECharts() {
+    if (!_ready) {
+        _ready = window.zmmLoadECharts().then(ec => { registerThemes(ec); return ec; });
+        _ready.catch(() => { _ready = null; });
+    }
+    return _ready;
+}
 
 // Transparent backgrounds so charts blend into whatever card they sit in.
 // Colours track the hive palette in css/hive-tokens.css (keep in sync).
+function registerThemes(echarts) {
 echarts.registerTheme('zbm-light', {
     backgroundColor: 'transparent',
     textStyle: { fontFamily: 'inherit', color: '#53687a' },
@@ -75,6 +88,7 @@ echarts.registerTheme('zbm-dark', {
         splitLine: { lineStyle: { color: '#16283a' } },
     },
 });
+}
 
 function currentTheme() {
     return document.documentElement.getAttribute('data-theme') === 'dark'
@@ -92,8 +106,20 @@ function currentTheme() {
 export function createChart(el, initOpts = {}) {
     if (!el) return null;
 
-    let inst = echarts.init(el, currentTheme(), initOpts);
-    let lastOption = null;
+    let echarts = null, inst = null, lastOption = null, disposed = false;
+    // Calls made before ECharts arrives, replayed in order; a full replace
+    // (notMerge) makes everything queued before it moot.
+    let queue = [];
+    loadECharts().then(ec => {
+        if (disposed) return;
+        echarts = ec;
+        inst = ec.init(el, currentTheme(), initOpts);
+        for (const [opt, notMerge] of queue) inst.setOption(opt, notMerge);
+        queue = [];
+    }, err => {
+        console.warn('[chart-utils]', err);
+        if (!disposed) el.innerHTML = '<div class="text-muted small p-2">Chart library failed to load.</div>';
+    });
 
     // Resize only when the box REALLY changed, and at most once per frame.
     // ResizeObserver fires on sub-pixel reflow too, and a live view that
@@ -108,7 +134,7 @@ export function createChart(el, initOpts = {}) {
         lastW = w; lastH = h;
         if (queued) return;
         queued = true;
-        requestAnimationFrame(() => { queued = false; inst.resize(); });
+        requestAnimationFrame(() => { queued = false; if (inst) inst.resize(); });
     });
     ro.observe(el);
 
@@ -116,7 +142,7 @@ export function createChart(el, initOpts = {}) {
     // Replaying the caller's option (not getOption()) keeps the new theme's
     // colours, since the raw option carries no baked-in theme styling.
     const onThemeChange = () => {
-        if (!el.isConnected) return;
+        if (!el.isConnected || !inst) return;
         inst.dispose();
         inst = echarts.init(el, currentTheme(), initOpts);
         if (lastOption) inst.setOption(lastOption, true);
@@ -126,14 +152,17 @@ export function createChart(el, initOpts = {}) {
     return {
         setOption(opt, notMerge = true) {
             lastOption = opt;
-            inst.setOption(opt, notMerge);
+            if (inst) { inst.setOption(opt, notMerge); return; }
+            if (notMerge) queue = [];
+            queue.push([opt, notMerge]);
         },
-        resize() { inst.resize(); },
+        resize() { if (inst) inst.resize(); },
         instance() { return inst; },
         dispose() {
+            disposed = true;
             ro.disconnect();
             document.removeEventListener('themechange', onThemeChange);
-            inst.dispose();
+            if (inst) inst.dispose();
         },
     };
 }

@@ -606,9 +606,14 @@
         }
 
         function initPicker(pt, radius) {
+            // Leaflet loads on first use; the modal may have closed by then.
             if (typeof L === 'undefined') {
-                document.getElementById('pl-map').innerHTML =
-                    '<div class="p-3 text-muted small">Map library not loaded.</div>';
+                window.zmmLoadLeaflet().then(function () {
+                    if (!state.map && document.getElementById('pl-map')) initPicker(pt, radius);
+                }, function () {
+                    var box = document.getElementById('pl-map');
+                    if (box) box.innerHTML = '<div class="p-3 text-muted small">Map library not loaded.</div>';
+                });
                 return;
             }
             var centre = (pt.lat != null) ? [pt.lat, pt.lon] : homeGuess();

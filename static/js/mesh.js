@@ -796,7 +796,7 @@ export function dashboardMeshCenter() {
 
 export function toggleMeshLabels() {
     labelsVisible = !labelsVisible;
-    if (_meshChart) {
-        _meshChart.instance().setOption({ series: [{ label: { show: labelsVisible } }] });
-    }
+    // Null until ECharts has loaded; the first draw reads labelsVisible itself.
+    const inst = _meshChart && _meshChart.instance();
+    if (inst) inst.setOption({ series: [{ label: { show: labelsVisible } }] });
 }

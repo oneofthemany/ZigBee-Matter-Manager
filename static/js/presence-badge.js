@@ -175,9 +175,14 @@
     }
 
     function initMap() {
+        // Leaflet loads on first use; the modal may have closed by then.
         if (typeof L === 'undefined') {
-            document.getElementById('presence-map').innerHTML =
-                '<div class="p-3 text-muted small">Map library not loaded.</div>';
+            window.zmmLoadLeaflet().then(function () {
+                if (!state.map && document.getElementById('presence-map')) initMap();
+            }, function () {
+                var box = document.getElementById('presence-map');
+                if (box) box.innerHTML = '<div class="p-3 text-muted small">Map library not loaded.</div>';
+            });
             return;
         }
 

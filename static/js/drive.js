@@ -869,8 +869,13 @@ import { LAYERS, layerColour, findStops, findPeaks, nearestIndex,
         });
         if (track.length < 2) return;
 
+        // Leaflet loads on the first map (vendor-loader.js); draw again once it has.
         if (typeof L === 'undefined') {
-            wrap.innerHTML = '<div class="text-muted small">Map library not loaded.</div>';
+            window.zmmLoadLeaflet().then(function () {
+                if (wrap.isConnected) renderTripMap(tripId, trip, live);
+            }, function () {
+                wrap.innerHTML = '<div class="text-muted small">Map library not loaded.</div>';
+            });
             return;
         }
 

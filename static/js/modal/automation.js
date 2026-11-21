@@ -13,6 +13,7 @@ import { state } from '../state.js';
 import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
 import { renderChooser, invalidateChooser } from '../swarm-suggest.js';
 import { createHumanizer, esc, RUN_MODE_LABEL } from '../automation-sentence.js';
+import { readInputs, inputSelectHtml } from './device-inputs.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 // JSON destined for a single-quoted HTML attribute. An apostrophe anywhere in
@@ -83,7 +84,7 @@ const hasDevicePanel = pid => String(pid||'').startsWith('wiim:');
 const DEVICE_ACTIONS = [['input','Switch input'],['preset','Play preset'],['sleep','Sleep timer'],['output','Audio output'],['loop','Repeat mode']];
 const DEVICE_OUTPUTS = [[1,'Optical (S/PDIF)'],[2,'Line out (AUX)'],[3,'Coaxial']];
 const DEVICE_LOOPS = [[0,'In order'],[-1,'Repeat all'],[1,'Repeat one'],[2,'Shuffle + repeat']];
-let _devInputs = {};   // player_id -> [{id,label}] read from /api/media/device
+let _devInputs = {};   // player_id -> device-inputs.js cache entry
 const zoneOf = pid => cachedZones.find(z => 'zone:'+z.id === pid) || null;
 const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
 
@@ -1273,15 +1274,7 @@ function _deviceSubHtml(step, sid) {
     if (da === 'input') {
         const ins = _devInputs[step.player_id];
         if (!ins) _aDevInputs(sid, step.player_id);
-        // A failed read keeps the saved value selectable, so an edit can't drop it.
-        const keep = v ? `<option value="${esc(v)}" selected>${esc(v)}</option>` : '';
-        val = Array.isArray(ins) && ins.length
-            ? `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${opt(ins.map(i=>[i.id,i.label]))}</select>`
-            : ins && ins.error
-            ? `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${keep || '<option value="">—</option>'}</select>
-               <span class="small text-warning">Inputs unavailable: ${esc(ins.error)}</span>
-               <button type="button" class="btn btn-sm btn-outline-secondary" onclick="window._aDevRetry(${sid})">Retry</button>`
-            : `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${keep || '<option value="">Loading…</option>'}</select>`;
+        val = inputSelectHtml(ins, v, sid, esc);
     } else if (da === 'output') val = `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${opt(DEVICE_OUTPUTS)}</select>`;
     else if (da === 'loop') val = `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${opt(DEVICE_LOOPS)}</select>`;
     else if (da === 'preset') val = `<input type="number" class="form-control form-control-sm s-mdevval" data-sid="${sid}" min="1" max="12" value="${v ?? 1}" style="width:75px">`;
@@ -1291,20 +1284,11 @@ function _deviceSubHtml(step, sid) {
             DEVICE_ACTIONS.map(([k,l])=>`<option value="${k}" ${da===k?'selected':''}>${l}</option>`).join('')}</select>${val}</div>`;
 }
 
-// The inputs a WiiM has come from the box itself, so the rule can only name
-// one it can be switched to. A failure is stored as {error} so it renders a
-// reason and a retry rather than an empty select that is never re-read.
+// Redraws the step once its read lands (device-inputs.js holds the read).
 async function _aDevInputs(sid, pid) {
-    if (!pid) return;
-    _devInputs[pid] = _devInputs[pid] || null;
-    try {
-        const r = await fetch('/api/media/device?player_id=' + encodeURIComponent(pid));
-        const j = await r.json().catch(() => ({}));
-        const opts = j.panel && j.panel.input && j.panel.input.options;
-        _devInputs[pid] = Array.isArray(opts) && opts.length ? opts
-            : { error: j.error || (!r.ok ? `HTTP ${r.status}`
-                : j.supported === false ? 'the speaker did not answer' : 'it reported no inputs') };
-    } catch (e) { _devInputs[pid] = { error: e.message || 'request failed' }; }
+    const read = readInputs(_devInputs, pid);
+    if (!read) return;
+    await read;
     const s = _findStepById(sid);
     const box = document.getElementById(`media-sub-${sid}`);
     if (s && box && s.media_action === 'device') { _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree); box.innerHTML = _mediaSubHtml(s, sid); }

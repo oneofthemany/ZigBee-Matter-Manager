@@ -118,6 +118,7 @@
 │        ├── system.js
 │        ├── table-sort.js
 │        ├── utils.js
+│        ├── vendor-loader.js
 │        ├── websocket.js
 │        ├── workers-page.js
 │        ├── zones.js
@@ -127,6 +128,7 @@
 │              ├── clusters.js
 │              ├── config.js
 │              ├── control.js
+│              ├── device-inputs.js
 │              └── overview.js
 └── utils
       └── zombie_killer.py
@@ -134,7 +136,25 @@
 
 ## Shared frontend layers
 
-Two modules that every consumer is expected to go through.
+Modules that every consumer is expected to go through.
+
+### `static/js/vendor-loader.js`
+
+The heavy vendored libraries — ECharts (~1 MB) and Leaflet (~150 KB) — are
+not in the page; they load on first use. `zmmLoadECharts()` and
+`zmmLoadLeaflet()` return a promise of the library, appending one `<script>`
+per library however many callers ask at once, and forgetting a failed load so
+the next use retries. A classic script, loaded right after Bootstrap in
+`index.html` and `frames.html`, so classic tabs and ES modules can both reach
+it. The three map views (trip map, place picker, presence map) and the
+ad-block chart call it when they first draw; everything else charts through
+`chart-utils`. Both libraries stay vendored (no CDN), and the service worker
+caches them on first fetch like any other `/static` file.
+
+`/static` itself is served gzipped for text assets (`.js .mjs .css .html .json
+.svg .map .txt`) by `modules/static_compression.py`, which wraps only that
+mount: images, fonts, media and `Range` requests pass through untouched, and
+no other route (SSE, camera, audio streams) is compressed.
 
 ### `static/js/chart-utils.js`
 
@@ -142,8 +162,10 @@ Every chart in the app. One place to register the light/dark themes so charts
 follow the app's `data-theme` and re-theme live on `themechange`; auto-resize
 against the container so charts fill Bootstrap cards; and a stable wrapper so
 callers never hold a disposed instance after a theme swap — ECharts cannot
-change theme in place, it must re-init. Requires the global `echarts`, vendored
-in `index.html` before the modules.
+change theme in place, it must re-init. `createChart` returns its wrapper at
+once and loads ECharts through `vendor-loader.js`; `setOption` calls made
+before it arrives are queued and replayed in order, and `instance()` is `null`
+until then.
 
 ### `static/js/table-utils.js`
 

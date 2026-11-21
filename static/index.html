@@ -1962,7 +1962,8 @@
 </div>
 
 <script src="/static/vendor/bootstrap.bundle.min.js"></script>
-<script src="/static/js/vendor/echarts.min.js"></script>
+<!-- ECharts and Leaflet load on first use through this, not here. -->
+<script src="/static/js/vendor-loader.js"></script>
 <script src="/static/js/log.js"></script>
 <script src="/static/js/auth.js"></script>
 <!-- Classic script on purpose: must survive a test deploy that breaks the ES-module graph -->
@@ -1972,7 +1973,6 @@
 <script src="/static/js/auth-settings.js"></script>
 <script src="/static/js/remote-access.js"></script>
 <script src="/static/js/my-account.js"></script>
-<script src="/static/vendor/leaflet.js"></script>
 <script type="module" src="/static/js/drive.js"></script>
 <script src="/static/js/presence.js"></script>
 <script src="/static/js/presence-badge.js"></script>

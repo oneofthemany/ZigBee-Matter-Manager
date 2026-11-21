@@ -160,9 +160,15 @@
   }
 
   function renderChart(series) {
-    if (typeof echarts === 'undefined') return;
     var el = $('bkChart');
     if (!el) return;
+    // ECharts loads on the first chart (vendor-loader.js); draw once it has.
+    if (typeof echarts === 'undefined') {
+      lastSeries = series;
+      window.zmmLoadECharts().then(function () { if (lastSeries) renderChart(lastSeries); },
+                                   function (e) { console.warn('[adblock]', e); });
+      return;
+    }
     if (!chart) chart = echarts.init(el);
     lastSeries = series;
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';

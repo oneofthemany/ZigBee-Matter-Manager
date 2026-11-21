@@ -1331,7 +1331,8 @@ register_auth_routes(
 )
 logger.info("Auth subsystem initialised (MFA + lockout + LAN-aware)")
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from modules.static_compression import StaticCompression
+app.mount("/static", StaticCompression(StaticFiles(directory="static")), name="static")
 
 
 # Session cookie recording an explicit "I want the manager" choice, so the

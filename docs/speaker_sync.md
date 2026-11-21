@@ -778,6 +778,11 @@ offers before it is sent, so only documented commands reach it. The `switchmode`
 words beyond the PDF's five (`HDMI`, `co-axial`, `phono`, `PCUSB`, …) are
 python-linkplay's and are case-sensitive. The same actions are an automation
 step (`media_action: device`, `device_action` input/preset/sleep/output/loop).
+The step's input picker reads the box's inputs through the same endpoint, one
+read per speaker at a time (`static/js/modal/device-inputs.js`). A failed read
+shows its reason and a Retry. A saved input stays selected even when the box no
+longer lists it, so editing another field of the rule never swaps it for the
+first input.
 
 Newer WiiM firmware serves the API over HTTPS on port 443 with a self-signed
 cert and may disable plain HTTP, so each device is probed once and the working
