@@ -21,17 +21,79 @@ logger = logging.getLogger("modules.zmm_settings")
 ZONES = "zones"         # modules.device_profiles.ZONES
 OCTSTR = 0x41
 
-# Settings a sleeping device was not there to take, {ieee: {name: value as shown}},
-# sent the next time it is heard from (docs/device-profiles.md §4, "Sleepy devices").
-# In memory: a restart drops them, and the log says what was waiting.
+# What a sleeping device was not there for, done the next time it is heard
+# from (docs/device-profiles.md §4, "Sleepy devices"). Persisted to QUEUE_PATH.
+# Settings to send, {ieee: {name: value as shown}}.
 _PENDING: Dict[str, Dict[str, Any]] = {}
+# Writes it took whose read-back it missed, {ieee: {name: check}}; see _queue_confirm.
+_CONFIRM: Dict[str, Dict[str, Dict[str, Any]]] = {}
 # Entry settings to read at the next wake, {ieee: {setting id}}: values a
 # caller needs that the device has never reported.
 _PENDING_READS: Dict[str, set] = {}
+# A full Reconfigure it did not answer.
+_RECONFIGURE: set = set()
 # A busy sensor wakes every few seconds: one read attempt per this long.
 _READ_RETRY_SEC = 600.0
 _READ_TRIED: Dict[str, float] = {}
+_RECONF_RETRY_SEC = 60.0
+_RECONF_TRIED: Dict[str, float] = {}
 _FLUSHING: set = set()
+
+QUEUE_PATH = "./data/settings_queue.json"
+_LOADED = False
+
+
+def _ensure_loaded() -> None:
+    global _LOADED
+    if _LOADED:
+        return
+    _LOADED = True
+    import json
+    import os
+    if not os.path.exists(QUEUE_PATH):
+        return
+    try:
+        with open(QUEUE_PATH) as f:
+            saved = json.load(f) or {}
+    except (OSError, ValueError) as e:
+        logger.warning(f"Settings queue {QUEUE_PATH} unreadable, starting empty: {e}")
+        return
+    for ieee, q in (saved.get("settings") or {}).items():
+        _PENDING.setdefault(ieee, {}).update(q)
+    for ieee, q in (saved.get("confirm") or {}).items():
+        _CONFIRM.setdefault(ieee, {}).update(q)
+    for ieee, ids in (saved.get("reads") or {}).items():
+        _PENDING_READS.setdefault(ieee, set()).update(ids)
+    _RECONFIGURE.update(saved.get("reconfigure") or [])
+    waiting = sorted(set(_PENDING) | set(_CONFIRM) | set(_PENDING_READS) | _RECONFIGURE)
+    if waiting:
+        logger.info(f"Settings queue: {len(waiting)} device(s) have work waiting for their next wake")
+
+
+def _write_queue(snapshot: Dict[str, Any]) -> None:
+    import json
+    import os
+    try:
+        os.makedirs(os.path.dirname(QUEUE_PATH) or ".", exist_ok=True)
+        tmp = f"{QUEUE_PATH}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(snapshot, f, indent=1, default=str)
+        os.replace(tmp, QUEUE_PATH)
+    except OSError as e:
+        logger.warning(f"Settings queue not saved: {e}")
+
+
+def _save() -> None:
+    """Write the queue atomically, off the loop when there is one."""
+    snapshot = {"settings": {k: dict(v) for k, v in _PENDING.items() if v},
+                "confirm": {k: dict(v) for k, v in _CONFIRM.items() if v},
+                "reads": {k: sorted(v) for k, v in _PENDING_READS.items() if v},
+                "reconfigure": sorted(_RECONFIGURE)}
+    import asyncio
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _write_queue, snapshot)
+    except RuntimeError:
+        _write_queue(snapshot)
 
 
 def _reads_due(ieee: str) -> bool:
