@@ -203,7 +203,9 @@ os.makedirs("logs", exist_ok=True)
 
 log_queue = queue.Queue(-1)
 
-file_handler = RotatingFileHandler('logs/zigbee.log', maxBytes=1024*1024, backupCount=3)
+# A busy hub writes ~1 MB/h; 6 x 10 MB keeps two days, enough to see why a
+# device went silent overnight (docs/mesh-health.md §1).
+file_handler = RotatingFileHandler('logs/zigbee.log', maxBytes=10*1024*1024, backupCount=5)
 console_handler = logging.StreamHandler()
 
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')

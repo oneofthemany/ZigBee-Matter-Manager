@@ -95,6 +95,7 @@ from core.command_router import CommandRouterMixin
 from core.lifecycle import DeviceLifecycleMixin
 
 # Settings the Control tab's valve card has a control for.
+
 VALVE_CONTROL_SETTINGS = ("window_detection", "child_lock", "valve_detection",
                           "motor_calibration", "sensor_type", "external_temp")
 
@@ -532,6 +533,11 @@ class ZigbeeService(
                     "ieee": None
                 })
                 logger.info(f"Zigbee network started successfully on {self.port} ({radio_type})")
+                try:
+                    from modules import join_audit
+                    join_audit.install(self.app, self)
+                except Exception as e:
+                    logger.warning(f"Join audit not installed: {e}")
 
 
                 # Reset resilience watchdog after successful start

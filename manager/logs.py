@@ -9,6 +9,7 @@ client disconnects — nothing streams unless asked for.
 import asyncio
 import logging
 import os
+import re
 from collections import deque
 from pathlib import Path
 from typing import AsyncIterator, Dict, List
@@ -27,11 +28,15 @@ POLL_INTERVAL = 1.0          # seconds between follow polls on file logs
 MAX_LINE_BYTES = 16 * 1024   # guard against pathological unbroken lines
 
 
+# A log file, or one of its rotations (zigbee.log.1): the older days live there.
+_LOG_NAME = re.compile(r"^[\w.-]+\.log(\.\d{1,2})?$")
+
+
 def list_log_files() -> List[Dict]:
-    """Names + sizes of the *.log files the manager can stream."""
+    """Names + sizes of the log files, rotations included, the manager can stream."""
     out: List[Dict] = []
     try:
-        for p in sorted(LOG_DIR.glob("*.log")):
+        for p in sorted(p for p in LOG_DIR.iterdir() if _LOG_NAME.match(p.name)):
             try:
                 out.append({"name": p.name, "size": p.stat().st_size})
             except OSError:
@@ -43,7 +48,7 @@ def list_log_files() -> List[Dict]:
 
 def resolve_log_file(name: str) -> Path | None:
     """Validate a requested log name (no traversal, must exist in LOG_DIR)."""
-    if not name or name != os.path.basename(name) or not name.endswith(".log"):
+    if not name or name != os.path.basename(name) or not _LOG_NAME.match(name):
         return None
     p = LOG_DIR / name
     return p if p.is_file() else None

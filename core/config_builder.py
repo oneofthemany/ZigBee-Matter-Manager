@@ -14,6 +14,11 @@ from modules.ota import build_ota_config
 
 logger = logging.getLogger("core.config")
 
+# A sleeping child silent this long is dropped from the coordinator's table.
+# EmberZNet's index 14 = 2^14 min (~11 days), its longest, against bellows' 8
+# (256 min), which stranded sensors overnight (docs/mesh-health.md §2).
+EZSP_DEFAULTS = {"CONFIG_END_DEVICE_POLL_TIMEOUT": 14}
+
 # Adapter family → radio_type mapping
 # Must match the families returned by dongle_jedi_core.AdapterFamily
 FAMILY_TO_RADIO = {
@@ -293,7 +298,8 @@ class ConfigBuilderMixin:
         conf = {
             "device": device_conf,
             "database_path": "./data/zigbee.db",
-            "ezsp_config": ezsp_conf,
+            # User overrides win over the defaults.
+            "ezsp_config": {**EZSP_DEFAULTS, **ezsp_conf},
             "network": self._build_network_conf(network_key),
             "topology_scan_period": self._config.get('topology_scan_interval', 120) or 120,
         }
