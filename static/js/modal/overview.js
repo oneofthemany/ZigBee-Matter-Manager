@@ -5,10 +5,30 @@
 
 import { state } from '../state.js';
 import { CONFIG_DEFINITIONS } from './config.js';
+import { collectChanges, formIsBusy, isSleepy, shownValue, seedApplied, settleFields, storedQos,
+         verdicts } from './form-guard.js';
+import { opLogHtml, renderOpReport } from './device-settings.js';
+
+/** Re-render the Overview, but never over the settings form while it is in
+ *  use: then only the readings column is refreshed. */
+export function refreshOverview(tab, device) {
+    const form = tab.querySelector('#configForm');
+    if (!form || !formIsBusy(form, document.activeElement)) {
+        const log = tab.querySelector('[data-apply-ieee]')?.innerHTML;
+        tab.innerHTML = renderOverviewTab(device);
+        const panel = tab.querySelector('[data-apply-ieee]');
+        if (log && panel) panel.innerHTML = log;      // the last Apply's log outlives the update
+        return;
+    }
+    const fresh = document.createElement('div');
+    fresh.innerHTML = renderOverviewTab(device);
+    const now = tab.querySelector('[data-ov-readings]'), next = fresh.querySelector('[data-ov-readings]');
+    if (now && next) now.innerHTML = next.innerHTML;
+}
 
 export function renderOverviewTab(device) {
     const s = device.state || {};
-    const qos = device.settings?.qos || 0;
+    const qos = storedQos(device);
     const pollingInterval = device.polling_interval !== undefined ? device.polling_interval : 0;
     const reportingMax = device.settings?.updates?.reporting_max ?? '';
 
@@ -285,8 +305,7 @@ export function renderOverviewTab(device) {
     // One control. Each records the value it showed (data-initial), so saving
     // writes only what was changed, never every setting the device has.
     const controlHtml = def => {
-        let val = def.current_value !== undefined && def.current_value !== null
-            ? def.current_value : (s[def.name] !== undefined ? s[def.name] : '');
+        let val = shownValue(def, s);
         const unit = def.unit ? ` <span class="text-muted fw-normal">(${def.unit})</span>` : '';
         let html = `<div class="col-md-6"><label class="form-label x-small mb-0 fw-bold">${def.label}${unit}</label>`;
         if (def.type === 'zones') {
@@ -355,7 +374,7 @@ export function renderOverviewTab(device) {
         <form id="configForm" onsubmit="saveConfig(event)">
             ${maintenanceHtml}
             <div class="row">
-                <div class="col-md-5">
+                <div class="col-md-5" data-ov-readings>
                     ${sensorHtml}
                 </div>
                 <div class="col-md-7">
@@ -367,7 +386,7 @@ export function renderOverviewTab(device) {
                             <div class="row g-2 mb-3 border-bottom pb-3">
                                 <div class="col-md-4">
                                     <label class="form-label x-small mb-0 fw-bold">MQTT QoS</label>
-                                    <select class="form-select form-select-sm" name="qos">
+                                    <select class="form-select form-select-sm" name="qos" data-initial="${qos}">
                                         <option value="0" ${qos==0?'selected':''}>0 (Normal)</option>
                                         <option value="1" ${qos==1?'selected':''}>1 (At Least Once)</option>
                                         <option value="2" ${qos==2?'selected':''}>2 (Optimise)</option>
@@ -376,7 +395,7 @@ export function renderOverviewTab(device) {
                                 <div class="col-md-4">
                                     <label class="form-label x-small mb-0 fw-bold">Polling (Hub Pull)</label>
                                     <input type="number" class="form-control form-control-sm" name="polling_interval"
-                                           value="${pollingInterval}" min="0" step="10">
+                                           value="${pollingInterval}" data-initial="${pollingInterval}" min="0" step="10">
                                     <div class="form-text x-small mt-0 text-truncate">
                                         Seconds. 0 = Disabled.
                                     </div>
@@ -397,6 +416,9 @@ export function renderOverviewTab(device) {
                                 <button type="submit" id="saveConfigBtn" class="btn btn-sm btn-primary w-100">
                                     <i class="fas fa-save"></i> Apply Settings
                                 </button>
+                                ${isBattery ? `<div class="form-text x-small text-start mt-1">
+                                    Battery device: you'll be asked to wake it before the settings are sent.</div>` : ''}
+                                <div class="mt-2 text-start" data-apply-ieee="${device.ieee}"></div>
                             </div>
                         </div>
                     </div>
@@ -406,95 +428,102 @@ export function renderOverviewTab(device) {
     `;
 }
 
-// EXPORTED SAVE FUNCTION
+// Apply runs observed (docs/device-ops.md): each setting's write, answer and
+// read-back stream into the panel under the button, then a verdict per setting.
 export async function saveConfig(e) {
     e.preventDefault();
+    const form = e.target;
     const btn = document.getElementById('saveConfigBtn');
     const originalText = btn.innerHTML;
+    const ieee = state.currentDeviceIeee;
+    const device = (state.devices || []).find(d => d.ieee === ieee);
+
+    const { updates, qos, pollingInterval } = collectChanges(new FormData(form).entries(), form.elements);
+
+    const hasUpdates = Object.keys(updates).length > 0;
+    if (!hasUpdates && qos === null && pollingInterval === null) {
+        window.toast.info('Nothing changed.');
+        return;
+    }
+    // A sleeping device misses a write: ask for it to be woken first.
+    if (hasUpdates && isSleepy(device) && window.zbmConfirm && !await window.zbmConfirm({
+        title: 'Wake the device first',
+        message: 'It is battery powered and asleep most of the time, so it may miss the settings.',
+        detail: 'Press its button once (or trigger it), then send straight away.\n'
+            + 'Anything it still misses is sent by itself the next time it wakes.',
+        confirmText: "It's awake, send",
+    })) return;
+
     btn.disabled = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Applying...';
-
-    const formData = new FormData(e.target);
-    const updates = {};
-    let qos = 0;
-    let pollingInterval = null;
-
-    for (let [key, value] of formData.entries()) {
-        const field = e.target.elements[key];
-        // A saved reporting interval cleared: back to the device's default reporting.
-        if (key === 'reporting_max' && value === '' && field?.dataset?.initial) {
-            updates.reporting_max = 'default';
-            continue;
-        }
-        if (value === "") continue;
-        // A device setting left as it was shown is not sent: saving QoS must not rewrite them all.
-        if (field?.dataset?.initial !== undefined && field.dataset.initial === value) continue;
-
-        if (key === 'qos') { qos = parseInt(value); continue; }
-        if (key === 'polling_interval') { pollingInterval = parseInt(value); continue; }
-
-        if (key === 'reporting_max') {
-            updates.reporting_max = parseInt(value);
-            continue;
-        }
-
-        if (key.startsWith('tuya_')) {
-            updates[key.replace('tuya_', '')] = parseFloat(value);
-        } else {
-            updates[key] = !isNaN(value) && value.trim() !== '' ? parseFloat(value) : value;
-        }
-    }
+    form.dataset.saving = '1';
+    const panel = form.querySelector(`[data-apply-ieee]`);
+    if (panel && hasUpdates) panel.innerHTML = opLogHtml('Applying settings');
+    const label = n => form.elements[n]?.closest('.col-md-6, .col-md-4')?.querySelector('label')?.textContent.trim() || n;
 
     try {
-        const payload = {
-            ieee: state.currentDeviceIeee,
-            qos: qos,
-            updates: updates
-        };
-
-        if (pollingInterval !== null && !isNaN(pollingInterval)) {
-            payload.polling_interval = pollingInterval;
-        }
+        const payload = { ieee, updates };
+        if (qos !== null && !isNaN(qos)) payload.qos = qos;      // only when the control changed
+        if (pollingInterval !== null && !isNaN(pollingInterval)) payload.polling_interval = pollingInterval;
 
         const res = await fetch('/api/device/configure', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-
         const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'The hub did not apply the settings.');
+
+        seedApplied(device, data.applied, payload.qos);
+        settleFields(form, data);
+        const summary = panel && hasUpdates && panel.querySelector('[data-op-summary]');
+        if (summary) summary.innerHTML = applyResultHtml(data, label);
         const failed = data.failed || [], queued = data.queued || [];
-        if (data.success && (failed.length || queued.length)) {
-            // Only what the device answered is set. A sleeping device's settings
-            // wait for it to wake; anything it refused keeps its old value.
-            const label = n => e.target.elements[n]?.closest('.col-md-6, .col-md-4')?.querySelector('label')?.textContent.trim() || n;
-            if (queued.length) {
-                window.toast.info(`Will be set when the device next wakes: ${queued.map(label).join(', ')}.`
-                    + ' It is asleep now; pressing its button wakes it sooner.');
-            }
-            if (failed.length) {
-                window.toast.warning(`Not set: ${failed.map(label).join(', ')}. The device did not take it.`);
-            }
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-            if (window.loadDevices) window.loadDevices();
-        } else if (data.success) {
+        if (queued.length) {
+            window.toast.info(`Waiting for the device to wake: ${queued.map(label).join(', ')}.`
+                + ' Pressing its button wakes it sooner.');
+        }
+        if (failed.length) {
+            window.toast.warning(`Not set: ${failed.map(label).join(', ')}. The device did not take it.`);
+        }
+        if (!failed.length && !queued.length) {
             btn.innerHTML = '<i class="fas fa-check"></i> Done';
             btn.classList.replace('btn-primary', 'btn-success');
-            if (window.loadDevices) window.loadDevices();
             setTimeout(() => {
                 btn.innerHTML = originalText;
                 btn.classList.replace('btn-success', 'btn-primary');
                 btn.disabled = false;
             }, 1500);
         } else {
-            throw new Error(data.error);
+            btn.disabled = false;
+            btn.innerHTML = originalText;
         }
+        if (window.loadDevices) window.loadDevices();
     } catch (err) {
         window.toast.error("Error: " + err.message);
+        if (panel && hasUpdates) panel.innerHTML = '';
         btn.disabled = false;
         btn.innerHTML = originalText;
+    } finally {
+        delete form.dataset.saving;
     }
+}
+
+const _VERDICT_TEXT = {
+    set: ['fa-check text-success', 'set, read back as written'],
+    unconfirmed: ['fa-check text-success', "set; the device can't confirm it"],
+    queued: ['fa-hourglass-half text-info', 'waiting for the device to wake'],
+    failed: ['fa-times text-danger', 'not set'],
+};
+
+function applyResultHtml(data, label) {
+    const rows = Object.entries(verdicts(data)).map(([n, v]) => {
+        const [icon, text] = _VERDICT_TEXT[v];
+        return `<li><i class="fas ${icon} me-1"></i>${label(n)}: ${text}</li>`;
+    }).join('');
+    const report = data.op ? renderOpReport('Apply settings', { ...data.op, lines: data.lines,
+        seconds: data.seconds, error: data.error }) : '';
+    return `${rows ? `<ul class="list-unstyled small mb-2">${rows}</ul>` : ''}${report}`;
 }
 window.saveConfig = saveConfig;
 

@@ -168,29 +168,17 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
     async def reconfigure_device_endpoint(request: DeviceRequest):
         """Reconfigure, observed: the answer is what the device said to each
         step, not that the request was sent (docs/device-ops.md)."""
-        from modules import device_ops
-        from modules.device_profiles_apply import apply_entry_reporting, apply_profile
         logger.info(f"[{request.ieee}] Starting reconfiguration...")
         zigbee_service = get_zigbee_service()
-        if request.ieee not in zigbee_service.devices:
-            return {"success": False, "error": "Device not found"}
-        device = zigbee_service.devices[request.ieee]
         action = {True: "aggressive_lqi", False: "restore_baseline"}.get(request.aggressive, "reconfigure")
 
-        async def work():
-            # As pairing does: the entry's rows first (they need the table's slots).
-            await apply_entry_reporting(device)
-            done = await zigbee_service.configure_device(request.ieee)
-            if not done.get("success"):
-                return done
-            await apply_profile(device, push_reporting=False)
+        async def extra(device):
             if request.aggressive is True and device.get_role() == "Router":
                 await configure_zone_device_reporting(zigbee_service, [request.ieee])
             elif request.aggressive is False:
                 await remove_aggressive_reporting(zigbee_service, request.ieee)
-            return done
 
-        return await device_ops.run(request.ieee, action, work, zigbee_service._emit_sync)
+        return await zigbee_service.reconfigure_device(request.ieee, action, extra)
 
     @app.post("/api/device/interview")
     async def interview_device(request: DeviceRequest):
@@ -434,7 +422,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
     @app.post("/api/device/configure")
     async def configure_device(request: ConfigureRequest):
         """Update device settings (QoS, polling, reporting, Tuya)."""
-        return await get_zigbee_service().configure_device(request.ieee, config=request.dict(exclude_none=True))
+        return await get_zigbee_service().apply_settings(request.ieee, request.dict(exclude_none=True))
 
     # Banning
 

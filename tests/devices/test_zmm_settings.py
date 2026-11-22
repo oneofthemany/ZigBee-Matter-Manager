@@ -22,6 +22,10 @@ from modules.device_profiles import normalise_profile
 
 IEEE = "54:ef:44:10:01:5a:14:eb"
 
+
+def _fq(out):
+    return {k: out.get(k) for k in ("failed", "queued")}
+
 ENTRY = normalise_profile({
     "id": "lumi.plug.aeu002", "match": {"model": "lumi.plug.aeu002"},
     "endpoints": {"2": {"label": "Socket 2"}},
@@ -67,11 +71,18 @@ class _Fcc0:
     def __init__(self, refuse=False):
         self.refuse = refuse
         self.writes = []
+        self.held = {}          # what the device keeps, as a read answers it
 
     async def write_attributes_raw(self, attrs, manufacturer_code=None):
         a = attrs[0]
         self.writes.append((a.attrid, a.value.type, a.value.value, manufacturer_code))
+        if not self.refuse:
+            self.held[a.attrid] = a.value.value
         return [[NS(status=0x87 if self.refuse else 0)]]
+
+    async def read_attributes_raw(self, attrs, manufacturer=None):
+        return NS(status_records=[NS(attrid=a, status=0, value=NS(value=self.held[a])) if a in self.held
+                                  else NS(attrid=a, status=0x86, value=None) for a in attrs])
 
 
 class _Asleep(_Fcc0):
@@ -85,6 +96,11 @@ class _Asleep(_Fcc0):
         if not self.awake:
             raise asyncio.TimeoutError()
         return await super().write_attributes_raw(attrs, manufacturer_code)
+
+    async def read_attributes_raw(self, attrs, manufacturer=None):
+        if not self.awake:
+            raise asyncio.TimeoutError()
+        return await super().read_attributes_raw(attrs, manufacturer)
 
 
 def _real_library(c: Checker) -> None:
@@ -187,7 +203,7 @@ def run() -> Checker:
         outcome = asyncio.run(DeviceHandlerManagerMixin.configure(
             dev, {"updates": {"multi_click_2": 1, "multi_click_3": 2}}))
         c.check("the refused one is named, the accepted one is not",
-                outcome == {"failed": ["multi_click_2"], "queued": []}, outcome)
+                _fq(outcome) == {"failed": ["multi_click_2"], "queued": []}, outcome)
 
         c.section("a sleeping device's settings wait until it wakes")
         nap = _Asleep()
@@ -200,7 +216,7 @@ def run() -> Checker:
         outcome = asyncio.run(DeviceHandlerManagerMixin.configure(sleeper, {"updates": {"button_leds": 1}}))
         outcome = asyncio.run(DeviceHandlerManagerMixin.configure(sleeper, {"updates": {"button_leds": 0}}))
         c.check("a write it was not there for is queued, not failed",
-                outcome == {"failed": [], "queued": ["button_leds"]}, outcome)
+                _fq(outcome) == {"failed": [], "queued": ["button_leds"]}, outcome)
         c.check("the newest value is the one that waits", zmm_settings.pending(sleeper) == {"button_leds": 0})
         opt = {o["name"]: o for o in zmm_settings.options(sleeper)}["button_leds"]
         c.check("the form keeps what was asked for, and says it is waiting",
@@ -231,7 +247,7 @@ def run() -> Checker:
                                  _j({"type": "0x10/bool", "acl": "RW", "value": 1}))])
         outcome = asyncio.run(DeviceHandlerManagerMixin.configure(mains, {"updates": {"button_leds": 0}}))
         c.check("a mains device that does not answer has failed; it is not asleep",
-                outcome == {"failed": ["button_leds"], "queued": []}, outcome)
+                _fq(outcome) == {"failed": ["button_leds"], "queued": []}, outcome)
         device_facts.forget(sleeper.ieee)
         device_facts.forget(mains.ieee)
 

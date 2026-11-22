@@ -386,18 +386,13 @@ class OnOffHandler(ClusterHandler):
         }]
 
 
-    async def apply_configuration(self, updates: Dict[str, Any]):
-        """Apply OnOff cluster configuration (startup behaviour)."""
-        ep_id = self.endpoint.endpoint_id
-        key = f"startup_behaviour_{ep_id}"
-
-        if key in updates and not self.subordinate_to():
-            try:
-                value = int(updates[key])
-                await self.cluster.write_attributes({self.ATTR_STARTUP_ON_OFF: value})
-                logger.info(f"[{self.device.ieee}] Set EP{ep_id} startup behaviour: {value}")
-            except Exception as e:
-                logger.warning(f"[{self.device.ieee}] Failed to set startup behaviour EP{ep_id}: {e}")
+    async def apply_configuration(self, updates: Dict[str, Any]) -> Dict[str, str]:
+        """Startup behaviour, {name: verdict} (zmm_settings.handler_setting)."""
+        key = f"startup_behaviour_{self.endpoint.endpoint_id}"
+        if key not in updates or self.subordinate_to():
+            return {}
+        from modules.zmm_settings import handler_setting
+        return {key: await handler_setting(self, key, self.ATTR_STARTUP_ON_OFF, int(updates[key]))}
 
 
     # HA Discovery

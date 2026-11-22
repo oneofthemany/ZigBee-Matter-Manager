@@ -18,6 +18,7 @@
 import { state } from '../state.js';
 import { addLogEntry } from '../logging.js';
 import { getTimestamp } from '../utils.js';
+import { isSleepy } from './form-guard.js';
 
 const log = zmmLog('modal-device-settings');
 
@@ -43,10 +44,9 @@ function _resultPanel(ieee) {
 // Observed maintenance actions (docs/device-ops.md): a spinner while the
 // device's own log lines stream in, then what each step actually answered.
 
-function _startOp(ieee, label) {
-    const panel = _resultPanel(ieee);
-    if (!panel) return;
-    panel.innerHTML = `
+/** A running action's panel: spinner summary over its live log. */
+export function opLogHtml(label) {
+    return `
         <div data-op-summary>${_actionSpinner(`${label}…`)}</div>
         <div data-op-extra></div>
         <details class="zmm-op-log" open>
@@ -55,10 +55,18 @@ function _startOp(ieee, label) {
         </details>`;
 }
 
-/** Called by websocket.js on device_op events. */
+function _startOp(ieee, label) {
+    const panel = _resultPanel(ieee);
+    if (!panel) return;
+    panel.innerHTML = opLogHtml(label);
+}
+
+/** Called by websocket.js on device_op events. Apply streams to the Overview's panel. */
 export function applyDeviceOp(evt) {
     if (!evt || evt.phase !== 'line' || !evt.line) return;
-    const panel = _resultPanel(evt.ieee);
+    const panel = evt.action === 'apply_settings'
+        ? document.querySelector(`[data-apply-ieee="${cssEscape(evt.ieee)}"]`)
+        : _resultPanel(evt.ieee);
     const list = panel && panel.querySelector('[data-op-lines]');
     if (!list) return;
     const { ts, level, message } = evt.line;
@@ -77,7 +85,10 @@ const _VERDICT = {
     partial:   { cls: 'warning',   icon: 'fa-exclamation-triangle' },
     failed:    { cls: 'danger',    icon: 'fa-times-circle' },
     unchecked: { cls: 'secondary', icon: 'fa-question-circle' },
+    waiting:   { cls: 'info',      icon: 'fa-hourglass-half' },
 };
+
+export function renderOpReport(label, rep) { return _renderReport(label, rep); }
 
 function _renderReport(label, rep) {
     const v = _VERDICT[rep.verdict] || _VERDICT.unchecked;
@@ -91,6 +102,7 @@ function _renderReport(label, rep) {
         partial:   `${label}: ${rep.failed} of ${total} not taken by the device`,
         failed:    `${label} did not work`,
         unchecked: `${label} ran, but nothing in it reported an answer`,
+        waiting:   `${label}: waiting for the device to wake`,
     }[rep.verdict] || label;
     const advice = (rep.advice || []).map(a => `<li>${_escape(a.text)}</li>`).join('');
     const notable = steps.filter(st => st.outcome && st.outcome !== 'ok');
@@ -644,6 +656,15 @@ window._settingsReconfigure = async function(ieee, aggressive) {
     const label = labels[String(aggressive)] ?? 'Reconfigure';
     const body = { ieee };
     if (aggressive !== undefined) body.aggressive = aggressive;
+    // A sleeping device answers nothing: ask for it to be woken first.
+    const device = (state.devices || []).find(d => d.ieee === ieee);
+    if (isSleepy(device) && window.zbmConfirm && !await window.zbmConfirm({
+        title: 'Wake the device first',
+        message: 'It is battery powered and asleep most of the time, so it may not answer.',
+        detail: 'Press its button once (or trigger it), then start straight away.\n'
+            + 'If it still sleeps through it, this runs by itself the next time it wakes.',
+        confirmText: `It's awake, ${label.toLowerCase()}`,
+    })) return;
     await _runOp(ieee, label, '/api/device/reconfigure', body);
 };
 

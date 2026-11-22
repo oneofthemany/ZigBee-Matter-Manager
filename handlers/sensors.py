@@ -386,48 +386,27 @@ class OccupancySensingHandler(ClusterHandler):
 
         return options
 
-    async def apply_configuration(self, settings: Dict[str, Any]):
-        """
-        Apply configuration changes from the frontend.
-
-        This is called when user changes settings in the UI.
-        """
-        try:
-            # Handle motion_timeout
-            if "motion_timeout" in settings:
-                timeout = int(settings["motion_timeout"])
-                await self.cluster.write_attributes({self.ATTR_PIR_O_TO_U_DELAY: timeout})
-                self.device.update_state({"motion_timeout": timeout})
-                logger.info(f"[{self.device.ieee}] Set motion timeout: {timeout}s")
-
-            # Handle sensitivity. Philips uses attribute 0x0030 and REQUIRES the
-            # Signify manufacturer code on the write or it's silently dropped.
-            if "sensitivity" in settings:
-                sensitivity = int(settings["sensitivity"])
-                await self.cluster.write_attributes(
-                    {self.ATTR_SENSITIVITY: sensitivity},
-                    manufacturer=self._philips_mfr(),
-                )
-                self.device.update_state({"sensitivity": sensitivity})
-                logger.info(f"[{self.device.ieee}] Set sensitivity: {sensitivity}")
-
-            # Handle Hue LED indication (genBasic 0x0033, manufacturer-specific).
-            if "led_indication" in settings:
-                mfr = self._philips_mfr()
-                basic = self._basic_cluster()
-                if mfr and basic is not None:
-                    led_on = bool(int(settings["led_indication"]))
-                    await basic.write_attributes(
-                        {self.ATTR_LED_INDICATION: led_on}, manufacturer=mfr
-                    )
-                    self.device.update_state({"led_indication": led_on})
-                    logger.info(f"[{self.device.ieee}] Set LED indication: {led_on}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"[{self.device.ieee}] Failed to apply occupancy settings: {e}")
-            return False
+    async def apply_configuration(self, settings: Dict[str, Any]) -> Dict[str, str]:
+        """{name: verdict}; a value is shown only once the sensor took it
+        (zmm_settings.handler_setting)."""
+        from modules.zmm_settings import handler_setting
+        out: Dict[str, str] = {}
+        if "motion_timeout" in settings:
+            out["motion_timeout"] = await handler_setting(
+                self, "motion_timeout", self.ATTR_PIR_O_TO_U_DELAY, int(settings["motion_timeout"]),
+                keys=["motion_timeout", "pir_o_to_u_delay"])
+        # Hue drops a 0x0030 write that lacks the Signify manufacturer code.
+        if "sensitivity" in settings:
+            out["sensitivity"] = await handler_setting(
+                self, "sensitivity", self.ATTR_SENSITIVITY, int(settings["sensitivity"]),
+                mfr=self._philips_mfr())
+        if "led_indication" in settings:
+            mfr, basic = self._philips_mfr(), self._basic_cluster()
+            if mfr and basic is not None:
+                out["led_indication"] = await handler_setting(
+                    self, "led_indication", self.ATTR_LED_INDICATION, bool(int(settings["led_indication"])),
+                    cluster=basic, mfr=mfr)
+        return out
 
 
     # HA Discovery

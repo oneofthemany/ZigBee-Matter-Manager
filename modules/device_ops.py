@@ -53,6 +53,10 @@ def reason_of(status_or_exc: Any) -> str:
     return str(status_or_exc) or type(status_or_exc).__name__
 
 
+WAITING = ("The device is asleep and did not answer. This runs again by itself the next time "
+           "it wakes; pressing its button wakes it now.")
+
+
 def _ago(seconds: float) -> str:
     if seconds < 90:
         return f"{int(seconds)} s ago"
@@ -200,5 +204,9 @@ async def run(ieee: str, action: str, work: Callable[[], Awaitable[Any]],
         _current.reset(token)
         root.removeHandler(tap)
     report = op.report()
+    if not op.error and isinstance(result, dict) and result.get("waiting"):
+        # Not a failure: it was asleep, and the work runs itself at its next wake.
+        report["verdict"] = "waiting"
+        report["advice"] = [{"reason": "asleep", "text": WAITING}]
     emit(EVENT, {**report, "phase": "done"})
     return {"success": op.error is None, **report, "result": result}

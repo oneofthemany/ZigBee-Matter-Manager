@@ -8,7 +8,7 @@ import { escapeHtml } from './utils.js';
 import { renamePrompt } from './actions.js';
 import { hasCluster } from './modal/config.js';
 import { renderChamberPicker, ensureChambers } from './chambers.js';
-import { renderOverviewTab, saveConfig } from './modal/overview.js';
+import { renderOverviewTab, refreshOverview, saveConfig } from './modal/overview.js';
 import { renderControlTab, updateControlValues, refreshHeatingManaged } from './modal/control.js';
 import { renderBindingTab } from './modal/binding.js';
 import { renderCapsTab } from './modal/clusters.js';
@@ -268,9 +268,9 @@ export function refreshModalState(device) {
         if (title && device.friendly_name) title.textContent = device.friendly_name;
     }
 
-    // Overview
+    // Overview — never over a settings form in use
     const overviewTab = document.getElementById('tab-overview');
-    if (overviewTab) overviewTab.innerHTML = renderOverviewTab(device);
+    if (overviewTab) refreshOverview(overviewTab, device);
 
     // Control — preserve active slider drag
     const controlTab = document.getElementById('tab-control');

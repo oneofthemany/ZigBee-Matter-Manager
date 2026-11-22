@@ -351,16 +351,43 @@ that device.
   FP300 keeps about five, and the generic rows took the slots temperature or
   presence needed. A row with `max: 65535` deletes that row on the device to
   free its slot, and is sent without a bind; list deletes first.
+- **Accepted.** A setting counts as set only once the device took it: the
+  write is answered SUCCESS *and* reading the attribute back gives the value
+  written (`zmm_settings.write_checked`). Entry settings, unnamed `raw_`
+  controls and handler settings (`handler_setting`: occupancy timeout,
+  sensitivity and LED, OnOff startup, Aqara) share the rule. Each gets one
+  verdict:
+
+  | Verdict | When | Saved and shown? |
+  |---|---|---|
+  | `set` | SUCCESS, read back as written | yes |
+  | `unconfirmed` | SUCCESS, but the device refuses the read (write-only, unreadable) | yes, marked |
+  | `queued` | a sleeping device missed the write or its read-back | the asked-for value, marked waiting |
+  | `failed` | refused, read back different, or a mains device that did not answer | no; a different read-back is shown |
+
+  A Tuya datapoint has no read: it counts as set when the device reports the
+  datapoint back with the written value within `TUYA_ECHO_WAIT_SEC`. The
+  echo is caught before the report dedupe, so re-setting the value it last
+  reported still confirms. A save returns the names by verdict, and
+  `applied` with each value taken, which the form seeds its fields from.
 - **Sleepy devices.** A battery device listens only just after it sends
   something, so a write while it sleeps times out. That write is not failed
   but held (`zmm_settings._PENDING`): a newer value for the same setting
   replaces it, and the next frame heard from the device sends what waits,
-  while it is awake. A refusal then drops it; a write that times out again
-  waits for the next wake. The Configuration form shows the waiting value and
-  says so, and a save lists queued settings apart from refused ones. The queue
-  is in memory, so a restart drops it. A caller can also ask for settings to
+  while it is awake, through the same save path, so what it takes is stored.
+  A refusal then drops it; a write that times out again waits for the next
+  wake. A write it took but whose read-back it slept through waits to be
+  *confirmed* (`_CONFIRM`): at the next wake it is read, not written again,
+  and shown only if it matches. A full Reconfigure it answered none of is
+  queued too (`_RECONFIGURE`) and runs, observed, at its next frame, at most
+  once every `_RECONF_RETRY_SEC`. The Configuration form shows the waiting
+  value and says so. The queue persists to `settings_queue.json` under the
+  data dir (`ZMM_DATA_DIR`), written atomically off the event loop, so a
+  restart keeps it. A caller can also ask for settings to
   be *read* at the next wake (`zmm_settings.request_read`): one read per
   cluster, at most once every `_READ_RETRY_SEC`, filed under the setting ids.
+  Before Apply or Reconfigure on a battery device, the modal asks for it to be
+  woken (press its button), since a write it is awake for lands at once.
 - **Reporting interval.** The device modal's *Reporting (Dev Push)* field sets
   the max report interval of the measured value on every measuring handler
   (temperature, humidity, illuminance; `modules/reporting_interval.py`). It is

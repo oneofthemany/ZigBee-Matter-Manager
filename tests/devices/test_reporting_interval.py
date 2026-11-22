@@ -17,6 +17,10 @@ from modules import reporting_interval as ri, zmm_settings
 IEEE = "aa:bb:cc:00:00:00:10:01"
 
 
+def _fq(out):
+    return {k: out.get(k) for k in ("failed", "queued")}
+
+
 class _Measuring:
     """A handler with set_reporting_max: accepts, refuses, or isn't reachable."""
     CLUSTER_ID = 0x0402
@@ -70,7 +74,7 @@ def _accepted_and_refused(c):
     h = _Measuring()
     dev, saves = _device(h)
     out = _configure(dev, {"reporting_max": 1200})
-    c.check("an accepted interval is stored", ri.stored(dev) == 1200 and out == {"failed": [], "queued": []},
+    c.check("an accepted interval is stored", ri.stored(dev) == 1200 and _fq(out) == {"failed": [], "queued": []},
             (dev.service.device_settings, out))
     c.check("and saved to disk", saves == [ri.SETTINGS_PATH], saves)
     c.check("the handler got the number", h.sent == [1200], h.sent)
@@ -93,7 +97,7 @@ def _sleepy(c):
     dev, _ = _device(h)
     out = _configure(dev, {"reporting_max": 1800})
     c.check("r3: an undelivered change on a battery device is queued",
-            out == {"failed": [], "queued": ["reporting_max"]}, out)
+            _fq(out) == {"failed": [], "queued": ["reporting_max"]}, out)
     c.check("r3: and not stored yet", ri.stored(dev) is None, dev.service.device_settings)
     h.mode = "accept"
     asyncio.run(zmm_settings._flush(dev))
@@ -105,7 +109,7 @@ def _sleepy(c):
     dev, _ = _device(h, battery=False)
     out = _configure(dev, {"reporting_max": 1800})
     c.check("a mains device that doesn't answer is not set, not queued",
-            out == {"failed": ["reporting_max"], "queued": []}, out)
+            _fq(out) == {"failed": ["reporting_max"], "queued": []}, out)
 
 
 def _merge(c):
@@ -182,7 +186,7 @@ def _settings_only(c):
     from device.handlers import DeviceHandlerManagerMixin
     out = asyncio.run(DeviceHandlerManagerMixin.configure(dev, {"qos": 2, "updates": {}}))
     c.check("q1: QoS-only save (empty updates) runs no handler's setup",
-            h.configured == 0 and out == {"failed": [], "queued": []}, (h.configured, out))
+            h.configured == 0 and _fq(out) == {"failed": [], "queued": []}, (h.configured, out))
     asyncio.run(DeviceHandlerManagerMixin.configure(dev, {"qos": 1}))
     c.check("q1: nor does a save with no updates key", h.configured == 0, h.configured)
     c.check("q2: and QoS is kept", dev.service.device_settings[IEEE].get("qos") == 1, dev.service.device_settings)

@@ -581,10 +581,9 @@ def _device_topology_summary(dev) -> Dict[str, Any]:
                             {"attributes": {}, "commands": {},
                              "name": getattr(cluster, "name", "")},
                         )
-                        for aid, val in (getattr(cluster, "_attr_cache", {}) or {}).items():
+                        from modules.vendor_cache import cluster_cache
+                        for aid, _mfr, val in cluster_cache(cluster):
                             try:
-                                if hasattr(val, "value"):
-                                    val = val.value
                                 cl_out["attributes"][f"0x{aid:04X}"] = {
                                     "id":       aid,
                                     "name":     "",

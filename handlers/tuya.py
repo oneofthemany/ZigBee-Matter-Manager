@@ -28,6 +28,9 @@ TUYA_SET_DATA_RESPONSE = 0x02
 TUYA_ACTIVE_STATUS_REPORT = 0x06
 TUYA_TIME_REQUEST = 0x24
 
+# How long a setting waits for the device to report its datapoint back.
+TUYA_ECHO_WAIT_SEC = 5.0
+
 
 @dataclass
 class TuyaDP:
@@ -190,6 +193,7 @@ class TuyaClusterHandler(ClusterHandler):
         super().__init__(device, cluster)
         self._dp_map = self._identify_dp_map()
         self._seq = 0
+        self._echo: Dict[int, asyncio.Future] = {}     # dp_id -> a setting awaiting its report
 
     def _identify_dp_map(self) -> Dict[int, TuyaDP]:
         """Identify which DP map to use based on device model."""
@@ -280,6 +284,13 @@ class TuyaClusterHandler(ClusterHandler):
                 data = bytes(data)
             elif not isinstance(data, bytes):
                 data = bytes(data)
+
+            # Before the dedupe: an echo of a value already reported still confirms a setting.
+            if self._echo:
+                for dp_id, raw in self._dps_in(data):
+                    fut = self._echo.get(dp_id)
+                    if fut is not None and not fut.done():
+                        fut.set_result(raw)
 
             # Dedupe: hash the payload to catch duplicate deliveries
             payload_hash = hash(data)
@@ -527,54 +538,53 @@ class TuyaClusterHandler(ClusterHandler):
             "max_dist": "detection_distance_max"
         }
 
-        logger.info(f"[{self.device.ieee}] Applying Tuya Settings: {settings}")
-
-        # Track successfully applied settings to update state
-        applied_settings = {}
-
+        from modules import zmm_settings
+        out: Dict[str, str] = {}
         for ui_key, value in settings.items():
-            # Map UI key to internal DP Name
             dp_name = key_map.get(ui_key, ui_key)
+            target_dp = next((d for d in self._dp_map.values() if d.name == dp_name), None)
+            if target_dp is None:
+                continue        # another handler's or the entry's setting
+            raw_val = int(value / target_dp.scale)      # 6.0 m at scale 0.01 -> 600
+            dp_type = getattr(target_dp, 'type', self.DP_TYPE_VALUE)
+            outcome = await self._set_dp_checked(target_dp.dp_id, dp_type, raw_val)
+            # The echo is a report: it has already set the state, matching or not.
+            out[ui_key] = zmm_settings.conclude(self.device, ui_key, outcome, value, None,
+                                                {"publish": {}, "keys": []})
+            await asyncio.sleep(0.5)        # network recovery between datapoints
+        return out
 
-            # Find the DP definition by name
-            target_dp = None
-            for dp_id, dp_def in self._dp_map.items():
-                if dp_def.name == dp_name:
-                    target_dp = dp_def
-                    break
+    async def _set_dp_checked(self, dp_id: int, dp_type: int, raw_val: Any) -> str:
+        """Send a datapoint and wait for the device to report it back:
+        accepted | mismatch | no_echo | undelivered | refused."""
+        from modules import zmm_settings
+        fut = asyncio.get_running_loop().create_future()
+        self._echo[dp_id] = fut
+        try:
+            try:
+                await self.send_dp(dp_id, dp_type, raw_val, raise_errors=True)
+            except Exception as e:
+                return "undelivered" if zmm_settings._undelivered(e) else "refused"
+            try:
+                echoed = await asyncio.wait_for(fut, TUYA_ECHO_WAIT_SEC)
+            except asyncio.TimeoutError:
+                return "no_echo"
+            return "accepted" if zmm_settings._same(echoed, raw_val) else "mismatch"
+        finally:
+            if self._echo.get(dp_id) is fut:
+                self._echo.pop(dp_id, None)
 
-            if target_dp:
-                try:
-                    # Inverse scale: writing 6.0m -> send 600
-                    # For integers (like sensitivity 0-10), scale 1 means 7 -> 7
-                    raw_val = int(value / target_dp.scale)
-
-                    # Use the configured type from the DP definition, default to VALUE
-                    dp_type = target_dp.type if hasattr(target_dp, 'type') else self.DP_TYPE_VALUE
-
-                    success = await self.send_dp(target_dp.dp_id, dp_type, raw_val)
-
-                    if success:
-                        # Track the applied setting using the DP name
-                        applied_settings[dp_name] = value
-                        logger.info(f"[{self.device.ieee}] Set {dp_name} ({target_dp.dp_id}) to {value} (raw: {raw_val}, type: {dp_type})")
-                    else:
-                        logger.warning(f"[{self.device.ieee}] DP send returned False for {dp_name}")
-
-                except Exception as e:
-                    logger.error(f"[{self.device.ieee}] Failed to set {dp_name}: {e}")
-
-                # Ensure delay happens even if command failed to allow network recovery
-                # Increased to 0.5s for stability
-                await asyncio.sleep(0.5)
-            else:
-                logger.warning(f"[{self.device.ieee}] Could not find DP for setting '{ui_key}'")
-
-        # Update device state with all successfully applied settings
-        # This ensures the frontend sees the new values immediately
-        if applied_settings:
-            logger.info(f"[{self.device.ieee}] Updating state with applied settings: {applied_settings}")
-            self.device.update_state(applied_settings)
+    def _dps_in(self, data: bytes):
+        """(dp_id, raw value) for each datapoint in a report, as _parse_tuya_payload frames them."""
+        offset = 2 if len(data) > 6 and data[0] == 0x00 and data[1] < 0x80 else 0
+        while offset < len(data) - 4:
+            dp_id, dp_type = data[offset], data[offset + 1]
+            dp_len = (data[offset + 2] << 8) | data[offset + 3]
+            if offset + 4 + dp_len > len(data):
+                return
+            raw, _ = self._process_dp_logic(dp_id, dp_type, data[offset + 4:offset + 4 + dp_len])
+            yield dp_id, raw
+            offset += 4 + dp_len
 
     async def poll(self) -> Dict[str, Any]:
         """Poll the device for current status."""
@@ -621,8 +631,8 @@ class TuyaClusterHandler(ClusterHandler):
             logger.debug(f"[{self.device.ieee}] Poll failed (device may not support it): {e}")
             return {}
 
-    async def send_dp(self, dp_id: int, dp_type: int, value: Any):
-        """Send a DP command."""
+    async def send_dp(self, dp_id: int, dp_type: int, value: Any, raise_errors: bool = False):
+        """Send a DP command. False on failure, or with `raise_errors` the exception."""
         self._seq = (self._seq + 1) % 0x10000
 
         # Encode value based on type
@@ -687,6 +697,8 @@ class TuyaClusterHandler(ClusterHandler):
 
         except Exception as e:
             logger.error(f"[{self.device.ieee}] Failed to send DP{dp_id}: {e}")
+            if raise_errors:
+                raise
             import traceback
             logger.debug(f"[{self.device.ieee}] Traceback:\n{traceback.format_exc()}")
             return False

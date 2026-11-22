@@ -14,6 +14,7 @@ has an entry setting of that name, with no knowledge of who made it.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.zmm_settings")
@@ -39,7 +40,8 @@ _RECONF_RETRY_SEC = 60.0
 _RECONF_TRIED: Dict[str, float] = {}
 _FLUSHING: set = set()
 
-QUEUE_PATH = "./data/settings_queue.json"
+import os as _os
+QUEUE_PATH = _os.path.join(_os.environ.get("ZMM_DATA_DIR", "./data"), "settings_queue.json")
 _LOADED = False
 
 
@@ -70,9 +72,22 @@ def _ensure_loaded() -> None:
         logger.info(f"Settings queue: {len(waiting)} device(s) have work waiting for their next wake")
 
 
-def _write_queue(snapshot: Dict[str, Any]) -> None:
+_SAVE_LOCK = threading.Lock()
+_SAVE_SEQ = {"issued": 0, "written": 0}
+
+
+def _write_queue(snapshot: Dict[str, Any], seq: int = 0) -> None:
     import json
     import os
+    # Writes run on executor threads: an older snapshot must not land last.
+    with _SAVE_LOCK:
+        if seq and seq < _SAVE_SEQ["written"]:
+            return
+        _SAVE_SEQ["written"] = seq
+        _write_queue_now(snapshot, json, os)
+
+
+def _write_queue_now(snapshot: Dict[str, Any], json, os) -> None:
     try:
         os.makedirs(os.path.dirname(QUEUE_PATH) or ".", exist_ok=True)
         tmp = f"{QUEUE_PATH}.tmp"
@@ -90,10 +105,13 @@ def _save() -> None:
                 "reads": {k: sorted(v) for k, v in _PENDING_READS.items() if v},
                 "reconfigure": sorted(_RECONFIGURE)}
     import asyncio
+    with _SAVE_LOCK:
+        _SAVE_SEQ["issued"] += 1
+        seq = _SAVE_SEQ["issued"]
     try:
-        asyncio.get_running_loop().run_in_executor(None, _write_queue, snapshot)
+        asyncio.get_running_loop().run_in_executor(None, _write_queue, snapshot, seq)
     except RuntimeError:
-        _write_queue(snapshot)
+        _write_queue(snapshot, seq)
 
 
 def _reads_due(ieee: str) -> bool:
@@ -120,27 +138,54 @@ def _sleepy(device) -> bool:
 
 
 def pending(device) -> Dict[str, Any]:
-    """Settings waiting for this device to wake: {name: value}."""
-    return dict(_PENDING.get(str(device.ieee)) or {})
+    """What waits for this device to wake, to send or to confirm: {name: value as asked}."""
+    _ensure_loaded()
+    ieee = str(device.ieee)
+    return {**(_PENDING.get(ieee) or {}),
+            **{n: c.get("shown") for n, c in (_CONFIRM.get(ieee) or {}).items()}}
+
+
+def _drop(table: Dict[str, Dict[str, Any]], ieee: str, name: str) -> bool:
+    queue = table.get(ieee)
+    if not queue or name not in queue:
+        return False
+    queue.pop(name)
+    if not queue:
+        table.pop(ieee, None)
+    return True
 
 
 def _settle(device, name: str, outcome: str, shown: Any = None) -> None:
     """Record a write's outcome against the queue: `sent` or `refused` clear
     it, `undelivered` holds the value for a sleeping device."""
+    _ensure_loaded()
     ieee = str(device.ieee)
     if outcome == "undelivered" and _sleepy(device):
+        _drop(_CONFIRM, ieee, name)
         _PENDING.setdefault(ieee, {})[name] = shown
         logger.info(f"[{ieee}] {name} = {shown} waits for the device to wake")
+        _save()
         return
-    queue = _PENDING.get(ieee)
-    if queue and name in queue:
-        queue.pop(name)
-        if not queue:
-            _PENDING.pop(ieee, None)
+    if _drop(_PENDING, ieee, name) | _drop(_CONFIRM, ieee, name):
+        _save()
+
+
+def _queue_confirm(device, name: str, check: Dict[str, Any]) -> None:
+    """A write the device took but whose read-back it missed. `check` holds
+    where to read (ep, cluster, attr, mfr), the raw value `expected`, what to
+    `publish` once it matches, the state `keys` a different read lands in,
+    and the value as `shown`."""
+    _ensure_loaded()
+    ieee = str(device.ieee)
+    _drop(_PENDING, ieee, name)
+    _CONFIRM.setdefault(ieee, {})[name] = check
+    logger.info(f"[{ieee}] {name} = {check.get('shown')} written; reading it back when the device next wakes")
+    _save()
 
 
 def request_read(device, setting_ids) -> None:
     """Read these entry settings the next time the device is heard from."""
+    _ensure_loaded()
     ids = {str(s) for s in (setting_ids or []) if s}
     ieee = str(getattr(device, "ieee", "") or "")
     if not ids or not ieee:
@@ -149,13 +194,40 @@ def request_read(device, setting_ids) -> None:
     if not ids <= queue:
         queue |= ids
         logger.info(f"[{ieee}] Will read {sorted(queue)} when the device wakes")
+        _save()
+
+
+def reconfigure_waiting(device) -> bool:
+    _ensure_loaded()
+    return str(device.ieee) in _RECONFIGURE
+
+
+def set_reconfigure_waiting(device, waiting: bool) -> None:
+    """A full Reconfigure the sleeping device did not answer runs at its next wake."""
+    _ensure_loaded()
+    ieee = str(device.ieee)
+    if waiting == (ieee in _RECONFIGURE):
+        return
+    if waiting:
+        _RECONFIGURE.add(ieee)
+        logger.info(f"[{ieee}] The device did not answer; Reconfigure runs when it next wakes")
+    else:
+        _RECONFIGURE.discard(ieee)
+    _save()
+
+
+def _reconfigure_due(ieee: str) -> bool:
+    import time
+    return ieee in _RECONFIGURE and time.time() - _RECONF_TRIED.get(ieee, 0.0) > _RECONF_RETRY_SEC
 
 
 def on_heard(device) -> None:
     """The device just sent something, so it is awake for a moment: send what
     it missed. Called for every frame; does nothing unless something waits."""
+    _ensure_loaded()
     ieee = str(device.ieee)
-    if not (_PENDING.get(ieee) or _reads_due(ieee)) or ieee in _FLUSHING:
+    if ieee in _FLUSHING or not (_PENDING.get(ieee) or _CONFIRM.get(ieee) or _reads_due(ieee)
+                                 or _reconfigure_due(ieee)):
         return
     import asyncio
     _FLUSHING.add(ieee)
@@ -166,30 +238,66 @@ def on_heard(device) -> None:
 
 
 async def _flush(device) -> None:
+    import time
+    _ensure_loaded()
     ieee = str(device.ieee)
     try:
-        wanted = pending(device)
+        wanted = dict(_PENDING.get(ieee) or {})
         if wanted:
             logger.info(f"[{ieee}] Awake: sending {len(wanted)} waiting setting(s): {sorted(wanted)}")
-        from modules import reporting_interval
-        has_interval = reporting_interval.NAME in wanted
-        interval = wanted.pop(reporting_interval.NAME, None)
-        entry = {k: v for k, v in wanted.items() if not str(k).startswith(RAW_PREFIX)}
-        raw = {k: v for k, v in wanted.items() if str(k).startswith(RAW_PREFIX)}
-        if entry:
-            await apply(device, entry)
-        if raw:
-            await apply_raw(device, raw)
-        if has_interval:
-            await reporting_interval.apply(device, interval)
+            await _send_waiting(device, wanted)
+        if _CONFIRM.get(ieee):
+            await _check_confirms(device)
         if _reads_due(ieee):
-            import time
             _READ_TRIED[ieee] = time.time()
             await read_settings(device, set(_PENDING_READS[ieee]))
+        if _reconfigure_due(ieee):
+            _RECONF_TRIED[ieee] = time.time()
+            await _run_reconfigure(device)
     except Exception as e:
         logger.warning(f"[{ieee}] Sending waiting settings failed: {type(e).__name__}: {e}")
     finally:
         _FLUSHING.discard(ieee)
+
+
+async def _send_waiting(device, wanted: Dict[str, Any]) -> None:
+    """As a save would: through the service, so what is taken is stored too."""
+    svc = getattr(device, "service", None)
+    if callable(getattr(svc, "configure_device", None)):
+        await svc.configure_device(str(device.ieee), {"updates": wanted})
+        return
+    from device.handlers import DeviceHandlerManagerMixin
+    await DeviceHandlerManagerMixin.configure(device, {"updates": wanted})
+
+
+async def _check_confirms(device) -> None:
+    ieee = str(device.ieee)
+    for name, chk in list((_CONFIRM.get(ieee) or {}).items()):
+        ep = (device.zigpy_dev.endpoints or {}).get(int(chk["ep"]))
+        cluster = (getattr(ep, "in_clusters", None) or {}).get(int(chk["cluster"])) if ep else None
+        status, read = ("unreadable", None) if cluster is None else \
+            await _read_back(cluster, int(chk["attr"]), chk.get("mfr"))
+        if status == "undelivered":
+            return          # back asleep: the rest wait for the next wake
+        _drop(_CONFIRM, ieee, name)
+        if status == "unreadable":
+            _publish(device, chk.get("publish") or {})
+            logger.info(f"[{ieee}] {name} = {chk.get('shown')} set; the device does not let it be read back")
+        elif _same(read, chk.get("expected")):
+            _publish(device, chk.get("publish") or {})
+            logger.info(f"[{ieee}] {name} = {chk.get('shown')} confirmed by read-back")
+        else:
+            _publish(device, {k: read for k in chk.get("keys") or []})
+            logger.warning(f"[{ieee}] {name}: wrote {chk.get('shown')}, the device reads back {read}: not set")
+    _save()
+
+
+async def _run_reconfigure(device) -> None:
+    """The queued Reconfigure, observed as the button's is (docs/device-ops.md)."""
+    svc = getattr(device, "service", None)
+    run = getattr(svc, "reconfigure_device", None)
+    if callable(run):
+        await run(str(device.ieee))
 
 
 async def read_settings(device, ids) -> Dict[str, Any]:
@@ -342,18 +450,178 @@ def options(device) -> List[Dict[str, Any]]:
     return opts
 
 
-async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
-    """Write every entry setting named in `updates`. {name: succeeded}."""
+# A setting counts as set only once the device has taken it: write SUCCESS
+# and a read-back that matches (docs/device-profiles.md §4, "Accepted").
+# Verdicts: set | unconfirmed (taken, but the device refuses the read) |
+# queued (a sleeping device missed the write or its read-back) | failed.
+SET, UNCONFIRMED, QUEUED, FAILED = "set", "unconfirmed", "queued", "failed"
+TAKEN = (SET, UNCONFIRMED)
+
+
+def _plain(v: Any) -> Any:
+    v = getattr(v, "value", v)
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return int(v)       # zigpy's sized ints and enums
+    return v
+
+
+def _same(read: Any, written: Any) -> bool:
+    a, b = _plain(read), _plain(written)
+    if isinstance(a, (bytes, bytearray, str)) or isinstance(b, (bytes, bytearray, str)):
+        oa, ob = _octets(a), _octets(b)
+        return oa == ob if oa is not None and ob is not None else str(a) == str(b)
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return a == b
+
+
+def _jsonable(v: Any) -> Any:
+    v = _plain(v)
+    return v.hex() if isinstance(v, (bytes, bytearray)) else v
+
+
+async def _read_back(cluster, attr_id: int, mfr: Optional[int]) -> Tuple[str, Any]:
+    """('ok', value) | ('unreadable', None): the device refuses the read |
+    ('undelivered', None): it was not there to answer."""
+    import asyncio
+    reader = getattr(cluster, "read_attributes_raw", None)
+    if reader is None:
+        return "unreadable", None
+    try:
+        async with asyncio.timeout(8.0):
+            rsp = await reader([attr_id], manufacturer=mfr)
+    except Exception as e:
+        return ("undelivered" if _undelivered(e) else "unreadable"), None
+    records = getattr(rsp, "status_records", None)
+    if records is None:
+        records = rsp
+        while isinstance(records, (list, tuple)) and len(records) == 1 \
+                and isinstance(records[0], (list, tuple)):
+            records = records[0]
+    for rec in records if isinstance(records, (list, tuple)) else []:
+        if int(getattr(rec, "attrid", attr_id)) != attr_id:
+            continue
+        try:
+            ok = int(getattr(rec, "status", 0)) == 0
+        except (TypeError, ValueError):
+            ok = False
+        if not ok or getattr(rec, "value", None) is None:
+            return "unreadable", None
+        return "ok", _plain(rec.value)
+    return "unreadable", None
+
+
+async def write_checked(device, cluster, attr_id: int, value: Any, *, mfr: Optional[int] = None,
+                        type_id: Optional[int] = None) -> Tuple[str, Any]:
+    """Write one attribute and read it back: (outcome, value read) with outcome
+    accepted | unconfirmed | mismatch | confirm_later | refused | undelivered.
+    With `type_id` the write is raw (no schema lookup); else zigpy types it."""
     from zigpy.zcl import foundation
+    try:
+        if type_id is not None:
+            attr = foundation.Attribute()
+            attr.attrid = attr_id
+            attr.value = typed_value(type_id, value)
+            # Positional: zigpy names this parameter `manufacturer_code`.
+            rsp = await cluster.write_attributes_raw([attr], mfr)
+        elif mfr is not None:
+            rsp = await cluster.write_attributes({attr_id: value}, manufacturer=mfr)
+        else:
+            rsp = await cluster.write_attributes({attr_id: value})
+    except Exception as e:
+        logger.warning(f"[{device.ieee}] write 0x{attr_id:04X} failed: {type(e).__name__}: {e}")
+        return ("undelivered" if _undelivered(e) else "refused"), None
+    if not _write_ok(rsp):
+        return "refused", None
+    status, read = await _read_back(cluster, attr_id, mfr)
+    if status == "undelivered":
+        return "confirm_later", None
+    if status == "unreadable":
+        return "unconfirmed", None
+    return ("accepted" if _same(read, value) else "mismatch"), read
+
+
+def conclude(device, name: str, outcome: str, shown: Any, read: Any, check: Dict[str, Any]) -> str:
+    """Settle a write_checked outcome: queue, publish, log and record the step.
+    `check` is as _queue_confirm takes it, less `shown`. Returns the verdict."""
+    from modules import device_ops
+    ieee = str(device.ieee)
+    sleepy = _sleepy(device)
+    if outcome in ("accepted", "unconfirmed"):
+        _settle(device, name, "sent")
+        _publish(device, check.get("publish") or {})
+        if outcome == "accepted":
+            logger.info(f"[{ieee}] {name} = {shown}: set, read back as written")
+        else:
+            logger.info(f"[{ieee}] {name} = {shown}: set; the device does not let it be read back to confirm")
+        device_ops.step(f"Set {name}", True, None if outcome == "accepted" else "unconfirmed")
+        return SET if outcome == "accepted" else UNCONFIRMED
+    if outcome == "confirm_later" and sleepy:
+        _queue_confirm(device, name, {**check, "shown": _jsonable(shown)})
+        return QUEUED
+    if outcome == "undelivered" and sleepy:
+        _settle(device, name, "undelivered", shown)
+        return QUEUED
+    _settle(device, name, "refused")
+    if outcome == "mismatch":
+        _publish(device, {k: read for k in check.get("keys") or []})
+        logger.warning(f"[{ieee}] {name}: wrote {shown}, the device reads back {read}: not set")
+        reason = "mismatch"
+    elif outcome == "no_echo":
+        logger.warning(f"[{ieee}] {name} = {shown}: the device did not report it back: not set")
+        reason = "no echo"
+    elif outcome in ("undelivered", "confirm_later"):
+        logger.warning(f"[{ieee}] {name}: the device did not answer: not set")
+        reason = "timeout"
+    else:
+        logger.warning(f"[{ieee}] {name} = {shown}: refused by the device")
+        reason = "refused"
+    device_ops.step(f"Set {name}", False, reason)
+    return FAILED
+
+
+async def handler_setting(handler, name: str, attr_id: int, value: Any, *, cluster=None,
+                          mfr: Optional[int] = None, type_id: Optional[int] = None,
+                          keys: Optional[List[str]] = None, shown: Any = None) -> str:
+    """A handler's setting, written and judged as entry settings are: the
+    state `keys` (default [name]) show `shown` only once the device took it."""
+    device = handler.device
+    cluster = cluster if cluster is not None else handler.cluster
+    shown = value if shown is None else shown
+    keys = list(keys or [name])
+    outcome, read = await write_checked(device, cluster, attr_id, value, mfr=mfr, type_id=type_id)
+    check = {"ep": int(cluster.endpoint.endpoint_id), "cluster": int(cluster.cluster_id),
+             "attr": attr_id, "mfr": mfr, "expected": _jsonable(value),
+             "publish": {k: shown for k in keys}, "keys": keys}
+    return conclude(device, name, outcome, shown, read, check)
+
+
+def verdicts_of(results: Dict[str, Any], device) -> Dict[str, str]:
+    """Verdicts from a {name: bool} result, where a False that waits is queued."""
+    waiting = pending(device)
+    return {n: (v if isinstance(v, str) else SET if v else QUEUED if n in waiting else FAILED)
+            for n, v in results.items()}
+
+
+async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
+    """Write every entry setting named in `updates`. {name: taken}."""
+    return {n: v in TAKEN for n, v in (await apply_checked(device, updates)).items()}
+
+
+async def apply_checked(device, updates: Dict[str, Any]) -> Dict[str, str]:
+    """Write every entry setting named in `updates`. {name: verdict}."""
     from modules.device_profiles import SETTING_TYPES
 
-    results: Dict[str, bool] = {}
+    results: Dict[str, str] = {}
     for name, ep, st in _instances(device):
         if name not in updates:
             continue
         cluster = (device.zigpy_dev.endpoints[ep].in_clusters or {}).get(int(st["cluster"], 16))
         if cluster is None:
-            results[name] = False
+            results[name] = FAILED
             continue
         cid, aid = int(st["cluster"], 16), int(st["attr"], 16)
         key = _raw_state_key(device, cid, aid)
@@ -366,33 +634,24 @@ async def apply(device, updates: Dict[str, Any]) -> Dict[str, bool]:
                 value = _zones_write(st, current, int(float(shown)))
                 if isinstance(current, str):
                     value = value.hex()         # as the cache and the handler's state hold it
-                tv = typed_value(OCTSTR, bytes.fromhex(value) if isinstance(value, str) else value)
+                type_id, wire = OCTSTR, bytes.fromhex(value) if isinstance(value, str) else value
             else:
                 value = _to_raw(st, shown)
                 lo, hi = TYPE_RANGES.get(st["type"], (0, 1))
                 if not lo <= value <= hi:
                     raise ValueError(f"{value} does not fit {st['type']} (check the setting's scale and kind)")
-                tv = typed_value(SETTING_TYPES[st["type"]], value)
-            attr = foundation.Attribute()
-            attr.attrid = int(st["attr"], 16)
-            attr.value = tv
+                type_id, wire = SETTING_TYPES[st["type"]], value
             mfr = int(st["mfr"], 16) if st.get("mfr") else None
-            # Positional: zigpy names this parameter `manufacturer_code`.
-            rsp = await cluster.write_attributes_raw([attr], mfr)
-            ok = _write_ok(rsp)
-            outcome = "sent" if ok else "refused"
+            outcome, read = await write_checked(device, cluster, aid, wire, mfr=mfr, type_id=type_id)
         except Exception as e:
             logger.warning(f"[{device.ieee}] ZMM setting {name} write failed: {type(e).__name__}: {e}")
-            ok, outcome = False, "undelivered" if _undelivered(e) else "refused"
-        results[name] = ok
-        _settle(device, name, outcome, updates[name])
-        if ok:
-            # The raw key too: the profile recomputes the setting from it, and a
-            # stale one would put the old value back on the next report.
-            _publish(device, {**({key: value} if key else {}), name: _from_raw(st, value)})
-            logger.info(f"[{device.ieee}] ZMM setting {name} = {device.state[name]}")
-        elif outcome == "refused":
-            logger.warning(f"[{device.ieee}] ZMM setting {name} refused by the device")
+            outcome, read, value, mfr = ("undelivered" if _undelivered(e) else "refused"), None, None, None
+        # The raw key too: the profile recomputes the setting from it, and a
+        # stale one would put the old value back on the next report.
+        publish = {**({key: value} if key else {}), name: _from_raw(st, value)} if value is not None else {}
+        check = {"ep": ep, "cluster": cid, "attr": aid, "mfr": mfr, "expected": _jsonable(value),
+                 "publish": publish, "keys": []}
+        results[name] = conclude(device, name, outcome, updates[name], read, check)
     return results
 
 
@@ -613,19 +872,25 @@ def raw_options(device, covered) -> List[Dict[str, Any]]:
 
 
 async def apply_raw(device, updates: Dict[str, Any]) -> Dict[str, bool]:
-    """Write each `raw_...` control named in `updates`. {name: succeeded}."""
-    from zigpy.zcl import foundation
+    """Write each `raw_...` control named in `updates`. {name: taken}."""
+    return {n: v in TAKEN for n, v in (await apply_raw_checked(device, updates)).items()}
+
+
+async def apply_raw_checked(device, updates: Dict[str, Any]) -> Dict[str, str]:
+    """Write each `raw_...` control named in `updates`. {name: verdict}."""
     from modules.device_profiles import SETTING_TYPES
-    results: Dict[str, bool] = {}
+    results: Dict[str, str] = {}
     wanted = {k: v for k, v in updates.items() if str(k).startswith(RAW_PREFIX)}
     if not wanted:
         return results
     known = _writable(device)
     for name, shown in wanted.items():
         a = known.get(name)
-        if a is None:
-            results[name] = False
+        cluster = (device.zigpy_dev.endpoints[a["ep"]].in_clusters or {}).get(a["cluster"]) if a else None
+        if cluster is None:
+            results[name] = FAILED
             continue
+        value = None
         try:
             value = int(float(shown))
             lo, hi = TYPE_RANGES.get(a["type"], (0, 1))
@@ -633,23 +898,15 @@ async def apply_raw(device, updates: Dict[str, Any]) -> Dict[str, bool]:
                 value = int(bool(value))
             elif not lo <= value <= hi:
                 raise ValueError(f"{value} is outside {a['type']}")
-            cluster = (device.zigpy_dev.endpoints[a["ep"]].in_clusters or {}).get(a["cluster"])
-            attr = foundation.Attribute()
-            attr.attrid = a["attr"]
-            attr.value = typed_value(SETTING_TYPES[a["type"]], value)
-            ok = cluster is not None and _write_ok(await cluster.write_attributes_raw([attr], a["mfr"]))
-            outcome = "sent" if ok else "refused"
+            outcome, read = await write_checked(device, cluster, a["attr"], value, mfr=a["mfr"],
+                                                type_id=SETTING_TYPES[a["type"]])
         except Exception as e:
             logger.warning(f"[{device.ieee}] {name} write failed: {type(e).__name__}: {e}")
-            ok, outcome = False, "undelivered" if _undelivered(e) else "refused"
-        results[name] = ok
-        _settle(device, name, outcome, shown)
-        if ok:
-            key = _raw_state_key(device, a["cluster"], a["attr"])
-            if key:
-                _publish(device, {key: value})
-            logger.info(f"[{device.ieee}] {name} = {value}")
-        elif outcome == "refused":
-            logger.warning(f"[{device.ieee}] {name} refused by the device")
+            outcome, read = ("undelivered" if _undelivered(e) else "refused"), None
+        key = _raw_state_key(device, a["cluster"], a["attr"])
+        check = {"ep": a["ep"], "cluster": a["cluster"], "attr": a["attr"], "mfr": a["mfr"],
+                 "expected": value, "publish": {key: value} if key and value is not None else {},
+                 "keys": [key] if key else []}
+        results[name] = conclude(device, name, outcome, shown, read, check)
     return results
 

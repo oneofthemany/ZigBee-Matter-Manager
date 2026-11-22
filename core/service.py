@@ -1295,6 +1295,7 @@ class ZigbeeService(
                 if config and config.get('polling_interval') is not None:
                     self.set_polling_interval(ieee, int(config['polling_interval']))
                 failed, queued = outcome.get("failed") or [], outcome.get("queued") or []
+                unconfirmed = outcome.get("unconfirmed") or []
                 if config:
                     # Merged key by key, so a later save keeps what it doesn't
                     # name; the reporting interval stores itself once taken.
@@ -1310,7 +1311,10 @@ class ZigbeeService(
                         self.device_settings[ieee] = existing
                         self._save_json("./data/device_settings.json", self.device_settings)
                 # A setting the device did not take is not saved: say which.
-                return {"success": True, "failed": failed, "queued": queued}
+                return {"success": True, "failed": failed, "queued": queued, "unconfirmed": unconfirmed,
+                        "applied": outcome.get("applied") or {},
+                        "waiting": bool(outcome.get("waiting")) or bool(
+                            config and queued and not failed and not outcome.get("applied"))}
             except NcpFailure as e:
                 logger.error(f"[{ieee}] NCP Failure during configuration: {e}")
                 if hasattr(self, 'resilience'):
@@ -1320,6 +1324,41 @@ class ZigbeeService(
                 return {"success": False, "error": str(e)}
         return {"success": False, "error": "Device not found"}
 
+
+    async def reconfigure_device(self, ieee, action="reconfigure", extra=None):
+        """Reconfigure, observed (docs/device-ops.md). `extra(device)` runs
+        after a configure the device answered; one a sleeping device answered
+        none of waits for its next wake (zmm_settings) and says so."""
+        from modules import device_ops
+        from modules.device_profiles_apply import apply_entry_reporting, apply_profile
+        device = self.devices.get(ieee)
+        if device is None:
+            return {"success": False, "error": "Device not found"}
+
+        async def work():
+            # As pairing does: the entry's rows first (they need the table's slots).
+            await apply_entry_reporting(device)
+            done = await self.configure_device(ieee)
+            if not done.get("success") or done.get("waiting"):
+                return done
+            await apply_profile(device, push_reporting=False)
+            if extra is not None:
+                await extra(device)
+            return done
+
+        return await device_ops.run(ieee, action, work, self._emit_sync)
+
+    async def apply_settings(self, ieee, config):
+        """A save with device settings, observed like Reconfigure: each write,
+        its answer and read-back stream to the modal (docs/device-ops.md)."""
+        from modules import device_ops
+        if not (config or {}).get("updates"):
+            return await self.configure_device(ieee, config)
+        out = await device_ops.run(ieee, "apply_settings", lambda: self.configure_device(ieee, config),
+                                   self._emit_sync)
+        res = out.get("result") if isinstance(out.get("result"), dict) else {}
+        return {**out, **res, "success": bool(res.get("success")), "op": {
+            k: out.get(k) for k in ("op_id", "verdict", "passed", "failed", "advice", "steps")}}
 
     async def retry_interview_device(self, ieee: str) -> dict:
         """
@@ -1846,7 +1885,7 @@ class ZigbeeService(
             "last_seen": getattr(zigpy_dev, 'last_seen', None),
             "node_descriptor": None,
             "endpoints": [],
-            "bindings": [],
+            "bindings": None,       # stays None unless the device's table was read
             "neighbors": [],
             "state": dict(zdev.state) if hasattr(zdev, 'state') else {},
             "device_settings": self.device_settings.get(ieee, {}),
@@ -1891,20 +1930,16 @@ class ZigbeeService(
 
                 # Get cached attribute values (no network I/O — use what we already have)
                 try:
-                    attrs_cache = getattr(cluster, '_attr_cache', {}) or {}
-                    for attr_id, val in attrs_cache.items():
-                        if hasattr(val, 'value'):
-                            val = val.value
-                        attr_name = None
-                        if attr_id in cluster.attributes:
-                            attr_def = cluster.attributes[attr_id]
-                            attr_name = attr_def.name if hasattr(attr_def, 'name') else None
+                    from modules.vendor_cache import cluster_cache
+                    for attr_id, mfr, val in cluster_cache(cluster):
+                        attr_def = (getattr(cluster, 'attributes', None) or {}).get(attr_id)
                         try:
                             safe_val = prepare_for_json({0: val})[0]
                         except Exception:
                             safe_val = str(val)
-                        cluster_info["attributes"][f"0x{attr_id:04X}"] = {
-                            "name": attr_name,
+                        key = f"0x{attr_id:04X}" + (f"@0x{mfr:04X}" if mfr else "")
+                        cluster_info["attributes"][key] = {
+                            "name": getattr(attr_def, 'name', None),
                             "value": safe_val,
                         }
                 except Exception as e:
@@ -1925,8 +1960,12 @@ class ZigbeeService(
         try:
             async with asyncio.timeout(5.0):
                 result = await zigpy_dev.zdo.Mgmt_Bind_req(0)
-            if result and len(result) >= 3:
-                status, _, binding_list = result[0], result[1], result[2]
+            status = result[0] if result else None
+            binding_list = result[2] if result and len(result) >= 3 else None
+            if status is None or int(status) != 0 or binding_list is None:
+                config["bindings_error"] = f"not read: the device answered {status!r}"
+            else:
+                config["bindings"] = []
                 for b in binding_list or []:
                     try:
                         config["bindings"].append({

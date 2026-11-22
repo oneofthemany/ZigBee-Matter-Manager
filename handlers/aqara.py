@@ -1064,14 +1064,35 @@ class AqaraManufacturerCluster(ClusterHandler):
         }
 
         owned = self._entry_owned()
+        out: Dict[str, str] = {}
         for key, attr_id in config_map.items():
             if key in updates and attr_id not in owned:
-                try:
-                    success = await self.write_attribute(attr_id, int(updates[key]))
-                    if not success:
-                        logger.debug(f"[{self.device.ieee}] Device doesn't support {key}")
-                except Exception as e:
-                    logger.debug(f"[{self.device.ieee}] Skipping unsupported {key}: {e}")
+                out[key] = await self._set_checked(key, attr_id, updates[key])
+        return out
+
+    async def _set_checked(self, key: str, attr_id: int, value: Any) -> str:
+        """write_attribute's typing and routing, judged by zmm_settings.handler_setting."""
+        from modules import zmm_settings
+        if not self.supports(attr_id):
+            logger.warning(f"[{self.device.ieee}] {key}: 0x{attr_id:04X} is not listed on "
+                           f"EP{self.endpoint.endpoint_id}; not set")
+            return zmm_settings.FAILED
+        target_type = self.ATTR_TYPES.get(attr_id, t.uint8_t)
+        type_id = _ZCL_DATATYPE_ID.get(target_type)
+        target = self.cluster
+        if attr_id >= 0x0200:       # Aqara 0x02xx attributes live on the Opple cluster
+            target = (getattr(self.cluster.endpoint, "in_clusters", None) or {}).get(0xFCC0)
+        try:
+            wire = target_type(int(value))
+        except (TypeError, ValueError) as e:
+            logger.warning(f"[{self.device.ieee}] {key} = {value!r} does not fit {target_type.__name__}: {e}")
+            return zmm_settings.FAILED
+        if type_id is None or target is None:
+            logger.warning(f"[{self.device.ieee}] {key}: no route for 0x{attr_id:04X}; not set")
+            return zmm_settings.FAILED
+        return await zmm_settings.handler_setting(self, key, attr_id, wire, cluster=target,
+                                                  mfr=self.MANUFACTURER_CODE, type_id=type_id,
+                                                  shown=int(value))
 
     def get_pollable_attributes(self) -> Dict[int, str]:
         """

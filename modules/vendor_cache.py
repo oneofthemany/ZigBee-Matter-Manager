@@ -31,6 +31,21 @@ def _plain(v: Any) -> Any:
     return v
 
 
+def cluster_cache(cluster) -> List[Tuple[int, Optional[int], Any]]:
+    """(attr id, manufacturer code, value) for every value zigpy caches on a
+    cluster. Its AttributeCache is no mapping; a plain dict (older zigpy, test
+    stubs) is read as {attr id: value}."""
+    cache = getattr(cluster, "_attr_cache", None)
+    if cache is None:
+        return []
+    if isinstance(cache, dict):
+        return [(int(aid), None, getattr(v, "value", v)) for aid, v in cache.items()]
+    out = [(int(aid), None, item.value) for aid, item in (getattr(cache, "_legacy_cache", None) or {}).items()]
+    out += [(int(aid), int(mfr) if mfr else None, item.value)
+            for (aid, mfr), item in (getattr(cache, "_cache", None) or {}).items()]
+    return out
+
+
 def cached(zigpy_dev) -> List[Cached]:
     """Every vendor-scoped attribute value zigpy holds for the device. zigpy
     keeps attributes it has no definition for by id alone: on a maker's

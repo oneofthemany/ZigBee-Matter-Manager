@@ -128,42 +128,47 @@ class DeviceHandlerManagerMixin:
             self.sanitise_state()
 
     async def configure(self, config=None):
-        """With a config, apply only its settings (returning {"failed": [...],
-        "queued": [...]} setting names, for the caller to report; queued ones
-        wait for a sleeping device to wake). Only with no config is every
-        handler configured: a QoS-only save must send the device nothing."""
+        """With a config, apply only its settings and return the setting names
+        by verdict, {"failed", "queued", "unconfirmed": [...], "applied": {name:
+        value}} (zmm_settings, "Accepted"): queued ones wait for a sleeping
+        device to wake. Only with no config is every handler configured, and
+        the stats come back with "waiting" when a sleeping device answered none
+        of it, so it runs again at the next wake. A QoS-only save sends nothing."""
         logger.info(f"[{self.ieee}] Configuring device...")
+        from modules import zmm_settings
         if config is not None:
             updates = config.get('updates') or {}
-            failed, queued = [], []
-            if not updates:
-                if 'qos' in config:
-                    self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
-                return {"failed": failed, "queued": queued}
-            try:
-                from modules import zmm_settings, reporting_interval
-                done = {**await zmm_settings.apply(self, updates),
-                        **await zmm_settings.apply_raw(self, updates)}
-                if reporting_interval.NAME in updates:
-                    done[reporting_interval.NAME] = await reporting_interval.apply(
-                        self, updates[reporting_interval.NAME])
-                failed = sorted(name for name, ok in done.items() if not ok)
-                waiting = zmm_settings.pending(self)
-                queued = [n for n in failed if n in waiting]
-                failed = [n for n in failed if n not in waiting]
-            except Exception as e:
-                logger.warning(f"[{self.ieee}] ZMM settings failed: {e}")
-            # Each handler is also stored under a bare cluster-id alias.
-            for handler in dict.fromkeys(self.handlers.values()):
-                if hasattr(handler, 'apply_configuration'):
-                    try: await handler.apply_configuration(updates)
-                    except Exception as e: logger.warning(f"[{self.ieee}] Config failed for {handler.__class__.__name__}: {e}")
+            verdicts = {}
+            if updates:
+                try:
+                    from modules import reporting_interval
+                    verdicts.update(await zmm_settings.apply_checked(self, updates))
+                    verdicts.update(await zmm_settings.apply_raw_checked(self, updates))
+                    if reporting_interval.NAME in updates:
+                        verdicts.update(zmm_settings.verdicts_of({reporting_interval.NAME: await reporting_interval.apply(
+                            self, updates[reporting_interval.NAME])}, self))
+                except Exception as e:
+                    logger.warning(f"[{self.ieee}] ZMM settings failed: {e}")
+                # Each handler is also stored under a bare cluster-id alias.
+                for handler in dict.fromkeys(self.handlers.values()):
+                    if hasattr(handler, 'apply_configuration'):
+                        try:
+                            got = await handler.apply_configuration(updates)
+                        except Exception as e:
+                            logger.warning(f"[{self.ieee}] Config failed for {handler.__class__.__name__}: {e}")
+                            continue
+                        if isinstance(got, dict):
+                            verdicts.update(got)
             if 'qos' in config:
                 self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
-            return {"failed": failed, "queued": queued}
+            by = lambda v: sorted(n for n, x in verdicts.items() if x == v)
+            return {"failed": by(zmm_settings.FAILED), "queued": by(zmm_settings.QUEUED),
+                    "unconfirmed": by(zmm_settings.UNCONFIRMED),
+                    "applied": {n: updates[n] for n, x in verdicts.items()
+                                if x in zmm_settings.TAKEN and n in updates}}
 
         stats = {'configured': 0, 'skipped_not_configurable': 0, 'skipped_controller': 0, 'failed': 0,
-                 'skipped_entry': 0}
+                 'skipped_entry': 0, 'undelivered': 0}
         # A small reporting table fills with whatever comes first; an entry that
         # lists the device's whole setup gets every slot (device-profiles.md §4).
         try:
@@ -207,6 +212,7 @@ class DeviceHandlerManagerMixin:
                     stats['configured'] += 1
             except Exception as e:
                 stats['failed'] += 1
+                stats['undelivered'] += int(zmm_settings._undelivered(e))
                 logger.warning(f"[{self.ieee}] Config failed EP{ep_id}:0x{cluster_id:04x}: {e}")
                 device_ops.step(f"Configure EP{ep_id} 0x{cluster_id:04X}", False, device_ops.reason_of(e))
 
@@ -215,6 +221,10 @@ class DeviceHandlerManagerMixin:
                     f"{stats['skipped_not_configurable']} skipped (not reportable), "
                     f"{stats['skipped_entry']} left to the entry, "
                     f"{stats['failed']} failed")
+        # Asleep, not refusing: nothing it was sent reached it.
+        waiting = zmm_settings._sleepy(self) and stats['configured'] == 0 and stats['undelivered'] > 0
+        zmm_settings.set_reconfigure_waiting(self, waiting)
+        return {**stats, "waiting": waiting}
 
     async def interview(self):
         logger.info(f"[{self.ieee}] Re-interviewing...")

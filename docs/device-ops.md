@@ -1,9 +1,10 @@
 # Observed device actions
 
-A Maintenance button (Poll, Reconfigure, Aggressive LQI, Restore Baseline)
-and the setup after a device joins each run as an *observed action*
-(`modules/device_ops.py`). The answer is what the device said to each step,
-not that the request was sent.
+A Maintenance button (Poll, Reconfigure, Aggressive LQI, Restore Baseline),
+the Overview's *Apply Settings* (action `apply_settings`, when the save
+changes a device setting) and the setup after a device joins each run as an
+*observed action* (`modules/device_ops.py`). The answer is what the device
+said to each step, not that the request was sent.
 
 ## Steps
 
@@ -21,6 +22,7 @@ Recorded today:
 | `handlers/base.py` `poll` | each cluster read |
 | `device/handlers.py` | a handler that raised; a handler answering `False` now counts as failed in the configure summary |
 | `device_profiles_apply.apply_reporting` | the entry's bind (a failure is a warning: without it a maker's cluster sends nothing) and each reporting row |
+| `zmm_settings.conclude` | `Set <name>` per device setting: ok when read back as written, or with reason `unconfirmed` when the device refuses the read; failed as `refused`, `mismatch`, `no echo` (Tuya) or `timeout`. A setting queued for a sleeping device is not a step: its log line says it waits |
 
 A reason is `timeout`, a ZCL status name (`INSUFFICIENT_SPACE`), or an
 exception's text.
@@ -57,6 +59,7 @@ device on their own, the same two rows were accepted.
 | `partial` | some step failed |
 | `failed` | the action raised, or no step was confirmed |
 | `unchecked` | it ran, but nothing in it reported an answer |
+| `waiting` | a sleeping device answered none of it (`result.waiting`); it runs again by itself at the next wake (device-profiles.md §4, "Sleepy devices") |
 
 A `success: false` result counts as an error only when it carries an `error`:
 a refusal is already a step.
@@ -77,6 +80,8 @@ lines. On the loop thread a line is emitted in place, so no line lands after
 the verdict; from another thread it hops to the loop.
 
 The Settings tab's action panel shows a spinner, the live log, then the
-verdict with advice and the steps that need attention. The join card shows
+verdict with advice and the steps that need attention. Apply Settings streams
+to a panel under its button instead, ending in each setting's verdict (set,
+set but unconfirmed, waiting for the device, not set) above the report. The join card shows
 the same log, and on `ready` the setup's verdict. A card with a problem stays
 until dismissed. Identification alone no longer marks a join card ready.
