@@ -6740,19 +6740,12 @@ async function switchToManual() {
 
 // background image
 
-const PDF_JS_URL = '/static/js/vendor/pdf.min.js';
 const PDF_WORKER_URL = '/static/js/vendor/pdf.worker.min.js';
 
 async function ensurePdfJs() {
     if (window.pdfjsLib) return window.pdfjsLib;
-    await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = PDF_JS_URL;
-        s.onload = resolve;
-        s.onerror = () => reject(new Error('pdf.js not found at ' + PDF_JS_URL));
-        document.head.appendChild(s);
-    });
-    if (!window.pdfjsLib) throw new Error('pdf.js loaded but window.pdfjsLib missing');
+    // vendor-loader.js keeps the editor's AMD loader from capturing it.
+    await window.zmmLoadPdfJs();
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
     return window.pdfjsLib;
 }

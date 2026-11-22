@@ -144,7 +144,12 @@ Modules that every consumer is expected to go through.
 The heavy vendored libraries — ECharts (~1 MB) and Leaflet (~150 KB) — are
 not in the page; they load on first use. `window.zmmLoadECharts` and
 `window.zmmLoadLeaflet` each return a promise of the library, appending one `<script>`
-per library however many callers ask at once, and forgetting a failed load so
+per library however many callers ask at once, and rejecting (not resolving
+`undefined`) when the script runs but leaves no global. hls.js
+(`window.zmmLoadHls`) and pdf.js (`window.zmmLoadPdfJs`) load through it too.
+While one loads, the editor's Monaco AMD `define` is hidden: these are UMD
+bundles, and one that sees `define.amd` registers with Monaco's loader instead
+of setting its global. It also forgets a failed load so
 the next use retries. A classic script, loaded right after Bootstrap in
 `index.html` and `frames.html`, so classic tabs and ES modules can both reach
 it. The three map views (trip map, place picker, presence map) and the

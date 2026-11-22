@@ -64,6 +64,29 @@ console.log('\n  loader');
   check('a library already on the page is used as is', got === win.L && scripts.length === 0);
 }
 
+console.log('\n  next to the editor\'s AMD loader');
+{
+  const { win, scripts } = page();
+  const amd = Object.assign(function define() {}, { amd: {} });
+  win.define = amd;
+  const p = win.zmmLoadLeaflet();
+  check('AMD define is hidden while the library loads', win.define === undefined);
+  win.L = { id: 'leaflet' };      // what Leaflet does when it sees no define
+  scripts[0].onload();
+  check('the library arrives as its global', (await p) === win.L);
+  check('and define is put back for the editor', win.define === amd);
+}
+{
+  const { win, scripts } = page();
+  const p = win.zmmLoadLeaflet();
+  scripts[0].onload();            // ran, but set no window.L
+  let err = null;
+  try { await p; } catch (e) { err = e; }
+  check('a script that leaves no global rejects rather than resolving undefined', err && /did not define L/.test(err.message), String(err));
+  win.zmmLoadLeaflet();
+  check('and the next use tries again', scripts.length === 2, scripts.length);
+}
+
 console.log('\n  chart-utils');
 {
   // Stand-in browser globals the module reads.

@@ -42,16 +42,11 @@ let _hlsLib = null;       // in-flight/settled load of the library itself
 const _isHlsItem = (item, url) =>
     /mpegurl/i.test((item && item.content_type) || '') || /\.m3u8(\?|#|$)/i.test(url);
 
+// Through vendor-loader.js, which keeps the editor's AMD loader from capturing it.
 function _loadHls() {
     if (window.Hls) return Promise.resolve(window.Hls);
     if (!_hlsLib) {
-        _hlsLib = new Promise((resolve, reject) => {
-            const s = document.createElement('script');
-            s.src = '/static/js/vendor/hls.min.js';
-            s.onload = () => resolve(window.Hls);
-            s.onerror = () => { _hlsLib = null; reject(new Error('hls.js failed to load')); };
-            document.head.appendChild(s);
-        });
+        _hlsLib = window.zmmLoadHls().catch(e => { _hlsLib = null; throw e; });
     }
     return _hlsLib;
 }
